@@ -327,7 +327,7 @@
 		#size-cells = <0>;
 		#address-cells = <2>;
 
-		cpu@3 {
+		cpu_e3: cpu@3 {
 			compatible = "arm,armv8";
 			reg = <0 3>;
 			device_type = "cpu";
@@ -336,7 +336,7 @@
 			status = "okay";
 		};
 
-		cpu@2 {
+		cpu_e2: cpu@2 {
 			compatible = "arm,armv8";
 			reg = <0 2>;
 			device_type = "cpu";
@@ -345,7 +345,7 @@
 			status = "okay";
 		};
 
-		cpu@1 {
+		cpu_e1: cpu@1 {
 			compatible = "arm,armv8";
 			reg = <0 1>;
 			device_type = "cpu";
@@ -354,7 +354,7 @@
 			status = "okay";
 		};
 
-		cpu@0 {
+		cpu_e0: cpu@0 {
 			compatible = "arm,armv8";
 			reg = <0 0>;
 			device_type = "cpu";
@@ -363,7 +363,7 @@
 			status = "okay";
 		};
 
-		cpu@10204 {
+		cpu_p14: cpu@10204 {
 			compatible = "arm,armv8";
 			reg = <0 0x10204>;
 			device_type = "cpu";
@@ -372,7 +372,7 @@
 			status = "okay";
 		};
 
-		cpu@10203 {
+		cpu_p13: cpu@10203 {
 			compatible = "arm,armv8";
 			reg = <0 0x10203>;
 			device_type = "cpu";
@@ -381,7 +381,7 @@
 			status = "okay";
 		};
 
-		cpu@10202 {
+		cpu_p12: cpu@10202 {
 			compatible = "arm,armv8";
 			reg = <0 0x10202>;
 			device_type = "cpu";
@@ -390,7 +390,7 @@
 			status = "okay";
 		};
 
-		cpu@10201 {
+		cpu_p11: cpu@10201 {
 			compatible = "arm,armv8";
 			reg = <0 0x10201>;
 			device_type = "cpu";
@@ -399,7 +399,7 @@
 			status = "okay";
 		};
 
-		cpu@10200 {
+		cpu_p10: cpu@10200 {
 			compatible = "arm,armv8";
 			reg = <0 0x10200>;
 			device_type = "cpu";
@@ -408,7 +408,7 @@
 			status = "okay";
 		};
 
-		cpu@10104 {
+		cpu_p04: cpu@10104 {
 			compatible = "arm,armv8";
 			reg = <0 0x10104>;
 			device_type = "cpu";
@@ -417,7 +417,7 @@
 			status = "okay";
 		};
 
-		cpu@10103 {
+		cpu_p03: cpu@10103 {
 			compatible = "arm,armv8";
 			reg = <0 0x10103>;
 			device_type = "cpu";
@@ -426,7 +426,7 @@
 			status = "okay";
 		};
 
-		cpu@10102 {
+		cpu_p02: cpu@10102 {
 			compatible = "arm,armv8";
 			reg = <0 0x10102>;
 			device_type = "cpu";
@@ -435,7 +435,7 @@
 			status = "okay";
 		};
 
-		cpu@10101 {
+		cpu_p01: cpu@10101 {
 			compatible = "arm,armv8";
 			reg = <0 0x10101>;
 			device_type = "cpu";
@@ -444,7 +444,7 @@
 			status = "okay";
 		};
 
-		cpu@10100 {
+		cpu_p00: cpu@10100 {
 			compatible = "arm,armv8";
 			reg = <0 0x10100>;
 			device_type = "cpu";
