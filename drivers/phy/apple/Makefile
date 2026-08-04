@@ -3,5 +3,8 @@
 obj-$(CONFIG_PHY_APPLE_ATC)		+= phy-apple-atc.o
 phy-apple-atc-y			:= atc.o
 
+obj-$(CONFIG_PHY_APPLE_T6040_USB2)	+= phy-apple-t6040-usb2.o
+phy-apple-t6040-usb2-y			:= t6040-usb2.o
+
 obj-$(CONFIG_PHY_APPLE_DPTX)	+= phy-apple-dptx.o
 phy-apple-dptx-y		+= dptx.o
