@@ -1,0 +1,239 @@
+// SPDX-License-Identifier: GPL-2.0 OR BSD-2-Clause
+/*
+ * Apple T6040 USB2 PHY -- experimental host-only slice
+ *
+ * This deliberately does not share the T8103/T8122 ATC PHY compatible. T6040
+ * has CIO4/TB5-era resources and a different event-bank layout. The only
+ * implemented operation is the exact USB2 host sequence decoded from the
+ * paired AppleT6040TypeCPhy driver.
+ *
+ * The driver performs no ATC-register writes during probe. There is no paired
+ * power-off/inverse sequence, so this driver intentionally provides no
+ * power_off callback. The state is volatile and this driver must remain behind
+ * a disabled DT node until its MMIO writes have received platform-specific
+ * review.
+ */
+
+#include <dt-bindings/phy/phy.h>
+#include <linux/bitops.h>
+#include <linux/cleanup.h>
+#include <linux/delay.h>
+#include <linux/io.h>
+#include <linux/module.h>
+#include <linux/mutex.h>
+#include <linux/of.h>
+#include <linux/phy/phy.h>
+#include <linux/platform_device.h>
+
+#define T6040_USB2_USBCTL		0x00
+#define T6040_USB2_USBCTL_MODE		GENMASK(2, 0)
+#define T6040_USB2_USBCTL_MODE_HOST	2
+
+#define T6040_USB2_CTL			0x04
+#define T6040_USB2_CTL_RESET		BIT(0)
+#define T6040_USB2_CTL_PORT_RESET	BIT(1)
+#define T6040_USB2_CTL_APB_RESET_N	BIT(2)
+#define T6040_USB2_CTL_SIDDQ		BIT(3)
+
+#define T6040_USB2_SIG			0x08
+#define T6040_USB2_SIG_VBUSDET_FORCE_VAL	BIT(0)
+#define T6040_USB2_SIG_VBUSDET_FORCE_EN	BIT(1)
+#define T6040_USB2_SIG_HOST_0		BIT(12)
+#define T6040_USB2_SIG_HOST_1		BIT(13)
+#define T6040_USB2_SIG_HOST_2		BIT(14)
+
+#define T6040_USB2_MISCTUNE		0x1c
+#define T6040_USB2_MISCTUNE_APBCLK_GATE_OFF	BIT(29)
+#define T6040_USB2_MISCTUNE_REFCLK_GATE_OFF	BIT(30)
+
+#define T6040_USB2_EVT_CTL		0x00
+#define T6040_USB2_EVT_CTL_EN		BIT(0)
+#define T6040_USB2_EVT_CTL_LOAD_CNT	BIT(3)
+#define T6040_USB2_EVT_STATUS		0x20
+
+struct t6040_usb2_phy {
+	struct device *dev;
+	void __iomem *usb2;
+	void __iomem *evt;
+	struct phy *phy;
+	struct mutex lock;
+	enum phy_mode mode;
+	bool powered;
+};
+
+static inline void t6040_usb2_mask32(void __iomem *reg, u32 mask, u32 set)
+{
+	u32 value = readl(reg);
+
+	value &= ~mask;
+	value |= set;
+	writel(value, reg);
+}
+
+static inline void t6040_usb2_set32(void __iomem *reg, u32 set)
+{
+	t6040_usb2_mask32(reg, 0, set);
+}
+
+static inline void t6040_usb2_clear32(void __iomem *reg, u32 clear)
+{
+	t6040_usb2_mask32(reg, clear, 0);
+}
+
+static int t6040_usb2_set_mode(struct phy *phy, enum phy_mode mode, int submode)
+{
+	struct t6040_usb2_phy *tphy = phy_get_drvdata(phy);
+
+	if (mode != PHY_MODE_USB_HOST)
+		return -EOPNOTSUPP;
+
+	guard(mutex)(&tphy->lock);
+	if (tphy->powered && tphy->mode != mode)
+		return -EBUSY;
+
+	tphy->mode = mode;
+	return 0;
+}
+
+static int t6040_usb2_power_on(struct phy *phy)
+{
+	struct t6040_usb2_phy *tphy = phy_get_drvdata(phy);
+	u32 status;
+
+	guard(mutex)(&tphy->lock);
+
+	if (tphy->mode != PHY_MODE_USB_HOST)
+		return -EINVAL;
+	if (tphy->powered)
+		return 0;
+
+	/*
+	 * AppleT6040TypeCPhy::eusb2phy_init(false, false), in exact order.
+	 * Keep the five signal mutations separate: the paired driver performs
+	 * five read/modify/write operations rather than one combined write.
+	 */
+	t6040_usb2_set32(tphy->usb2 + T6040_USB2_SIG,
+			 T6040_USB2_SIG_HOST_2);
+	t6040_usb2_set32(tphy->usb2 + T6040_USB2_SIG,
+			 T6040_USB2_SIG_HOST_1);
+	t6040_usb2_set32(tphy->usb2 + T6040_USB2_SIG,
+			 T6040_USB2_SIG_HOST_0);
+	t6040_usb2_set32(tphy->usb2 + T6040_USB2_SIG,
+			 T6040_USB2_SIG_VBUSDET_FORCE_VAL);
+	t6040_usb2_set32(tphy->usb2 + T6040_USB2_SIG,
+			 T6040_USB2_SIG_VBUSDET_FORCE_EN);
+
+	msleep(10);
+
+	t6040_usb2_clear32(tphy->usb2 + T6040_USB2_CTL,
+			   T6040_USB2_CTL_SIDDQ);
+	udelay(10);
+	t6040_usb2_clear32(tphy->usb2 + T6040_USB2_CTL,
+			   T6040_USB2_CTL_RESET);
+	t6040_usb2_clear32(tphy->usb2 + T6040_USB2_CTL,
+			   T6040_USB2_CTL_PORT_RESET);
+
+	t6040_usb2_set32(tphy->evt + T6040_USB2_EVT_CTL,
+			 T6040_USB2_EVT_CTL_LOAD_CNT |
+			 T6040_USB2_EVT_CTL_EN);
+
+	t6040_usb2_set32(tphy->usb2 + T6040_USB2_CTL,
+			 T6040_USB2_CTL_APB_RESET_N);
+	t6040_usb2_clear32(tphy->usb2 + T6040_USB2_MISCTUNE,
+			   T6040_USB2_MISCTUNE_APBCLK_GATE_OFF);
+	t6040_usb2_clear32(tphy->usb2 + T6040_USB2_MISCTUNE,
+			   T6040_USB2_MISCTUNE_REFCLK_GATE_OFF);
+
+	udelay(30);
+	status = readl(tphy->evt + T6040_USB2_EVT_STATUS);
+	dev_info(tphy->dev, "USB2 event status %#x\n", status);
+
+	msleep(5);
+	t6040_usb2_mask32(tphy->usb2 + T6040_USB2_USBCTL,
+			  T6040_USB2_USBCTL_MODE,
+			  T6040_USB2_USBCTL_MODE_HOST);
+
+	tphy->powered = true;
+	dev_info(tphy->dev, "USB2 host sequence complete\n");
+	return 0;
+}
+
+static const struct phy_ops t6040_usb2_phy_ops = {
+	.owner = THIS_MODULE,
+	.set_mode = t6040_usb2_set_mode,
+	.power_on = t6040_usb2_power_on,
+};
+
+static struct phy *t6040_usb2_xlate(struct device *dev,
+				    const struct of_phandle_args *args)
+{
+	struct t6040_usb2_phy *tphy = dev_get_drvdata(dev);
+
+	if (args->args_count != 1 || args->args[0] != PHY_TYPE_USB2)
+		return ERR_PTR(-ENODEV);
+
+	return tphy->phy;
+}
+
+static int t6040_usb2_probe(struct platform_device *pdev)
+{
+	struct device *dev = &pdev->dev;
+	struct t6040_usb2_phy *tphy;
+	struct phy_provider *provider;
+
+	tphy = devm_kzalloc(dev, sizeof(*tphy), GFP_KERNEL);
+	if (!tphy)
+		return -ENOMEM;
+
+	tphy->dev = dev;
+	/*
+	 * dwc3 powers on its phys from dwc3_core_init(), which runs inside
+	 * dwc3_core_probe() -- before any consumer can deliver phy_set_mode()
+	 * to this phy. dwc3-apple's early phy_set_mode() call happens while
+	 * dwc.usb2_generic_phy[] is still unpopulated, so it is a silent no-op
+	 * on a NULL phy, and a PHY_MODE_INVALID default then fails power_on
+	 * with -EINVAL ("failed to initialize core", ticket 108). This
+	 * provider implements exactly one mode, so start in it; set_mode
+	 * still rejects every request that is not PHY_MODE_USB_HOST.
+	 */
+	tphy->mode = PHY_MODE_USB_HOST;
+	mutex_init(&tphy->lock);
+	platform_set_drvdata(pdev, tphy);
+
+	tphy->usb2 = devm_platform_ioremap_resource_byname(pdev, "bank0");
+	if (IS_ERR(tphy->usb2))
+		return dev_err_probe(dev, PTR_ERR(tphy->usb2),
+				     "failed to map USB2 bank 0\n");
+
+	tphy->evt = devm_platform_ioremap_resource_byname(pdev, "bank1");
+	if (IS_ERR(tphy->evt))
+		return dev_err_probe(dev, PTR_ERR(tphy->evt),
+				     "failed to map USB2 event bank 1\n");
+
+	tphy->phy = devm_phy_create(dev, NULL, &t6040_usb2_phy_ops);
+	if (IS_ERR(tphy->phy))
+		return PTR_ERR(tphy->phy);
+	phy_set_drvdata(tphy->phy, tphy);
+
+	provider = devm_of_phy_provider_register(dev, t6040_usb2_xlate);
+	return PTR_ERR_OR_ZERO(provider);
+}
+
+static const struct of_device_id t6040_usb2_of_match[] = {
+	{ .compatible = "apple,t6040-atcphy" },
+	{}
+};
+MODULE_DEVICE_TABLE(of, t6040_usb2_of_match);
+
+static struct platform_driver t6040_usb2_driver = {
+	.probe = t6040_usb2_probe,
+	.driver = {
+		.name = "phy-apple-t6040-usb2",
+		.of_match_table = t6040_usb2_of_match,
+	},
+};
+module_platform_driver(t6040_usb2_driver);
+
+MODULE_AUTHOR("The Asahi Linux Contributors");
+MODULE_DESCRIPTION("Experimental Apple T6040 USB2 PHY");
+MODULE_LICENSE("Dual BSD/GPL");
