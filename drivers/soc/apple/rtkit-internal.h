@@ -57,6 +57,7 @@ struct apple_rtkit {
 	DECLARE_BITMAP(endpoints, APPLE_RTKIT_MAX_ENDPOINTS);
 
 	struct apple_rtkit_shmem ioreport_buffer;
+	struct apple_rtkit_shmem system7_buffer;
 	struct apple_rtkit_shmem crashlog_buffer;
 	struct apple_rtkit_shmem oslog_buffer;
 
