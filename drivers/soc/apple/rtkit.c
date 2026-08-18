@@ -26,6 +26,8 @@ enum {
 	APPLE_RTKIT_EP_SYSLOG = 2,
 	APPLE_RTKIT_EP_DEBUG = 3,
 	APPLE_RTKIT_EP_IOREPORT = 4,
+	/* Advertised by newer firmware and required to complete RTKit boot. */
+	APPLE_RTKIT_EP_UNKNOWN7 = 7,
 	APPLE_RTKIT_EP_OSLOG = 8,
 	APPLE_RTKIT_EP_TRACEKIT = 0xa,
 };
@@ -69,6 +71,7 @@ enum {
 /* unknown ioreport messages, must be ACKed or the co-processor will hang */
 #define APPLE_RTKIT_IOREPORT_UNKNOWN1 0x8
 #define APPLE_RTKIT_IOREPORT_UNKNOWN2 0xc
+#define APPLE_RTKIT_SYSTEM7_BUFFER_REPLY 5
 
 #define APPLE_RTKIT_SYSLOG_LOG 5
 
@@ -241,6 +244,7 @@ static void apple_rtkit_management_rx_epmap(struct apple_rtkit *rtk, u64 msg)
 		case APPLE_RTKIT_EP_CRASHLOG:
 		case APPLE_RTKIT_EP_DEBUG:
 		case APPLE_RTKIT_EP_IOREPORT:
+		case APPLE_RTKIT_EP_UNKNOWN7:
 		case APPLE_RTKIT_EP_OSLOG:
 		case APPLE_RTKIT_EP_TRACEKIT:
 			/* already started while handling the map */
@@ -398,6 +402,8 @@ reply:
 					    buffer->iova >> 12);
 		} else {
 			reply = FIELD_PREP(APPLE_RTKIT_SYSLOG_TYPE,
+					   ep == APPLE_RTKIT_EP_UNKNOWN7 ?
+					   APPLE_RTKIT_SYSTEM7_BUFFER_REPLY :
 					   APPLE_RTKIT_BUFFER_REQUEST);
 			reply |= FIELD_PREP(APPLE_RTKIT_BUFFER_REQUEST_SIZE,
 					    buffer->size >> 12);
@@ -613,6 +619,21 @@ unmapped:
 	rtk->crashed = true;
 	if (rtk->ops->crashed)
 		rtk->ops->crashed(rtk->cookie, NULL, 0);
+}
+
+static void apple_rtkit_system7_rx(struct apple_rtkit *rtk, u64 msg)
+{
+	u8 type = FIELD_GET(APPLE_RTKIT_SYSLOG_TYPE, msg);
+
+	switch (type) {
+	case APPLE_RTKIT_BUFFER_REQUEST:
+		apple_rtkit_common_rx_get_buffer(rtk, &rtk->system7_buffer,
+						 APPLE_RTKIT_EP_UNKNOWN7, msg);
+		break;
+	default:
+		dev_warn(rtk->dev, "RTKit: Unknown system endpoint 7 message: %llx\n",
+			 msg);
+	}
 }
 
 static void apple_rtkit_ioreport_rx(struct apple_rtkit *rtk, u64 msg)
@@ -833,6 +854,9 @@ static void apple_rtkit_rx_work(struct work_struct *work)
 				 "RTKit: message to unknown endpoint %02x: %llx\n",
 				 rtk_work->ep, rtk_work->msg);
 		break;
+	case APPLE_RTKIT_EP_UNKNOWN7:
+		apple_rtkit_system7_rx(rtk, rtk_work->msg);
+		break;
 	case APPLE_RTKIT_EP_OSLOG:
 		apple_rtkit_oslog_rx(rtk, rtk_work->msg);
 		break;
@@ -1042,6 +1066,7 @@ static void apple_rtkit_mark_running(struct apple_rtkit *rtk)
 		APPLE_RTKIT_EP_SYSLOG,
 		APPLE_RTKIT_EP_DEBUG,
 		APPLE_RTKIT_EP_IOREPORT,
+		APPLE_RTKIT_EP_UNKNOWN7,
 		APPLE_RTKIT_EP_OSLOG,
 		APPLE_RTKIT_EP_TRACEKIT,
 	};
@@ -1261,6 +1286,7 @@ int apple_rtkit_reinit(struct apple_rtkit *rtk)
 	flush_workqueue(rtk->wq);
 
 	apple_rtkit_free_buffer(rtk, &rtk->ioreport_buffer);
+	apple_rtkit_free_buffer(rtk, &rtk->system7_buffer);
 	apple_rtkit_free_buffer(rtk, &rtk->crashlog_buffer);
 	apple_rtkit_free_buffer(rtk, &rtk->oslog_buffer);
 	apple_rtkit_free_buffer(rtk, &rtk->syslog_buffer);
@@ -1522,6 +1548,7 @@ void apple_rtkit_free(struct apple_rtkit *rtk)
 	apple_rtkit_stop_rx(rtk);
 
 	apple_rtkit_free_buffer(rtk, &rtk->ioreport_buffer);
+	apple_rtkit_free_buffer(rtk, &rtk->system7_buffer);
 	apple_rtkit_free_buffer(rtk, &rtk->crashlog_buffer);
 	apple_rtkit_free_buffer(rtk, &rtk->oslog_buffer);
 	apple_rtkit_free_buffer(rtk, &rtk->syslog_buffer);
