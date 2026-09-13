@@ -264,6 +264,13 @@ impl<T: Operations> RtKit<T> {
         })
     }
 
+    /// Selects the early preallocated crash-buffer exchange used by G16.
+    /// Call before starting the coprocessor CPU.
+    pub fn set_early_crashlog(self: Pin<&mut Self>) {
+        // SAFETY: The RTKit handle is valid by the type invariant.
+        unsafe { bindings::apple_rtkit_set_early_crashlog(self.rtk) };
+    }
+
     /// Requests acknowledged RTKit shutdown using the C core's bounded waits.
     ///
     /// The caller must not hold a lock needed by its receive callbacks: the

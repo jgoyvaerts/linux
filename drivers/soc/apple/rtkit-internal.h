@@ -49,6 +49,8 @@ struct apple_rtkit {
 
 	unsigned int iop_power_state;
 	unsigned int ap_power_state;
+	bool early_crashlog;
+	struct completion crashlog_completion;
 	bool crashed;
 	bool shutting_down;
 
