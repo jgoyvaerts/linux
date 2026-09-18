@@ -51,6 +51,7 @@
 #define REG_TX_STOP		0x0004
 #define REG_RX_START		0x0008
 #define REG_RX_STOP		0x000c
+#define REG_CTL			0x0010
 #define REG_UNK_28		0x0028
 #define REG_UNK_2C		0x002c
 #define REG_IMPRINT		0x0090
@@ -72,6 +73,8 @@
 
 #define REG_CHAN_CTL(ad, ch)	(REG_CHAN_BASE(ad, ch) + 0x00)
 #define REG_CHAN_CTL_RST_RINGS	BIT(0)
+#define REG_CHAN_CONFIG(ad, ch)	(REG_CHAN_BASE(ad, ch) + 0x04)
+#define REG_CHAN_BURST(ad, ch)	(REG_CHAN_BASE(ad, ch) + 0x30)
 
 #define REG_DESC_RING(ad, ch)	(REG_CHAN_BASE(ad, ch) + 0x70)
 #define REG_REPORT_RING(ad, ch)	(REG_CHAN_BASE(ad, ch) + 0x74)
@@ -104,6 +107,10 @@
 #define REG_GLOBAL_INTSTATE(idx)	(0x0050 + (idx) * 4)
 #define REG_CHAN_INTSTATUS(ad, ch, idx)	(REG_CHAN_BASE(ad, ch) + 0x10 + (idx) * 4)
 #define REG_CHAN_INTMASK(ad, ch, idx)	(REG_CHAN_BASE(ad, ch) + 0x20 + (idx) * 4)
+
+#define REG_CHAN_ENABLE(ad, ch)	(REG_CHAN_BASE(ad, ch) + 0xa0)
+#define CHAN_ENABLE_MEMORY	BIT(0)
+#define CHAN_ENABLE_PERIPHERAL	BIT(1)
 
 struct admac_data;
 struct admac_tx;
@@ -152,6 +159,7 @@ struct admac_data {
 
 	bool set_unk28;
 	bool evolved_layout;
+	bool split_channels;
 	int irq;
 	int irq_index;
 	int nchannels;
@@ -175,6 +183,7 @@ struct admac_tx {
 struct admac_hw {
 	bool set_unk28;
 	bool evolved_layout;
+	bool split_channels;
 };
 
 static int admac_alloc_sram_carveout(struct admac_data *ad,
@@ -185,6 +194,11 @@ static int admac_alloc_sram_carveout(struct admac_data *ad,
 	int i, ret = 0, nblocks;
 	ad->txcache.size = readl_relaxed(ad->base + REG_TX_SRAM_SIZE);
 	ad->rxcache.size = readl_relaxed(ad->base + REG_RX_SRAM_SIZE);
+	/* T8132 reports channel metadata in the upper half of these words. */
+	if (ad->split_channels) {
+		ad->txcache.size &= GENMASK(15, 0);
+		ad->rxcache.size &= GENMASK(15, 0);
+	}
 
 	if (dir == DMA_MEM_TO_DEV)
 		sram = &ad->txcache;
@@ -194,7 +208,7 @@ static int admac_alloc_sram_carveout(struct admac_data *ad,
 	mutex_lock(&ad->cache_alloc_lock);
 
 	nblocks = sram->size / SRAM_BLOCK;
-	for (i = 0; i < nblocks; i++)
+	for (i = ad->split_channels ? 1 : 0; i < nblocks; i++)
 		if (!(sram->allocated & BIT(i)))
 			break;
 
@@ -524,6 +538,13 @@ static void admac_start_current_tx(struct admac_chan *adchan)
 
 	admac_reset_rings(adchan);
 	writel_relaxed(0, ad->base + REG_CHAN_CTL(ad, ch));
+	if (ad->split_channels) {
+		/* T8132 separates the memory and peripheral sides of a channel. */
+		writel_relaxed(0x29b0000, ad->base + REG_CHAN_CONFIG(ad, ch));
+		writel_relaxed(0x302, ad->base + REG_CHAN_BURST(ad, ch));
+		writel_relaxed(CHAN_ENABLE_MEMORY | CHAN_ENABLE_PERIPHERAL,
+			       ad->base + REG_CHAN_ENABLE(ad, ch));
+	}
 
 	admac_cyclic_write_one_desc(ad, ch, adchan->current_tx);
 	admac_start_chan(adchan);
@@ -907,6 +928,7 @@ static int admac_probe(struct platform_device *pdev)
 	ad->nchannels = nchannels;
 	ad->set_unk28 = hw->set_unk28;
 	ad->evolved_layout = hw->evolved_layout;
+	ad->split_channels = hw->split_channels;
 	mutex_init(&ad->cache_alloc_lock);
 
 	/*
@@ -980,6 +1002,9 @@ static int admac_probe(struct platform_device *pdev)
 		return dev_err_probe(&pdev->dev, err,
 				     "unable to trigger reset\n");
 
+	if (ad->split_channels)
+		writel_relaxed(0x18080001, ad->base + REG_CTL);
+
 	err = request_irq(irq, admac_interrupt, 0, dev_name(&pdev->dev), ad);
 	if (err) {
 		dev_err_probe(&pdev->dev, err,
@@ -1029,6 +1054,15 @@ static const struct admac_hw admac_t8122_hw = {
 	.set_unk28 = true,
 };
 
+/*
+ * T8132 keeps the TX and RX channel blocks in separate banks, the same
+ * register layout as the T8140 "evolved" one.
+ */
+static const struct admac_hw admac_t8132_hw = {
+	.evolved_layout = true,
+	.split_channels = true,
+};
+
 static const struct admac_hw admac_t8140_hw = {
 	.set_unk28 = true,
 	.evolved_layout = true,
@@ -1036,6 +1070,7 @@ static const struct admac_hw admac_t8140_hw = {
 
 static const struct of_device_id admac_of_match[] = {
 	{ .compatible = "apple,t8140-admac", .data = &admac_t8140_hw },
+	{ .compatible = "apple,t8132-admac", .data = &admac_t8132_hw },
 	{ .compatible = "apple,t8122-admac", .data = &admac_t8122_hw },
 	{ .compatible = "apple,t8103-admac", .data = &admac_t8013_hw },
 	{ .compatible = "apple,admac", .data = &admac_t8013_hw },
