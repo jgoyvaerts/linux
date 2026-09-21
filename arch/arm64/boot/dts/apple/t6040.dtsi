@@ -470,11 +470,86 @@
 	};
 
 	aliases {
+		keyboard = "/fifo@514b14000/input@0/keyboard";
 		wifi0 = "/pcie@1cb0000000/pci@0,0/wifi@0,0";
 		bluetooth0 = "/pcie@1cb0000000/pci@0,0/bluetooth@0,1";
 		dcp = "/dcp@402e00000";
 		disp0 = "/display-subsystem";
 		disp0_piodma = "/dcp@402e00000/piodma";
+	};
+
+	mtp: mtp@514600000 {
+		compatible = "apple,t6041-mtp", "apple,t6041-rtk-helper-asc4", "apple,mtp", "apple,rtk-helper-asc4";
+		reg = <5 0x14600000 0 0x4000>;
+		reg-names = "asc";
+		#helper-cells = <0>;
+		iommus = <&mtp_dart 0>;
+		mboxes = <&mtp_mbox>;
+	};
+
+	mtp_mbox: mailbox@514608000 {
+		compatible = "apple,t6041-asc-mailbox", "apple,asc-mailbox-v4";
+		reg = <5 0x14608000 0 0x4000>;
+		#mbox-cells = <0>;
+		interrupt-names = "send-empty", "send-not-empty", "recv-empty", "recv-not-empty";
+		interrupts = <0 0x318 4 0 0x319 4 0 0x31a 4 0 0x31b 4>;
+		interrupt-parent = <&aic>;
+	};
+
+	mtp_dart: iommu@514800000 {
+		compatible = "apple,t6041-dart", "apple,t8110-dart";
+		reg = <5 0x14800000 0 0xc000>;
+		apple,remap-streams = <1 0>, <2 0>, <3 0>;
+		#iommu-cells = <1>;
+		interrupts = <0 0x307 4>;
+		interrupt-parent = <&aic>;
+	};
+
+	dockchannel: fifo@514b14000 {
+		compatible = "apple,t6041-dockchannel", "apple,dockchannel";
+		reg = <5 0x14b14000 0 0x1000>;
+		reg-names = "irq";
+		ranges = <0 5 0x14b28000 0x10000>;
+		#interrupt-cells = <2>;
+		interrupt-controller;
+		#size-cells = <1>;
+		#address-cells = <1>;
+		nonposted-mmio;
+		interrupts = <0 0x308 4>;
+		interrupt-parent = <&aic>;
+
+		mtp_hid: input@0 {
+			compatible = "apple,t6041-dockchannel-hid", "apple,dockchannel-hid";
+			reg = <0 0x1000 0x4000 0x1000 0x8000 0x1000 0xc000 0x1000>;
+			reg-names = "rmt-config", "rmt-data", "config", "data";
+			apple,helper-cpu = <&mtp>;
+			apple,fifo-size = <0x800>;
+			interrupt-names = "tx", "rx";
+			interrupts = <2 4 3 4>;
+			interrupt-parent = <&dockchannel>;
+			iommus = <&mtp_dart 0>;
+
+			multi-touch {
+				firmware-name = "apple/tpmtfw-j616s.bin";
+			};
+
+			keyboard {
+				apple,keyboard-layout-id = <2>;
+				hid-country-code = <0>;
+			};
+
+			stm {
+			};
+
+			actuator {
+			};
+
+			tp-accel {
+			};
+
+			mtp {
+			};
+		};
 	};
 
 	smc_mbox: mailbox@50c608000 {
