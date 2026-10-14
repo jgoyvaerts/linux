@@ -14,6 +14,7 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_dma.h>
+#include <linux/overflow.h>
 #include <linux/platform_device.h>
 #include <linux/reset.h>
 #include <linux/spinlock.h>
@@ -170,6 +171,8 @@ struct admac_data {
 struct admac_tx {
 	struct dma_async_tx_descriptor tx;
 	bool cyclic;
+	bool error;
+	unsigned int nperiods_outstanding;
 	dma_addr_t buf_addr;
 	dma_addr_t buf_end;
 	size_t buf_len;
@@ -301,8 +304,15 @@ static struct dma_async_tx_descriptor *admac_prep_dma_cyclic(
 {
 	struct admac_chan *adchan = container_of(chan, struct admac_chan, chan);
 	struct admac_tx *adtx;
+	dma_addr_t buf_end;
 
 	if (direction != admac_chan_direction(adchan->no))
+		return NULL;
+
+	/* Reports advance whole periods, and residue is a u32. */
+	if (!buf_len || !period_len || period_len > buf_len ||
+	    buf_len % period_len || buf_len > U32_MAX ||
+	    check_add_overflow(buf_addr, (dma_addr_t)buf_len, &buf_end))
 		return NULL;
 
 	adtx = kzalloc_obj(*adtx, GFP_NOWAIT);
@@ -313,7 +323,7 @@ static struct dma_async_tx_descriptor *admac_prep_dma_cyclic(
 
 	adtx->buf_addr = buf_addr;
 	adtx->buf_len = buf_len;
-	adtx->buf_end = buf_addr + buf_len;
+	adtx->buf_end = buf_end;
 	adtx->period_len = period_len;
 
 	adtx->submitted_pos = 0;
@@ -329,10 +339,13 @@ static struct dma_async_tx_descriptor *admac_prep_dma_cyclic(
 /*
  * Write one hardware descriptor for a dmaengine cyclic transaction.
  */
-static void admac_cyclic_write_one_desc(struct admac_data *ad, int channo,
+static bool admac_cyclic_write_one_desc(struct admac_data *ad, int channo,
 					struct admac_tx *tx)
 {
 	dma_addr_t addr;
+
+	if (tx->error)
+		return false;
 
 	addr = tx->buf_addr + (tx->submitted_pos % tx->buf_len);
 
@@ -346,16 +359,19 @@ static void admac_cyclic_write_one_desc(struct admac_data *ad, int channo,
 	writel_relaxed(upper_32_bits(addr), ad->base + REG_DESC_WRITE(channo));
 	writel_relaxed(tx->period_len,      ad->base + REG_DESC_WRITE(channo));
 	writel_relaxed(FLAG_DESC_NOTIFY,    ad->base + REG_DESC_WRITE(channo));
+	/* Include a descriptor already consumed while the ring is refilled. */
+	tx->nperiods_outstanding++;
 
 	tx->submitted_pos += tx->period_len;
 	tx->submitted_pos %= 2 * tx->buf_len;
+	return true;
 }
 
 /*
  * Write all the hardware descriptors for a dmaengine cyclic
  * transaction there is space for.
  */
-static void admac_cyclic_write_desc(struct admac_data *ad, int channo,
+static bool admac_cyclic_write_desc(struct admac_data *ad, int channo,
 				    struct admac_tx *tx)
 {
 	int i;
@@ -363,8 +379,10 @@ static void admac_cyclic_write_desc(struct admac_data *ad, int channo,
 	for (i = 0; i < 4; i++) {
 		if (readl_relaxed(ad->base + REG_DESC_RING(ad, channo)) & RING_FULL)
 			break;
-		admac_cyclic_write_one_desc(ad, channo, tx);
+		if (!admac_cyclic_write_one_desc(ad, channo, tx))
+			return false;
 	}
+	return true;
 }
 
 static int admac_ring_noccupied_slots(int ringval)
@@ -428,15 +446,23 @@ static enum dma_status admac_tx_status(struct dma_chan *chan, dma_cookie_t cooki
 	unsigned long flags;
 
 	ret = dma_cookie_status(chan, cookie, txstate);
-	if (ret == DMA_COMPLETE || !txstate)
+	if (ret == DMA_COMPLETE)
 		return ret;
 
 	spin_lock_irqsave(&adchan->lock, flags);
 	adtx = adchan->current_tx;
 
+	if (!txstate) {
+		if (adtx && adtx->tx.cookie == cookie && adtx->error)
+			ret = DMA_ERROR;
+		spin_unlock_irqrestore(&adchan->lock, flags);
+		return ret;
+	}
+
 	if (adtx && adtx->tx.cookie == cookie) {
-		ret = DMA_IN_PROGRESS;
-		residue = admac_cyclic_read_residue(ad, adchan->no, adtx);
+		ret = adtx->error ? DMA_ERROR : DMA_IN_PROGRESS;
+		residue = adtx->error ? adtx->buf_len :
+			admac_cyclic_read_residue(ad, adchan->no, adtx);
 	} else {
 		ret = DMA_IN_PROGRESS;
 		residue = 0;
@@ -547,9 +573,11 @@ static void admac_start_current_tx(struct admac_chan *adchan)
 			       ad->base + REG_CHAN_ENABLE(ad, ch));
 	}
 
-	admac_cyclic_write_one_desc(ad, ch, adchan->current_tx);
+	if (!admac_cyclic_write_one_desc(ad, ch, adchan->current_tx))
+		return;
 	admac_start_chan(adchan);
-	admac_cyclic_write_desc(ad, ch, adchan->current_tx);
+	if (!admac_cyclic_write_desc(ad, ch, adchan->current_tx))
+		admac_stop_chan(adchan);
 }
 
 static void admac_issue_pending(struct dma_chan *chan)
@@ -583,10 +611,17 @@ static int admac_pause(struct dma_chan *chan)
 static int admac_resume(struct dma_chan *chan)
 {
 	struct admac_chan *adchan = to_admac_chan(chan);
+	unsigned long flags;
+	int ret = 0;
 
-	admac_start_chan(adchan);
+	spin_lock_irqsave(&adchan->lock, flags);
+	if (adchan->current_tx && adchan->current_tx->error)
+		ret = -EIO;
+	else
+		admac_start_chan(adchan);
+	spin_unlock_irqrestore(&adchan->lock, flags);
 
-	return 0;
+	return ret;
 }
 
 static int admac_terminate_all(struct dma_chan *chan)
@@ -725,7 +760,16 @@ static int admac_drain_reports(struct admac_data *ad, int channo)
 
 static void admac_handle_status_err(struct admac_data *ad, int channo)
 {
+	struct admac_chan *adchan = &ad->channels[channo];
+	unsigned long flags;
 	bool handled = false;
+
+	spin_lock_irqsave(&adchan->lock, flags);
+	if (adchan->current_tx) {
+		adchan->current_tx->error = true;
+		adchan->nperiod_acks = 0;
+		admac_stop_chan(adchan);
+	}
 
 	if (readl_relaxed(ad->base + REG_DESC_RING(ad, channo)) & RING_ERR) {
 		writel_relaxed(RING_ERR, ad->base + REG_DESC_RING(ad, channo));
@@ -744,6 +788,7 @@ static void admac_handle_status_err(struct admac_data *ad, int channo)
 		admac_modify(ad, REG_CHAN_INTMASK(ad, channo, ad->irq_index),
 			     STATUS_ERR, 0);
 	}
+	spin_unlock_irqrestore(&adchan->lock, flags);
 }
 
 static void admac_handle_status_desc_done(struct admac_data *ad, int channo)
@@ -761,13 +806,26 @@ static void admac_handle_status_desc_done(struct admac_data *ad, int channo)
 	if (adchan->current_tx) {
 		struct admac_tx *tx = adchan->current_tx;
 
+		/* Never turn an unowned report into a period callback. */
+		if (tx->error || (unsigned int)nreports > tx->nperiods_outstanding)
+			goto error;
+
+		tx->nperiods_outstanding -= nreports;
 		adchan->nperiod_acks += nreports;
 		tx->reclaimed_pos += nreports * tx->period_len;
 		tx->reclaimed_pos %= 2 * tx->buf_len;
 
-		admac_cyclic_write_desc(ad, channo, tx);
+		if (!admac_cyclic_write_desc(ad, channo, tx))
+			goto error;
 		tasklet_schedule(&adchan->tasklet);
+		goto out;
+error:
+		tx->error = true;
+		adchan->nperiod_acks = 0;
+		admac_stop_chan(adchan);
+		dev_err_ratelimited(ad->dev, "ch%d completion accounting error\n", channo);
 	}
+out:
 	spin_unlock_irqrestore(&adchan->lock, flags);
 }
 
@@ -836,9 +894,18 @@ static void admac_chan_tasklet(struct tasklet_struct *t)
 	tx_result.result = DMA_TRANS_NOERROR;
 	tx_result.residue = 0;
 
-	dmaengine_desc_get_callback(&adtx->tx, &cb);
-	while (nacks--)
+	while (nacks--) {
+		spin_lock_irq(&adchan->lock);
+		if (adchan->current_tx != adtx || adtx->error) {
+			spin_unlock_irq(&adchan->lock);
+			break;
+		}
+		dmaengine_desc_get_callback(&adtx->tx, &cb);
+		spin_unlock_irq(&adchan->lock);
+
+		/* The callback may terminate this cyclic transaction. */
 		dmaengine_desc_callback_invoke(&cb, &tx_result);
+	}
 }
 
 static int admac_device_config(struct dma_chan *chan,
