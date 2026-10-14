@@ -145,7 +145,12 @@ module_param_named(adaptive_sync_min_hz, dcp_adaptive_sync_min_hz, uint, 0444);
 MODULE_PARM_DESC(adaptive_sync_min_hz,
 		 "Internal panel: minimum refresh rate in Hz for adaptive sync, 0 = fixed rate (default), 24 = the panel's minimum");
 /* what the runtime may apply (read from the .ko before it passes a load parameter): see /reports/r52/display */
-MODULE_INFO(m4_opt_in, "cursor_plane:0,1;adaptive_sync_min_hz:0,24");
+MODULE_INFO(m4_opt_in, "cursor_plane:0,1;adaptive_sync_min_hz:0,24;gamma_probe:0,1");
+
+/* M4 (R52): read-only probe of the DCP gamma table (A420): shows the value scale and the default curve. */
+bool dcp_gamma_probe;
+module_param_named(gamma_probe, dcp_gamma_probe, bool, 0444);
+MODULE_PARM_DESC(gamma_probe, "Read the DCP gamma table once after the first swaps and log it (default 0)");
 
 unsigned long dcp_clk_hz;
 module_param_named(dcp_clk_hz, dcp_clk_hz, ulong, 0444);
