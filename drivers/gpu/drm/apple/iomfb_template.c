@@ -199,6 +199,9 @@ DCP_THUNK_OUT(iomfb_a132_backlight_service_matched, iomfbep_a132_backlight_servi
 DCP_THUNK_OUT(iomfb_a358_vi_set_temperature_hint, iomfbep_a358_vi_set_temperature_hint, u32);
 
 IOMFB_THUNK_INOUT(set_matrix);
+#if DCP_FW_VER >= DCP_FW_VERSION(26, 6, 0)
+IOMFB_THUNK_INOUT(get_gamma_table);
+#endif
 IOMFB_THUNK_INOUT(get_color_remap_mode);
 IOMFB_THUNK_INOUT(last_client_close);
 DCP_THUNK_INOUT(iomfb_abort_swaps_dcp, iomfbep_abort_swaps_dcp,
@@ -267,6 +270,50 @@ static u32 dcpep_cb_zero(struct apple_dcp *dcp)
 	return 0;
 }
 
+#if DCP_FW_VER >= DCP_FW_VERSION(26, 6, 0)
+static void dcp_gamma_probe_done(struct apple_dcp *dcp, void *out, void *cookie)
+{
+	struct iomfb_gamma_table_resp *resp = out;
+	u32 max = 0, ch, i;
+	bool mono = true;
+
+	for (ch = 0; ch < 3; ch++) {
+		u32 prev = 0;
+
+		for (i = 0; i < IOMFB_GAMMA_ENTRIES; i++) {
+			u32 v = le32_to_cpu(resp->table[ch][i]);
+
+			if (v > max)
+				max = v;
+			if (v < prev)
+				mono = false;
+			prev = v;
+		}
+	}
+	dev_info(dcp->dev,
+		 "M4_DCP_GAMMA_TABLE null=%u max=0x%x monotonic=%d r[0,1,2,128,255,256]=%x,%x,%x,%x,%x,%x g[1,128,256]=%x,%x,%x b[1,128,256]=%x,%x,%x\n",
+		 resp->table_null, max, mono,
+		 le32_to_cpu(resp->table[0][0]), le32_to_cpu(resp->table[0][1]), le32_to_cpu(resp->table[0][2]),
+		 le32_to_cpu(resp->table[0][128]), le32_to_cpu(resp->table[0][255]), le32_to_cpu(resp->table[0][256]),
+		 le32_to_cpu(resp->table[1][1]), le32_to_cpu(resp->table[1][128]), le32_to_cpu(resp->table[1][256]),
+		 le32_to_cpu(resp->table[2][1]), le32_to_cpu(resp->table[2][128]), le32_to_cpu(resp->table[2][256]));
+}
+
+static void dcp_gamma_probe_start(struct apple_dcp *dcp)
+{
+	static struct iomfb_gamma_table_req req;
+
+	if (!dcp_gamma_probe || dcp->m4_gamma_probed || !dcp->main_display || !dcp_has_panel(dcp))
+		return;
+	dcp->m4_gamma_probed = true;
+	memset(&req, 0, sizeof(req));
+	if (!iomfb_get_gamma_table(dcp, false, &req, dcp_gamma_probe_done, NULL))
+		dev_warn(dcp->dev, "M4_DCP_GAMMA_TABLE request publication refused\n");
+}
+#else
+static void dcp_gamma_probe_start(struct apple_dcp *dcp) {}
+#endif
+
 static void dcpep_cb_swap_complete(struct apple_dcp *dcp,
 				   struct DCP_FW_NAME(dc_swap_complete_resp) *resp)
 {
@@ -277,6 +324,8 @@ static void dcpep_cb_swap_complete(struct apple_dcp *dcp,
 		dcp->m4_swaps_complete++;
 		dev_info(dcp->dev, "M4_DCP_SWAP_COMPLETE n=%u swap_id=%u\n",
 			 dcp->m4_swaps_complete, resp->swap_id);
+		if (dcp->m4_swaps_complete == 3)
+			dcp_gamma_probe_start(dcp);
 	}
 
 	if (dcp_swap_stats) {
