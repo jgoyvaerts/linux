@@ -58,6 +58,9 @@ struct dcp_dict_passthrough_resp_v26_6 {
  * byte-for-byte and reports false.  Returning an all-zero output is not a
  * harmless false result because DCP deserializes the in/out value first.
  */
+IOMFB_CB_SIZE(trampoline_passthrough_dict_v26_6,
+	      sizeof(struct dcp_dict_passthrough_req_v26_6),
+	      sizeof(struct dcp_dict_passthrough_resp_v26_6));
 static bool trampoline_passthrough_dict_v26_6(struct apple_dcp *dcp, int tag,
 					       void *out, void *in)
 {
@@ -102,72 +105,80 @@ static_assert(sizeof(struct dcp_set_frame_sync_props_resp_v26_6_0) == 0x50);
 static_assert(sizeof(struct dcp_dict_passthrough_req_v26_6) == 0x1044);
 static_assert(sizeof(struct dcp_dict_passthrough_resp_v26_6) == 0x1004);
 
-static const iomfb_cb_handler cb_handlers[IOMFB_MAX_CB] = {
-	[0] = trampoline_true,
-	[1] = trampoline_true,
-	[2] = trampoline_nop,
-	[3] = trampoline_rt_bandwidth,
-	[6] = trampoline_set_frame_sync_props,
-	[100] = iomfbep_cb_match_pmu_service,
-	[101] = trampoline_zero,
-	[102] = trampoline_nop,
-	[104] = trampoline_nop,
-	[107] = trampoline_nop,
-	[108] = trampoline_true,
-	[109] = trampoline_true,
-	[110] = trampoline_true,
-	[111] = trampoline_true,
-	[112] = trampoline_create_backlight_service,
-	[113] = trampoline_true,
-	[114] = trampoline_passthrough_dict_v26_6,
+static const struct iomfb_cb_entry cb_handlers[IOMFB_MAX_CB] = {
+	[0] = IOMFB_CB_ENTRY(trampoline_true),
+	[1] = IOMFB_CB_ENTRY(trampoline_true),
+	[2] = IOMFB_CB_ENTRY(trampoline_nop),
+	[3] = IOMFB_CB_ENTRY(trampoline_rt_bandwidth),
+	[6] = IOMFB_CB_ENTRY(trampoline_set_frame_sync_props),
+	[100] = IOMFB_CB_ENTRY(iomfbep_cb_match_pmu_service),
+	[101] = IOMFB_CB_ENTRY(trampoline_zero),
+	[102] = IOMFB_CB_ENTRY(trampoline_nop),
+	[104] = IOMFB_CB_ENTRY(trampoline_nop),
+	[107] = IOMFB_CB_ENTRY(trampoline_nop),
+	[108] = IOMFB_CB_ENTRY(trampoline_true),
+	[109] = IOMFB_CB_ENTRY(trampoline_true),
+	[110] = IOMFB_CB_ENTRY(trampoline_true),
+	[111] = IOMFB_CB_ENTRY(trampoline_true),
+	[112] = IOMFB_CB_ENTRY(trampoline_create_backlight_service),
+	[113] = IOMFB_CB_ENTRY(trampoline_true),
+	[114] = IOMFB_CB_ENTRY(trampoline_passthrough_dict_v26_6),
 	/* set_tiling_state: 26.6 returns the value followed by success. */
-	[115] = trampoline_get_tiling_state,
-	[121] = dcpep_cb_boot_1,
-	[122] = trampoline_false, /* native display sleep/wake query */
-	[123] = trampoline_false,
-	[125] = trampoline_read_edt_data,
-	[127] = trampoline_prop_start,
-	[128] = trampoline_prop_chunk,
-	[129] = trampoline_prop_end,
-	[134] = trampoline_zero,
-	[201] = trampoline_map_piodma,
-	[206] = iomfbep_cb_match_pmu_service_2,
-	[207] = iomfbep_cb_match_backlight_service,
-	[208] = trampoline_nop,
-	[209] = trampoline_get_time,
-	[300] = trampoline_pr_publish,
-	[400] = trampoline_nop,
-	[401] = trampoline_get_uint_prop,
-	[406] = trampoline_nop, /* set_fx_prop: host property notification */
-	[408] = trampoline_get_frequency,
-	[411] = trampoline_map_reg,
-	[413] = trampoline_true,
-	[414] = trampoline_sr_set_property_int,
-	[415] = trampoline_true,
-	[451] = trampoline_allocate_buffer,
-	[552] = trampoline_true,
-	[561] = trampoline_true,
-	[563] = trampoline_true,
-	[565] = trampoline_true,
-	[567] = trampoline_true,
+	[115] = IOMFB_CB_ENTRY(trampoline_get_tiling_state),
+	[121] = IOMFB_CB_ENTRY(dcpep_cb_boot_1),
+	[122] = IOMFB_CB_ENTRY(trampoline_false), /* native display sleep/wake query */
+	[123] = IOMFB_CB_ENTRY(trampoline_false),
+	[125] = IOMFB_CB_ENTRY(trampoline_read_edt_data),
+	[127] = IOMFB_CB_ENTRY(trampoline_prop_start),
+	[128] = IOMFB_CB_ENTRY(trampoline_prop_chunk),
+	[129] = IOMFB_CB_ENTRY(trampoline_prop_end),
+	[134] = IOMFB_CB_ENTRY(trampoline_zero),
+	[201] = IOMFB_CB_ENTRY(trampoline_map_piodma),
+	[206] = IOMFB_CB_ENTRY(iomfbep_cb_match_pmu_service_2),
+	[207] = IOMFB_CB_ENTRY(iomfbep_cb_match_backlight_service),
+	[208] = IOMFB_CB_ENTRY(trampoline_nop),
+	[209] = IOMFB_CB_ENTRY(trampoline_get_time),
+	[300] = IOMFB_CB_ENTRY(trampoline_pr_publish),
+	[400] = IOMFB_CB_ENTRY(trampoline_nop),
+	[401] = IOMFB_CB_ENTRY(trampoline_get_uint_prop),
+	[406] = IOMFB_CB_ENTRY(trampoline_nop), /* set_fx_prop: host property notification */
+	[408] = IOMFB_CB_ENTRY(trampoline_get_frequency),
+	[411] = IOMFB_CB_ENTRY(trampoline_map_reg),
+	[413] = IOMFB_CB_ENTRY(trampoline_true),
+	[414] = IOMFB_CB_ENTRY(trampoline_sr_set_property_int),
+	[415] = IOMFB_CB_ENTRY(trampoline_true),
+	[451] = IOMFB_CB_ENTRY(trampoline_allocate_buffer),
+	[552] = IOMFB_CB_ENTRY(trampoline_true),
+	[561] = IOMFB_CB_ENTRY(trampoline_true),
+	[563] = IOMFB_CB_ENTRY(trampoline_true),
+	[565] = IOMFB_CB_ENTRY(trampoline_true),
+	[567] = IOMFB_CB_ENTRY(trampoline_true),
 	/* Native 26.6 returns a zero status for both start and stop events. */
-	[572] = trampoline_zero,
-	[575] = trampoline_hotplug,
-	[576] = trampoline_nop,
-	[581] = trampoline_nop,
-	[582] = trampoline_true, /* create_default_fb_surface */
-	[590] = trampoline_swap_complete,
-	[592] = trampoline_swap_complete_intent_gated,
-	[594] = trampoline_nop, /* native display re-enable notification: empty ACK */
-	[595] = trampoline_nop,
-	[598] = trampoline_nop,
-	[599] = trampoline_nop,
+	[572] = IOMFB_CB_ENTRY(trampoline_zero),
+	[575] = IOMFB_CB_ENTRY(trampoline_hotplug),
+	[576] = IOMFB_CB_ENTRY(trampoline_nop),
+	[581] = IOMFB_CB_ENTRY(trampoline_nop),
+	[582] = IOMFB_CB_ENTRY(trampoline_true), /* create_default_fb_surface */
+	[590] = IOMFB_CB_ENTRY(trampoline_swap_complete),
+	[592] = IOMFB_CB_ENTRY(trampoline_swap_complete_intent_gated),
+	[593] = IOMFB_CB_ENTRY(trampoline_abort_swap_ap_gated),
+	/* 26.6 backlight-enable is a four-byte padded notification. */
+	[594] = {
+		.handler = trampoline_enable_backlight_message_ap_gated,
+		.min_in = sizeof(struct dcp_bool_arg),
+	},
+	[595] = IOMFB_CB_ENTRY(trampoline_nop),
+	[598] = IOMFB_CB_ENTRY(trampoline_nop),
+	[599] = IOMFB_CB_ENTRY(trampoline_nop),
 };
 
 void DCP_FW_NAME(iomfb_start)(struct apple_dcp *dcp)
 {
 	dcp->cb_handlers = cb_handlers;
-	dcp_start_signal(dcp, false, dcp_started, NULL);
+	if (dcp->crashed)
+		return;
+	if (!dcp_start_signal(dcp, false, dcp_started, NULL))
+		dcp_start_refused(dcp);
 }
 
 #undef DCP_FW_VER
