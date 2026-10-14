@@ -798,7 +798,7 @@ static void apple_rtkit_oslog_rx(struct apple_rtkit *rtk, u64 msg)
 		dev_dbg(rtk->dev, "RTKit: oslog notification: %016llx\n", msg);
 		break;
 	default:
-		dev_warn(rtk->dev, "RTKit: Unknown oslog message: %llx\n",
+		dev_dbg(rtk->dev, "RTKit: Unknown oslog message: %llx\n",
 			 msg);
 	}
 }
