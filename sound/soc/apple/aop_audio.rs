@@ -326,6 +326,16 @@ impl AudioAttachDevice {
     }
 }
 
+// macOS IOPAudioLPMicDevice::sendChannelControlInfoToIOP sets node property 300 with the three
+// masks of the ADT node /product/audio (supportedChannels, enabledChannels, historyChannels).
+#[repr(C, packed(4))]
+#[derive(Clone, Copy, Default)]
+struct LpaiChannelControl {
+    supported: u32,
+    enabled: u32,
+    history: u32,
+}
+
 #[repr(C, packed(4))]
 #[derive(Clone, Copy, Default)]
 struct LpaiChannelConfig {
@@ -457,6 +467,10 @@ static_assert!(
 static_assert!(
     mem::size_of::<AudioSetDeviceProp<PowerSetting>>() == 52 + mem::size_of::<PowerSetting>()
 );
+static_assert!(
+    mem::size_of::<AudioSetDeviceProp<LpaiChannelControl>>()
+        == 52 + mem::size_of::<LpaiChannelControl>()
+);
 
 impl<T: Default> AudioSetDeviceProp<T> {
     fn new(dev_id: u32, modifier: u32, data: T) -> AudioSetDeviceProp<T> {
@@ -502,6 +516,10 @@ impl<T: Zeroable> AudioSetDeviceProp<T> {
 struct SndSocAopHwConfig {
     bytes_per_sample: u32,
     hf_decimator: bool,
+    // The T6040 firmware follows macOS's IOPAudioLPMicDevice flow. LPAI property 301 is the
+    // read-only stream description; the channel masks are property 300 (12 bytes). A refusal of
+    // any of the configuration steps is logged and not fatal, so the next step's answer is seen.
+    t6040_flow: bool,
 }
 
 struct SndSocAopData {
@@ -644,6 +662,21 @@ impl SndSocAopData {
         } else {
             Ok(())
         }
+    }
+    fn set_lpai_channel_control(&self) -> Result<()> {
+        // ADT /product/audio on J616s: supportedChannels = enabledChannels = historyChannels = 7.
+        let ctl = LpaiChannelControl {
+            supported: 7,
+            enabled: 7,
+            history: 7,
+        };
+        let msg = AudioSetDeviceProp::new(AUDIO_DEV_LPAI, 300, ctl);
+        let ret = self.epic_wrapped_call(&msg)?;
+        dev_dbg!(self.dev, "lpai channel control (prop 300): {:#x}\n", ret);
+        if ret != 0 {
+            return Err(EIO);
+        }
+        Ok(())
     }
     fn audio_attach_device(&self, dev_id: u32) -> Result<()> {
         let msg = AudioAttachDevice::new(dev_id);
@@ -957,11 +990,19 @@ unsafe impl Sync for SndSocAopDriver {}
 const HW_CFG_T8013: SndSocAopHwConfig = SndSocAopHwConfig {
     bytes_per_sample: 2,
     hf_decimator: false,
+    t6040_flow: false,
 };
 
 const HW_CFG_T6030: SndSocAopHwConfig = SndSocAopHwConfig {
     bytes_per_sample: 3,
     hf_decimator: true,
+    t6040_flow: false,
+};
+
+const HW_CFG_T6040: SndSocAopHwConfig = SndSocAopHwConfig {
+    bytes_per_sample: 3,
+    hf_decimator: true,
+    t6040_flow: true,
 };
 
 kernel::of_device_table!(
@@ -972,6 +1013,10 @@ kernel::of_device_table!(
         (
             of::DeviceId::new(c_str!("apple,t6030-aop-audio")),
             &HW_CFG_T6030
+        ),
+        (
+            of::DeviceId::new(c_str!("apple,t6041-aop-audio")),
+            &HW_CFG_T6040
         ),
     ]
 );
@@ -1015,6 +1060,21 @@ impl platform::Driver for SndSocAopDriver {
         }
         if info.hf_decimator {
             data.audio_attach_device(from_fourcc(b"lilb"))?;
+        }
+        if info.t6040_flow {
+            // Property 301 is the read-only stream description on this firmware (writing it
+            // returns 0xE00002CF, kIOReturnNotWritable). Follow macOS: channel masks are property
+            // 300. A refusal is reported and does not stop the probe.
+            if data.set_lpai_channel_control().is_err() {
+                dev_warn!(data.dev, "lpai channel control refused, continuing\n");
+            }
+            if data.set_pdm_config().is_err() {
+                dev_warn!(data.dev, "pdm config refused, continuing\n");
+            }
+            if data.set_decimator_config_hf().is_err() {
+                dev_warn!(data.dev, "decimator config refused, continuing\n");
+            }
+            return Ok(Self::new(data)?);
         }
         data.set_lpai_channel_cfg()?;
         data.set_pdm_config()?;
