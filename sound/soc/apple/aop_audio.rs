@@ -37,7 +37,7 @@ use kernel::{
         },
         Arc, //
     },
-    types::ForeignOwnable, //
+    types::{ForeignOwnable, ScopeGuard}, //
 };
 
 use pin_init::Zeroable;
@@ -473,7 +473,7 @@ impl<T: Default> AudioSetDeviceProp<T> {
     }
 }
 
-unsafe impl<T> Zeroable for AudioSetDeviceProp<T> {}
+unsafe impl<T: Zeroable> Zeroable for AudioSetDeviceProp<T> {}
 
 impl<T: Zeroable> AudioSetDeviceProp<T> {
     fn try_init<E>(
@@ -705,7 +705,12 @@ impl SndSocAopData {
 struct SndSocAopDriver(*mut bindings::snd_card);
 
 fn copy_str(target: &mut [u8], source: &[u8]) {
-    target[..source.len()].copy_from_slice(source)
+    target.fill(0);
+    let len = source
+        .len()
+        .saturating_sub(1)
+        .min(target.len().saturating_sub(1));
+    target[..len].copy_from_slice(&source[..len]);
 }
 
 unsafe fn dmaengine_slave_config(
@@ -764,6 +769,9 @@ unsafe extern "C" fn aop_pcm_open(substream: *mut bindings::snd_pcm_substream) -
         Err(e) => return e.to_errno(),
     };
 
+    // Until the PCM helper accepts ownership, every error must release this channel.
+    let channel = ScopeGuard::new(|| unsafe { bindings::dma_release_channel(dma_chan) });
+
     if unsafe { (*substream).dma_buffer.dev.type_ == bindings::SNDRV_DMA_TYPE_UNKNOWN as _ } {
         let ret = unsafe {
             bindings::snd_pcm_set_managed_buffer(
@@ -776,9 +784,6 @@ unsafe extern "C" fn aop_pcm_open(substream: *mut bindings::snd_pcm_substream) -
         };
         if ret < 0 {
             dev_err!(data.dev, "Unable to allocate dma buffers");
-            unsafe {
-                bindings::dma_release_channel(dma_chan);
-            }
             return ret;
         }
     }
@@ -796,14 +801,20 @@ unsafe extern "C" fn aop_pcm_open(substream: *mut bindings::snd_pcm_substream) -
         dev_err!(data.dev, "Unable to refine hwparams");
         return ret;
     }
+    unsafe { (*(*substream).runtime).hw = hwparams };
+    let ret = unsafe { bindings::snd_dmaengine_pcm_open(substream, dma_chan) };
+    if ret < 0 {
+        return ret;
+    }
+    channel.dismiss();
     if let Err(e) = data.set_audio_power(POWER_STATE_ON, 1) {
         dev_err!(data.dev, "Unable to power mic on");
+        // The ALSA core will not call close after a failed open. Unwind the
+        // accepted host channel even when firmware's power result is uncertain.
+        unsafe { bindings::snd_dmaengine_pcm_close_release_chan(substream) };
         return e.to_errno();
     }
-    unsafe {
-        (*(*substream).runtime).hw = hwparams;
-        bindings::snd_dmaengine_pcm_open(substream, dma_chan)
-    }
+    0
 }
 
 unsafe extern "C" fn aop_pcm_prepare(_: *mut bindings::snd_pcm_substream) -> i32 {
@@ -812,14 +823,16 @@ unsafe extern "C" fn aop_pcm_prepare(_: *mut bindings::snd_pcm_substream) -> i32
 
 unsafe extern "C" fn aop_pcm_close(substream: *mut bindings::snd_pcm_substream) -> i32 {
     let data = unsafe { Arc::<SndSocAopData>::borrow((*substream).private_data.cast()) };
-    if let Err(e) = data.set_audio_power(POWER_STATE_IDLE, 1) {
-        dev_err!(data.dev, "Unable to power mic off");
-        return e.to_errno();
-    }
+    // ALSA discards close's error and detaches the runtime. Its host DMA
+    // callbacks must be drained before a firmware RPC can fail or time out.
     let ret = unsafe { bindings::snd_dmaengine_pcm_close_release_chan(substream) };
     if ret != 0 {
         dev_err!(data.dev, "Unable to close channel");
         return ret;
+    }
+    if let Err(e) = data.set_audio_power(POWER_STATE_IDLE, 1) {
+        dev_err!(data.dev, "Unable to power mic off");
+        return e.to_errno();
     }
     if let Err(e) = data.set_audio_power(POWER_STATE_OFF, 0) {
         dev_err!(data.dev, "Unable to enter 'idle' power state");
@@ -844,7 +857,7 @@ impl SndSocAopDriver {
         ioctl: None,
         hw_params: Some(aop_hw_params),
         hw_free: None,
-        sync_stop: None,
+        sync_stop: Some(bindings::snd_dmaengine_pcm_sync_stop),
         get_time_info: None,
         fill_silence: None,
         copy: None,
