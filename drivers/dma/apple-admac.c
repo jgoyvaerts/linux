@@ -160,6 +160,7 @@ struct admac_data {
 	bool set_unk28;
 	bool evolved_layout;
 	bool split_channels;
+	bool ctl_programmed;
 	int irq;
 	int irq_index;
 	int nchannels;
@@ -645,6 +646,22 @@ static int admac_alloc_chan_resources(struct dma_chan *chan)
 	int ret;
 
 	dma_cookie_init(&adchan->chan);
+
+	/*
+	 * No register access at probe: on the T6040 the controller sits in a
+	 * power domain the AOP firmware manages, and it is only powered once
+	 * the audio driver has set the audio power state, before its first
+	 * channel request. The one-time CTL write is done here, before the
+	 * first carveout access.
+	 */
+	mutex_lock(&ad->cache_alloc_lock);
+	if (!ad->ctl_programmed) {
+		if (ad->split_channels)
+			writel_relaxed(0x18080001, ad->base + REG_CTL);
+		ad->ctl_programmed = true;
+	}
+	mutex_unlock(&ad->cache_alloc_lock);
+
 	ret = admac_alloc_sram_carveout(ad, admac_chan_direction(adchan->no),
 					&adchan->carveout);
 	if (ret < 0)
@@ -834,11 +851,6 @@ static int admac_device_config(struct dma_chan *chan,
 	u32 bus_width = readl_relaxed(ad->base + REG_BUS_WIDTH(ad, adchan->no)) &
 		~(BUS_WIDTH_WORD_SIZE | BUS_WIDTH_FRAME_SIZE);
 
-	if (ad->set_unk28) {
-		writel_relaxed(T603X_UNK_28_VAL, ad->base + REG_UNK_28);
-		writel_relaxed(T603X_UNK_28_VAL, ad->base + REG_UNK_2C);
-	}
-
 	switch (is_tx ? config->dst_addr_width : config->src_addr_width) {
 	case DMA_SLAVE_BUSWIDTH_1_BYTE:
 		wordsize = 1;
@@ -874,6 +886,11 @@ static int admac_device_config(struct dma_chan *chan,
 		break;
 	default:
 		return -EINVAL;
+	}
+
+	if (ad->set_unk28) {
+		writel_relaxed(T603X_UNK_28_VAL, ad->base + REG_UNK_28);
+		writel_relaxed(T603X_UNK_28_VAL, ad->base + REG_UNK_2C);
 	}
 
 	writel_relaxed(bus_width, ad->base + REG_BUS_WIDTH(ad, adchan->no));
@@ -1001,9 +1018,6 @@ static int admac_probe(struct platform_device *pdev)
 	if (err)
 		return dev_err_probe(&pdev->dev, err,
 				     "unable to trigger reset\n");
-
-	if (ad->split_channels)
-		writel_relaxed(0x18080001, ad->base + REG_CTL);
 
 	err = request_irq(irq, admac_interrupt, 0, dev_name(&pdev->dev), ad);
 	if (err) {
