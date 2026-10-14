@@ -7,6 +7,8 @@
 #include <linux/math.h>
 #include <linux/string.h>
 #include <linux/slab.h>
+#include <linux/stdarg.h>
+#include <linux/unaligned.h>
 
 #if IS_ENABLED(CONFIG_DRM_APPLE_AUDIO)
 #include <sound/pcm.h> // for sound format masks
@@ -156,6 +158,93 @@ static bool consume_string(struct dcp_parse_ctx *ctx, const char *specimen)
 	return true;
 }
 #endif
+
+/*
+ * M4 (R51): bounded value dumper for the timing-element diagnostics. Works on a copy of the context, so it never
+ * changes how the real parse proceeds. Appends to buf (size bytes, *len used); output is cut, never overrun.
+ */
+static __printf(4, 5) void m4_put(char *buf, size_t size, size_t *len, const char *fmt, ...)
+{
+	va_list args;
+
+	if (*len >= size - 1)
+		return;
+	va_start(args, fmt);
+	*len += vscnprintf(buf + *len, size - *len, fmt, args);
+	va_end(args);
+}
+
+static int m4_dump(struct dcp_parse_ctx *h, char *buf, size_t size, size_t *len, int depth)
+{
+	const struct dcp_parse_tag *tag = parse_tag(h);
+	const void *payload;
+	u32 i, n;
+	int ret;
+
+	if (IS_ERR(tag))
+		return PTR_ERR(tag);
+	switch (tag->type) {
+	case DCP_TYPE_INT64:
+		payload = parse_bytes(h, sizeof(s64));
+		if (IS_ERR(payload))
+			return PTR_ERR(payload);
+		m4_put(buf, size, len, "%lld", get_unaligned((const s64 *)payload));
+		return 0;
+	case DCP_TYPE_BOOL:
+		m4_put(buf, size, len, "%s", tag->size ? "true" : "false");
+		return 0;
+	case DCP_TYPE_STRING:
+		payload = parse_bytes(h, tag->size);
+		if (IS_ERR(payload))
+			return PTR_ERR(payload);
+		m4_put(buf, size, len, "\"%.*s\"", min_t(int, tag->size, 40), (const char *)payload);
+		return 0;
+	case DCP_TYPE_BLOB:
+		payload = parse_bytes(h, tag->size);
+		if (IS_ERR(payload))
+			return PTR_ERR(payload);
+		m4_put(buf, size, len, "blob(%u)", tag->size);
+		return 0;
+	case DCP_TYPE_ARRAY:
+	case DCP_TYPE_DICTIONARY:
+		n = tag->size;
+		m4_put(buf, size, len, tag->type == DCP_TYPE_ARRAY ? "[" : "{");
+		for (i = 0; i < n; i++) {
+			bool show = depth < 3 && i < (tag->type == DCP_TYPE_ARRAY ? 12 : 10);
+
+			if (i && show)
+				m4_put(buf, size, len, ",");
+			if (tag->type == DCP_TYPE_DICTIONARY) {
+				if (show) {
+					ret = m4_dump(h, buf, size, len, depth + 1);
+					if (ret)
+						return ret;
+					m4_put(buf, size, len, "=");
+				} else {
+					ret = skip(h);
+					if (ret)
+						return ret;
+				}
+			}
+			ret = show ? m4_dump(h, buf, size, len, depth + 1) : skip(h);
+			if (ret)
+				return ret;
+		}
+		if (n > (tag->type == DCP_TYPE_ARRAY ? 12 : 10) || depth >= 3)
+			m4_put(buf, size, len, "...(%u)", n);
+		m4_put(buf, size, len, tag->type == DCP_TYPE_ARRAY ? "]" : "}");
+		return 0;
+	default:
+		return -EINVAL;
+	}
+}
+
+static bool m4_key_interesting(const char *k)
+{
+	return strstr(k, "Refresh") || strstr(k, "VRR") || strstr(k, "Variable") || strstr(k, "Promot") ||
+	       strstr(k, "Rate") || strstr(k, "Range") || strstr(k, "Freq") || !strcmp(k, "IsPreferred") ||
+	       !strcmp(k, "ElementData") || !strcmp(k, "ElementType");
+}
 
 /* Caller must free the result */
 static char *parse_string(struct dcp_parse_ctx *handle)
@@ -496,16 +585,18 @@ static int parse_mode(struct dcp_parse_ctx *handle,
 	s64 best_color_mode = -1;
 	bool is_virtual = false;
 	struct drm_display_mode *mode = &out->mode;
-	/* M4 (R48): names of the timing element's keys, to find where this firmware keeps the VRR range */
-	static char m4_last_keys[192];
-	static unsigned int m4_keys_logged;
-	char m4_keys[192] = "";
+	/* M4 (R48/R51): key names and the values of refresh-range-like keys, once per mode id */
+	static u64 m4_ids_logged;
+	/* static: 3 KiB would not fit this function's frame. Two DCPs parsing at once could garble a line, never overrun. */
+	static char m4_keys[1024], m4_vals[8][220];
+	unsigned int m4_nvals = 0;
 	size_t m4_klen = 0;
 
 	*out = (struct dcp_display_mode) {};
 	out->sdr_rgb.score = out->sdr_444.score = out->sdr.score = -1;
 	out->best.score = out->bootstrap.score = -1;
 	*score = -1;
+	m4_keys[0] = '\0';
 
 	ret = iterator_begin(handle, &it, true);
 	if (ret)
@@ -516,6 +607,14 @@ static int parse_mode(struct dcp_parse_ctx *handle,
 		if (!IS_ERR_OR_NULL(key) && m4_klen < sizeof(m4_keys) - 1)
 			m4_klen += scnprintf(m4_keys + m4_klen, sizeof(m4_keys) - m4_klen,
 					     "%s%s", m4_klen ? "," : "", key);
+		if (!IS_ERR_OR_NULL(key) && !is_virtual && m4_nvals < ARRAY_SIZE(m4_vals) &&
+		    m4_key_interesting(key)) {
+			struct dcp_parse_ctx look = *it.handle;
+			size_t n = scnprintf(m4_vals[m4_nvals], sizeof(m4_vals[0]), "%s=", key);
+
+			if (!m4_dump(&look, m4_vals[m4_nvals], sizeof(m4_vals[0]), &n, 0))
+				m4_nvals++;
+		}
 
 		if (IS_ERR(key))
 			ret = PTR_ERR(key);
@@ -548,10 +647,28 @@ static int parse_mode(struct dcp_parse_ctx *handle,
 			return ret;
 		}
 	}
-	if (m4_keys_logged < 4 && strcmp(m4_keys, m4_last_keys)) {
-		m4_keys_logged++;
-		strscpy(m4_last_keys, m4_keys, sizeof(m4_last_keys));
-		pr_info("M4_DCP_MODE_KEYS id=%lld keys=%s\n", id, m4_keys);
+	if (id >= 0 && !(m4_ids_logged & BIT_ULL(id & 63))) {
+		const char *p = m4_keys;
+		unsigned int part = 1, v;
+
+		m4_ids_logged |= BIT_ULL(id & 63);
+		while (*p) {
+			size_t cut = strnlen(p, 110);
+
+			/* split at a comma so no key name is cut (printk lines stay short) */
+			if (p[cut]) {
+				while (cut && p[cut] != ',')
+					cut--;
+				if (!cut)
+					cut = strnlen(p, 110);
+			}
+			pr_info("M4_DCP_MODE_KEYS id=%lld part=%u keys=%.*s\n", id, part++, (int)cut, p);
+			p += cut;
+			if (*p == ',')
+				p++;
+		}
+		for (v = 0; v < m4_nvals; v++)
+			pr_info("M4_DCP_MODE_VAL id=%lld %s\n", id, m4_vals[v]);
 	}
 
 	if (out->sdr_rgb.score >= 0)
