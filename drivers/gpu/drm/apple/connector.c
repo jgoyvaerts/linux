@@ -303,6 +303,8 @@ void dcp_connector_update_dict(struct apple_connector *connector, const char *ke
 		dcp_connector_set_dict(connector, &connector->display_attributes, chunks);
 	else if (!strcmp(key, "Transport"))
 		dcp_connector_set_dict(connector, &connector->transport, chunks);
+	else
+		devm_kfree(&connector->dcp->dev, chunks->data);
 
 	chunks->data = NULL;
 	chunks->length = 0;
