@@ -307,10 +307,19 @@ static void dcpep_cb_swap_complete(struct apple_dcp *dcp,
 				if (clat > dcp->m4_stats_commit_max_us)
 					dcp->m4_stats_commit_max_us = clat;
 			}
+			if (dcp->m4_intent_time && ktime_after(dcp->m4_intent_time, dcp->m4_complete_time) &&
+			    !ktime_after(dcp->m4_intent_time, now)) {
+				s64 lead = ktime_us_delta(now, dcp->m4_intent_time);
+
+				dcp->m4_stats_intent_n++;
+				dcp->m4_stats_intent_sum_us += lead;
+				if (lead > dcp->m4_stats_intent_max_us)
+					dcp->m4_stats_intent_max_us = lead;
+			}
 			dcp->m4_stats_n++;
 			if (span >= 2000000 && dcp->m4_stats_n) {
 				dev_info(dcp->dev,
-					 "M4_DCP_SWAP_STATS window_ms=%lld swaps=%u rate_x10=%llu gap_us_avg=%llu gap_us_max=%u lat_us_avg=%llu lat_us_max=%u vrr_timestamps=%d commit_us_avg=%llu commit_us_max=%u flush_masks=%u/%u/%u\n",
+					 "M4_DCP_SWAP_STATS window_ms=%lld swaps=%u rate_x10=%llu gap_us_avg=%llu gap_us_max=%u lat_us_avg=%llu lat_us_max=%u vrr_timestamps=%d commit_us_avg=%llu commit_us_max=%u flush_masks=%u/%u/%u intent_n=%u intent_lead_us_avg=%llu intent_lead_us_max=%u frame_ns=%llu\n",
 					 span / 1000, dcp->m4_stats_n,
 					 div64_u64(10000000ULL * dcp->m4_stats_n, span),
 					 div64_u64(dcp->m4_stats_gap_sum_us, dcp->m4_stats_n),
@@ -321,7 +330,13 @@ static void dcpep_cb_swap_complete(struct apple_dcp *dcp,
 					 div64_u64(dcp->m4_stats_commit_sum_us, dcp->m4_stats_n),
 					 dcp->m4_stats_commit_max_us,
 					 dcp->m4_stats_mask[1], dcp->m4_stats_mask[2],
-					 dcp->m4_stats_mask[3]);
+					 dcp->m4_stats_mask[3],
+					 dcp->m4_stats_intent_n,
+					 dcp->m4_stats_intent_n ?
+						div64_u64(dcp->m4_stats_intent_sum_us, dcp->m4_stats_intent_n) : 0,
+					 dcp->m4_stats_intent_max_us, dcp->m4_frame_ns);
+				dcp->m4_stats_intent_n = dcp->m4_stats_intent_max_us = 0;
+				dcp->m4_stats_intent_sum_us = 0;
 				dcp->m4_stats_commit_sum_us = 0;
 				dcp->m4_stats_commit_max_us = 0;
 				memset(dcp->m4_stats_mask, 0, sizeof(dcp->m4_stats_mask));
@@ -1683,6 +1698,7 @@ dcpep_cb_swap_complete_intent_gated(struct apple_dcp *dcp,
 {
 	trace_iomfb_swap_complete_intent_gated(dcp, info->swap_id,
 		info->width, info->height);
+	dcp->m4_intent_time = ktime_get();
 }
 
 static void
@@ -1979,6 +1995,12 @@ int DCP_FW_NAME(iomfb_modeset)(struct apple_dcp *dcp,
 
 	/* Keep track of suspected vrr modes */
 	dcp->use_timestamps = mode->vrr;
+	/* M4 (R51): frame period for the flip_event_mode vblank clock; a new mode restarts the sequence epoch */
+	if (crtc_state->mode.clock && crtc_state->mode.htotal && crtc_state->mode.vtotal)
+		dcp->m4_frame_ns = div64_u64(1000000000ULL * crtc_state->mode.htotal * crtc_state->mode.vtotal,
+					     crtc_state->mode.clock * 1000ULL);
+	dcp->m4_vbl_epoch = 0;
+	dcp->m4_vbl_seq = 0;
 
 #if DCP_FW_VER >= DCP_FW_VERSION(26, 6, 0)
 	/*

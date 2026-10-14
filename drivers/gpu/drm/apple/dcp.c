@@ -126,7 +126,7 @@ MODULE_PARM_DESC(swap_stats,
 unsigned int dcp_flip_event_mode;
 module_param_named(flip_event_mode, dcp_flip_event_mode, uint, 0644);
 MODULE_PARM_DESC(flip_event_mode,
-		 "Page-flip event: bit0 raw completion time, bit1 running sequence (default 0 = R38 behaviour)");
+		 "Page-flip event: bit0 raw completion time, bit1 running sequence, bit2 vblank clock: time from the swap_complete_intent_gated callback when it arrived (else completion time) and the sequence counted in frame periods since the first event (default 0 = R38 behaviour)");
 
 /* M4 (R39 prep): 0 stops faking the non-zero swap timestamps that make the 120 Hz mode run (test only). */
 bool dcp_swap_timestamps = true;
@@ -200,13 +200,15 @@ static void send_vblank_event(struct drm_device *dev,
  */
 static void dcp_crtc_send_page_flip_event(struct apple_crtc *crtc,
 					  struct drm_pending_vblank_event *e,
-					  ktime_t now, ktime_t start, u64 seq)
+					  ktime_t now, ktime_t start, ktime_t forced, u64 seq)
 {
 	struct drm_device *dev = crtc->base.dev;
 	unsigned int pipe = drm_crtc_index(&crtc->base);
 	ktime_t flip;
 
-	if (dcp_flip_event_mode & 1) {
+	if (forced != KTIME_MIN) {
+		flip = forced;
+	} else if (dcp_flip_event_mode & 1) {
 		flip = now;
 	} else if (start != KTIME_MIN) {
 		s64 delta = ktime_us_delta(now, start);
@@ -249,14 +251,36 @@ void dcp_drm_crtc_page_flip(struct apple_dcp *dcp, ktime_t now)
 
 	spin_lock_irqsave(&crtc->base.dev->event_lock, flags);
 	if (crtc->event) {
-		if (crtc->event->event.base.type == DRM_EVENT_FLIP_COMPLETE)
-			dcp_crtc_send_page_flip_event(crtc, crtc->event, now, dcp->swap_start,
-						      (dcp_flip_event_mode & 2) ? ++dcp->m4_flip_seq : 0);
+		if (crtc->event->event.base.type == DRM_EVENT_FLIP_COMPLETE) {
+			ktime_t forced = KTIME_MIN;
+			u64 seq = (dcp_flip_event_mode & 2) ? ++dcp->m4_flip_seq : 0;
+
+			if ((dcp_flip_event_mode & 4) && dcp->m4_frame_ns) {
+				/* an intent callback after the previous completion belongs to this swap */
+				ktime_t t = now;
+				u64 n;
+
+				if (dcp->m4_intent_time && ktime_after(dcp->m4_intent_time, dcp->m4_complete_time) &&
+				    !ktime_after(dcp->m4_intent_time, now))
+					t = dcp->m4_intent_time;
+				if (!dcp->m4_vbl_epoch || ktime_before(t, dcp->m4_vbl_epoch))
+					dcp->m4_vbl_epoch = t;
+				n = div64_u64(ktime_to_ns(ktime_sub(t, dcp->m4_vbl_epoch)) + dcp->m4_frame_ns / 2,
+					      dcp->m4_frame_ns) + 1;
+				if (n <= dcp->m4_vbl_seq)
+					n = dcp->m4_vbl_seq + 1;
+				dcp->m4_vbl_seq = n;
+				forced = t;
+				seq = n;
+			}
+			dcp_crtc_send_page_flip_event(crtc, crtc->event, now, dcp->swap_start, forced, seq);
+		}
 		else
 			drm_crtc_send_vblank_event(&crtc->base, crtc->event);
 		crtc->event = NULL;
 		dcp->swap_start = KTIME_MIN;
 	}
+	dcp->m4_complete_time = now;
 	spin_unlock_irqrestore(&crtc->base.dev->event_lock, flags);
 }
 
