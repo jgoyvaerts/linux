@@ -1539,21 +1539,33 @@ impl AopData {
         let aop_mmio = aop_mmio.relaxed();
         let offset = aop_mmio.read32(BOOTARGS_OFFSET) as usize;
         let size = aop_mmio.read32(BOOTARGS_SIZE) as usize;
+        if offset > aop_mmio.maxsize() || size > aop_mmio.maxsize() - offset {
+            return Err(EINVAL);
+        }
         let mut arg_bytes = KVec::<u8>::from_elem(0, size, GFP_KERNEL)?;
         aop_mmio.try_memcpy_fromio(&mut arg_bytes, offset)?;
         let mut idx = 0;
         while idx < size {
+            if size - idx < 8 {
+                return Err(EINVAL);
+            }
             let key = u32::from_le_bytes(arg_bytes[idx..idx + 4].try_into().unwrap());
-            let size = u32::from_le_bytes(arg_bytes[idx + 4..idx + 8].try_into().unwrap()) as usize;
+            let len = u32::from_le_bytes(arg_bytes[idx + 4..idx + 8].try_into().unwrap()) as usize;
             idx += 8;
+            if len > size - idx {
+                return Err(EINVAL);
+            }
             for (k, v) in patches.iter() {
                 if *k != key {
                     continue;
                 }
-                arg_bytes[idx..idx + size].copy_from_slice(&v.to_le_bytes()[..size]);
+                if len > mem::size_of::<u64>() {
+                    return Err(EINVAL);
+                }
+                arg_bytes[idx..idx + len].copy_from_slice(&v.to_le_bytes()[..len]);
                 break;
             }
-            idx += size;
+            idx += len;
         }
         aop_mmio.try_memcpy_toio(offset, &arg_bytes)
     }
