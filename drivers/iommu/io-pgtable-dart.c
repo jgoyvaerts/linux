@@ -238,7 +238,8 @@ static int dart_map_pages(struct io_pgtable_ops *ops, unsigned long iova,
 	if (WARN_ON(pgsize != cfg->pgsize_bitmap))
 		return -EINVAL;
 
-	if (WARN_ON(paddr >> cfg->oas))
+	if (WARN_ON(paddr >> cfg->oas ||
+		    pgcount > ((1ULL << cfg->oas) - paddr) / pgsize))
 		return -ERANGE;
 
 	if (!(iommu_prot & (IOMMU_READ | IOMMU_WRITE)))
