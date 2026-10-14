@@ -36,6 +36,8 @@ extern unsigned int dcp_flip_event_mode;
 extern bool dcp_swap_timestamps;
 /* M4 (R52): minimum refresh rate (Hz) sent in IOMFBParameter 14 (adaptive sync); 0 = off */
 extern unsigned int dcp_adaptive_sync_min_hz;
+/* M4 (R52): 1 = read the DCP gamma table once (A420) after the first swaps and log its shape; read-only */
+extern bool dcp_gamma_probe;
 extern unsigned int dcp_backlight_default_nits;
 extern unsigned long dcp_clk_hz;
 
@@ -247,6 +249,7 @@ struct apple_dcp {
 	ktime_t m4_vbl_epoch, m4_intent_time, m4_complete_time;
 	u32 m4_stats_intent_n, m4_stats_intent_max_us;
 	u64 m4_stats_intent_sum_us;
+	bool m4_gamma_probed;
 	bool use_timestamps;
 	struct dcp_set_digital_out_mode_req mode;
 
