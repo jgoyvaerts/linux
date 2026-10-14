@@ -91,6 +91,17 @@ const AOP_MMIO_SIZE: usize = 0x1e0000;
 const ASC_MMIO_SIZE: usize = 0x4000;
 const BOOTARGS_OFFSET: usize = 0x22c;
 const BOOTARGS_SIZE: usize = 0x230;
+/// On the T6040 the bootloader reserves the firmware's external code segment
+/// (`__ETEXT`, from the ADT) as `/reserved-memory/aop-etext@<phys>`. No
+/// mapping of it survives the DART reset, so this driver maps it itself.
+const ETEXT_NODE_PREFIX: &CStr = c_str!("aop-etext");
+/// The firmware's log segment (`__OS_LOG`), reserved the same way as
+/// `/reserved-memory/aop-oslog@<phys>` and used by the firmware at its
+/// physical address. Without it the firmware stops within a second on a DART
+/// fault storm.
+const OSLOG_NODE_PREFIX: &CStr = c_str!("aop-oslog");
+const ETEXT_MAX_SIZE: u64 = 0x10_0000;
+const ETEXT_PAGE: u64 = 0x4000;
 const AFK_ENDPOINT_START: u8 = 0x20;
 const AFK_ENDPOINT_COUNT: u8 = 0xf;
 const AFK_OPC_GET_BUF: u64 = 0x89;
@@ -1184,6 +1195,18 @@ impl ChildDevice {
     }
 }
 
+/// The IOVA mapping of the firmware's external code, owned by this driver
+/// (T6040 only).
+struct EtextMapping {
+    domain: *mut bindings::iommu_domain,
+    iova: u64,
+    size: usize,
+}
+
+// SAFETY: The domain pointer is only passed to `iommu_unmap()`, which may be
+// called from any thread; the domain outlives the device's binding.
+unsafe impl Send for EtextMapping {}
+
 #[pin_data]
 struct AopData {
     dev: ARef<device::Device>,
@@ -1202,6 +1225,9 @@ struct AopData {
     /// The co-processor was started; only then is there anything to shut
     /// down and to retain.
     cpu_started: Atomic<bool>,
+    /// The firmware mappings made by `map_reserved()`.
+    #[pin]
+    etext: Mutex<KVec<EtextMapping>>,
     /// Shut the co-processor down on removal, and if that cannot be
     /// confirmed, retain everything it may still DMA to.
     quiesce_on_unbind: bool,
@@ -1349,6 +1375,7 @@ impl AopData {
                     removing: Atomic::new(false),
                     transport_closing: Atomic::new(false),
                     cpu_started: Atomic::new(false),
+                    etext <- new_mutex!(KVec::new()),
                     quiesce_on_unbind: cfg.quiesce_on_unbind,
                     required_endpoints: cfg.required_endpoints,
                     setup_queue,
@@ -1535,6 +1562,126 @@ impl AopData {
         }
         bootargs.copy_from_slice(&arg_bytes);
         Ok(())
+    }
+
+    /// The physical range of the one `/reserved-memory/<prefix>@*` node.
+    fn find_reserved(prefix: &CStr) -> Result<(u64, u64)> {
+        // SAFETY: The path is NUL-terminated. The node reference is released
+        // below (OF_DYNAMIC is on since 7.3: pmdomain/apple selects it).
+        let resv = unsafe {
+            bindings::of_find_node_opts_by_path(
+                c_str!("/reserved-memory").as_char_ptr(),
+                ptr::null_mut(),
+            )
+        };
+        if resv.is_null() {
+            return Err(ENODEV);
+        }
+        let mut found: Result<Option<(u64, u64)>> = Ok(None);
+        let mut child: *mut bindings::device_node = ptr::null_mut();
+        loop {
+            // SAFETY: `resv` is a valid node; `child` is null or its previous
+            // child, whose reference this call drops.
+            child = unsafe { bindings::of_get_next_child(resv, child) };
+            if child.is_null() {
+                break;
+            }
+            // SAFETY: `child` is a valid node and the prefix is NUL-terminated.
+            if !unsafe { bindings::of_node_name_prefix(child, prefix.as_char_ptr()) } {
+                continue;
+            }
+            let mut res = mem::MaybeUninit::<bindings::resource>::zeroed();
+            // SAFETY: `res` is writable storage for one resource.
+            if unsafe { bindings::of_address_to_resource(child, 0, res.as_mut_ptr()) } != 0 {
+                found = Err(EINVAL);
+                break;
+            }
+            // SAFETY: of_address_to_resource() succeeded and filled it in.
+            let res = unsafe { res.assume_init() };
+            if !matches!(found, Ok(None)) || res.end < res.start {
+                found = Err(EINVAL);
+                break;
+            }
+            found = Ok(Some((res.start as u64, (res.end - res.start) as u64 + 1)));
+        }
+        // SAFETY: Both are null or node references taken above; of_node_put()
+        // accepts null.
+        unsafe {
+            bindings::of_node_put(child);
+            bindings::of_node_put(resv);
+        }
+        found?.ok_or(ENOENT)
+    }
+
+    /// Maps the `/reserved-memory/<prefix>@*` segment into this device's DART
+    /// domain at `iova`, or at its physical address when `iova` is `None`.
+    /// Nothing is mapped unless every check passes.
+    fn map_reserved(&self, dev: &device::Device, prefix: &CStr, iova: Option<u64>) -> Result<()> {
+        let (phys, size) = Self::find_reserved(prefix)?;
+        let iova = iova.unwrap_or(phys);
+        if phys % ETEXT_PAGE != 0
+            || size == 0
+            || size % ETEXT_PAGE != 0
+            || size > ETEXT_MAX_SIZE
+            || iova % ETEXT_PAGE != 0
+            || iova.checked_add(size).is_none()
+            || phys.checked_add(size).is_none()
+        {
+            return Err(EINVAL);
+        }
+        // SAFETY: `dev` is a live device being probed.
+        let domain = unsafe { bindings::iommu_get_domain_for_dev(dev.as_raw()) };
+        if domain.is_null() {
+            return Err(ENODEV);
+        }
+        // SAFETY: `domain` is the non-null domain returned above.
+        let ty = unsafe { (*domain).type_ };
+        if ty == bindings::IOMMU_DOMAIN_IDENTITY || ty == bindings::IOMMU_DOMAIN_BLOCKED {
+            return Err(ENODEV);
+        }
+        let size_us = usize::try_from(size).map_err(|_| EOVERFLOW)?;
+        // SAFETY: The range was checked above; the DART domain validates the
+        // IOVA itself.
+        let ret = unsafe {
+            bindings::iommu_map(
+                domain,
+                iova as _,
+                phys as _,
+                size_us,
+                (bindings::IOMMU_READ | bindings::IOMMU_WRITE) as _,
+                bindings::GFP_KERNEL,
+            )
+        };
+        if ret != 0 {
+            return Err(Error::from_errno(ret));
+        }
+        // SAFETY: as above.
+        let back = unsafe { bindings::iommu_iova_to_phys(domain, iova as _) } as u64;
+        if back != phys {
+            // SAFETY: The range was mapped just above.
+            unsafe { bindings::iommu_unmap(domain, iova as _, size_us) };
+            return Err(EIO);
+        }
+        let map = EtextMapping {
+            domain,
+            iova,
+            size: size_us,
+        };
+        if self.etext.lock().push(map, GFP_KERNEL).is_err() {
+            // SAFETY: The range was mapped just above.
+            unsafe { bindings::iommu_unmap(domain, iova as _, size_us) };
+            return Err(ENOMEM);
+        }
+        Ok(())
+    }
+
+    /// Undoes `map_reserved()`; only once the firmware no longer runs.
+    fn unmap_etext(&self) {
+        let mut maps = self.etext.lock();
+        while let Some(map) = maps.pop() {
+            // SAFETY: The mapping was created by map_reserved() on this domain.
+            unsafe { bindings::iommu_unmap(map.domain, map.iova as _, map.size) };
+        }
     }
 
     /// Leaks every allocation the firmware may still access. Called when the
@@ -1796,6 +1943,9 @@ impl AOP for AopData {
             );
             return;
         }
+        // The firmware is stopped or was never started: it no longer fetches
+        // its external code.
+        self.unmap_etext();
         let arena = self.setup.lock().arena.take();
         drop(arena);
         // The ring is DMA of the audio child; free it while the child is
@@ -2251,6 +2401,12 @@ struct AopHwConfig {
     quiesce_on_unbind: bool,
     /// The endpoints that have to start; empty means all advertised ones.
     required_endpoints: &'static [u8],
+    /// Map the firmware's external code at `ec0p` and its `__OS_LOG` at its
+    /// physical address before starting it: no bootloader mapping survives
+    /// the DART reset (T6040).
+    map_etext: bool,
+    /// Halt the co-processor again when its start fails (T6040).
+    halt_on_failed_start: bool,
 }
 
 const HW_CFG_T8103: AopHwConfig = AopHwConfig {
@@ -2262,6 +2418,8 @@ const HW_CFG_T8103: AopHwConfig = AopHwConfig {
     setup_port: false,
     quiesce_on_unbind: false,
     required_endpoints: &[],
+    map_etext: false,
+    halt_on_failed_start: false,
 };
 const HW_CFG_T8112: AopHwConfig = AopHwConfig {
     ec0p: 0x020000,
@@ -2272,6 +2430,8 @@ const HW_CFG_T8112: AopHwConfig = AopHwConfig {
     setup_port: false,
     quiesce_on_unbind: false,
     required_endpoints: &[],
+    map_etext: false,
+    halt_on_failed_start: false,
 };
 const HW_CFG_T6000: AopHwConfig = AopHwConfig {
     ec0p: 0x020000,
@@ -2282,6 +2442,8 @@ const HW_CFG_T6000: AopHwConfig = AopHwConfig {
     setup_port: false,
     quiesce_on_unbind: false,
     required_endpoints: &[],
+    map_etext: false,
+    halt_on_failed_start: false,
 };
 const HW_CFG_T6020: AopHwConfig = AopHwConfig {
     ec0p: 0x0100_00000000,
@@ -2292,6 +2454,24 @@ const HW_CFG_T6020: AopHwConfig = AopHwConfig {
     setup_port: false,
     quiesce_on_unbind: false,
     required_endpoints: &[],
+    map_etext: false,
+    halt_on_failed_start: false,
+};
+/// T6040 (J616s): macOS writes the same four boot arguments as for the
+/// T6020. The bootloader's mapping of the external code does not survive the
+/// DART reset, so it is mapped here; the RTKit firmware is shut down on
+/// unbind.
+const HW_CFG_T6040: AopHwConfig = AopHwConfig {
+    ec0p: 0x0100_00000000,
+    aopt: 0,
+    alig: 64,
+    patch_bootargs: true,
+    epic_v4: false,
+    setup_port: false,
+    quiesce_on_unbind: true,
+    required_endpoints: &[],
+    map_etext: true,
+    halt_on_failed_start: true,
 };
 /// T8140: the firmware is started with the boot arguments the bootloader
 /// left, boots through the setup port and speaks EPIC version 4. Of the
@@ -2307,6 +2487,8 @@ const HW_CFG_T8140: AopHwConfig = AopHwConfig {
     setup_port: true,
     quiesce_on_unbind: true,
     required_endpoints: &[0x20, 0x21, 0x22, 0x23, 0x2b],
+    map_etext: false,
+    halt_on_failed_start: false,
 };
 
 kernel::of_device_table!(
@@ -2318,6 +2500,7 @@ kernel::of_device_table!(
         (of::DeviceId::new(c_str!("apple,t6000-aop")), &HW_CFG_T6000),
         (of::DeviceId::new(c_str!("apple,t6020-aop")), &HW_CFG_T6020),
         (of::DeviceId::new(c_str!("apple,t8140-aop")), &HW_CFG_T8140),
+        (of::DeviceId::new(c_str!("apple,t6041-aop")), &HW_CFG_T6040),
     ]
 );
 
@@ -2351,6 +2534,18 @@ impl platform::Driver for AopDriver {
         // registering; the same teardown as unbind's cleans that up.
         let probe_guard = ScopeGuard::new_with_data(data.clone(), |data| data.remove());
         let aop_mmio = aop_mmio.as_view();
+        if cfg.map_etext {
+            // Before anything is written to the AOP: no mapping, no start.
+            for (prefix, iova) in [
+                (ETEXT_NODE_PREFIX, Some(cfg.ec0p)),
+                (OSLOG_NODE_PREFIX, None),
+            ] {
+                if let Err(e) = data.map_reserved(pdev.as_ref(), prefix, iova) {
+                    dev_err!(pdev.as_ref(), "Failed to map {:?} ({:?})", prefix, e);
+                    return Err(e);
+                }
+            }
+        }
         if cfg.patch_bootargs {
             data.patch_bootargs(
                 &aop_mmio,
@@ -2369,20 +2564,37 @@ impl platform::Driver for AopDriver {
         }
         asc_mmio.update(ASC_CPU_CONTROL, |r| r.with_const_cpu_run::<1>());
         data.cpu_started.store(true, Release);
-        if cfg.setup_port {
+        let started = if cfg.setup_port {
             // The RTKit handshake up to AP power on comes first, then the
             // setup port's own power state and endpoint buffers, and only
             // then the AFK endpoints.
-            data.wake()?;
-            data.setup_finish_boot()?;
-            // Before any client reaches the ALS service: a failure here costs
-            // the sensor, not the AOP.
-            if let Err(e) = data.setup_als_calibration() {
-                dev_warn!(pdev.as_ref(), "ALS calibration failed ({:?})", e);
-            }
-            data.start_afk()?;
+            data.wake()
+                .and_then(|()| data.setup_finish_boot())
+                .and_then(|()| {
+                    // Before any client reaches the ALS service: a failure
+                    // here costs the sensor, not the AOP.
+                    if let Err(e) = data.setup_als_calibration() {
+                        dev_warn!(pdev.as_ref(), "ALS calibration failed ({:?})", e);
+                    }
+                    data.start_afk()
+                })
         } else {
-            data.start()?;
+            data.start()
+        };
+        if let Err(e) = started {
+            if cfg.halt_on_failed_start {
+                // The same teardown as the probe guard's (which then does
+                // nothing), then back to the halted state the bootloader
+                // left.
+                data.remove();
+                asc_mmio.update(ASC_CPU_CONTROL, |r| r.with_const_cpu_run::<0>());
+                dev_err!(
+                    pdev.as_ref(),
+                    "Failed to start the AOP ({:?}), halted it again",
+                    e
+                );
+            }
+            return Err(e);
         }
         probe_guard.dismiss();
         let data = data as Arc<dyn AOP>;
