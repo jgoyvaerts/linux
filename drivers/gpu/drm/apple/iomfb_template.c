@@ -12,6 +12,8 @@
 #include <linux/dma-mapping.h>
 #include <linux/iommu.h>
 #include <linux/kref.h>
+#include <linux/limits.h>
+#include <linux/math64.h>
 #include <linux/module.h>
 #include <linux/of_device.h>
 #include <linux/pm_runtime.h>
@@ -160,6 +162,7 @@ static dcp_abort_swaps_req_t dcp_abort_swaps_request(struct apple_dcp *dcp)
 struct dcp_wait_cookie {
 	struct kref refcount;
 	struct completion done;
+	bool failed;
 };
 
 static void release_wait_cookie(struct kref *ref)
@@ -168,6 +171,27 @@ static void release_wait_cookie(struct kref *ref)
 	cookie = container_of(ref, struct dcp_wait_cookie, refcount);
 
         kfree(cookie);
+}
+
+/* Only a rejected enqueue has no receiver left to complete this cookie. */
+static void dcp_wait_refused(struct apple_dcp *dcp, void *cookie)
+{
+	struct dcp_wait_cookie *wait = cookie;
+
+	dev_warn(dcp->dev, "request publication refused\n");
+	if (wait) {
+		wait->failed = true;
+		complete(&wait->done);
+		kref_put(&wait->refcount, release_wait_cookie);
+	}
+}
+
+static void dcp_start_refused(struct apple_dcp *dcp)
+{
+	dev_warn(dcp->dev, "startup request publication refused\n");
+	dcp->active = false;
+	dcp->crashed = true;
+	complete(&dcp->start_done);
 }
 
 DCP_THUNK_OUT(iomfb_a131_pmu_service_matched, iomfbep_a131_pmu_service_matched, u32);
@@ -249,6 +273,66 @@ static void dcpep_cb_swap_complete(struct apple_dcp *dcp,
 	ktime_t now = ktime_get();
 	trace_iomfb_swap_complete(dcp, resp->swap_id);
 	dcp->last_swap_id = resp->swap_id;
+	if (dcp->m4_swaps_complete < 3) {
+		dcp->m4_swaps_complete++;
+		dev_info(dcp->dev, "M4_DCP_SWAP_COMPLETE n=%u swap_id=%u\n",
+			 dcp->m4_swaps_complete, resp->swap_id);
+	}
+
+	if (dcp_swap_stats) {
+		ktime_t start = dcp->swap_start;
+		s64 span = ktime_us_delta(now, dcp->m4_stats_window);
+
+		if (!dcp->m4_stats_window) {
+			dcp->m4_stats_window = now;
+		} else {
+			if (dcp->m4_stats_last) {
+				s64 gap = ktime_us_delta(now, dcp->m4_stats_last);
+
+				dcp->m4_stats_gap_sum_us += gap;
+				if (gap > dcp->m4_stats_gap_max_us)
+					dcp->m4_stats_gap_max_us = gap;
+			}
+			if (start != KTIME_MIN) {
+				s64 lat = ktime_us_delta(now, start);
+
+				dcp->m4_stats_lat_sum_us += lat;
+				if (lat > dcp->m4_stats_lat_max_us)
+					dcp->m4_stats_lat_max_us = lat;
+			}
+			if (dcp->m4_commit_time) {
+				s64 clat = ktime_us_delta(now, dcp->m4_commit_time);
+
+				dcp->m4_stats_commit_sum_us += clat;
+				if (clat > dcp->m4_stats_commit_max_us)
+					dcp->m4_stats_commit_max_us = clat;
+			}
+			dcp->m4_stats_n++;
+			if (span >= 2000000 && dcp->m4_stats_n) {
+				dev_info(dcp->dev,
+					 "M4_DCP_SWAP_STATS window_ms=%lld swaps=%u rate_x10=%llu gap_us_avg=%llu gap_us_max=%u lat_us_avg=%llu lat_us_max=%u vrr_timestamps=%d commit_us_avg=%llu commit_us_max=%u flush_masks=%u/%u/%u\n",
+					 span / 1000, dcp->m4_stats_n,
+					 div64_u64(10000000ULL * dcp->m4_stats_n, span),
+					 div64_u64(dcp->m4_stats_gap_sum_us, dcp->m4_stats_n),
+					 dcp->m4_stats_gap_max_us,
+					 div64_u64(dcp->m4_stats_lat_sum_us, dcp->m4_stats_n),
+					 dcp->m4_stats_lat_max_us,
+					 dcp->use_timestamps,
+					 div64_u64(dcp->m4_stats_commit_sum_us, dcp->m4_stats_n),
+					 dcp->m4_stats_commit_max_us,
+					 dcp->m4_stats_mask[1], dcp->m4_stats_mask[2],
+					 dcp->m4_stats_mask[3]);
+				dcp->m4_stats_commit_sum_us = 0;
+				dcp->m4_stats_commit_max_us = 0;
+				memset(dcp->m4_stats_mask, 0, sizeof(dcp->m4_stats_mask));
+				dcp->m4_stats_window = now;
+				dcp->m4_stats_n = 0;
+				dcp->m4_stats_gap_sum_us = dcp->m4_stats_lat_sum_us = 0;
+				dcp->m4_stats_gap_max_us = dcp->m4_stats_lat_max_us = 0;
+			}
+		}
+		dcp->m4_stats_last = now;
+	}
 
 	dcp_drm_crtc_page_flip(dcp, now);
 	if (dcp->crc_enabled) {
@@ -264,15 +348,14 @@ static void complete_vi_set_temperature_hint(struct apple_dcp *dcp, void *out, v
 	dcp_ack(dcp, DCP_CONTEXT_CB);
 }
 
+IOMFB_CB_SIZE(iomfbep_cb_match_pmu_service, 0, 0);
 static bool iomfbep_cb_match_pmu_service(struct apple_dcp *dcp, int tag, void *out, void *in)
 {
 	trace_iomfb_callback(dcp, tag, __func__);
-	iomfb_a358_vi_set_temperature_hint(dcp, false,
-					   complete_vi_set_temperature_hint,
-					   NULL);
-
-	// return false for deferred ACK
-	return false;
+	/* Refused calls own no nested slot; ACK this callback immediately. */
+	return !iomfb_a358_vi_set_temperature_hint(dcp, false,
+					    complete_vi_set_temperature_hint,
+					    NULL);
 }
 
 static void complete_pmu_service_matched(struct apple_dcp *dcp, void *out, void *cookie)
@@ -286,28 +369,35 @@ static void complete_pmu_service_matched(struct apple_dcp *dcp, void *out, void 
 	dcp_ack(dcp, DCP_CONTEXT_CB);
 }
 
+IOMFB_CB_SIZE(iomfbep_cb_match_pmu_service_2, 0, 1);
 static bool iomfbep_cb_match_pmu_service_2(struct apple_dcp *dcp, int tag, void *out, void *in)
 {
 	trace_iomfb_callback(dcp, tag, __func__);
 
-	iomfb_a131_pmu_service_matched(dcp, false, complete_pmu_service_matched,
-				       out);
-
-	// return false for deferred ACK
-	return false;
+	return !iomfb_a131_pmu_service_matched(dcp, false,
+					     complete_pmu_service_matched, out);
 }
 
 static void complete_backlight_service_matched(struct apple_dcp *dcp, void *out, void *cookie)
 {
 	struct dcp_channel *ch = &dcp->ch_cb;
-	u8 *succ = ch->output[ch->depth - 1];
+	u8 *succ = cookie;
 
-	*succ = true;
+	/* The deferred reply must still own the pending firmware callback. */
+	if (!out || !succ || !ch->depth || ch->depth > DCP_MAX_CALL_DEPTH ||
+	    ch->host_call[ch->depth - 1] || ch->output[ch->depth - 1] != succ) {
+		dev_warn(dcp->dev, "refusing stale backlight match completion\n");
+		return;
+	}
 
-	// ack D206 cb_match_backlight_service
+	/* A132 is a link status, not proof of panel illumination. */
+	*succ = get_unaligned_le32(out) == 0;
+
+	// ack D207 cb_match_backlight_service
 	dcp_ack(dcp, DCP_CONTEXT_CB);
 }
 
+IOMFB_CB_SIZE(iomfbep_cb_match_backlight_service, 0, 1);
 static bool iomfbep_cb_match_backlight_service(struct apple_dcp *dcp, int tag, void *out, void *in)
 {
 	trace_iomfb_callback(dcp, tag, __func__);
@@ -318,10 +408,9 @@ static bool iomfbep_cb_match_backlight_service(struct apple_dcp *dcp, int tag, v
 		return true;
 	}
 
-	iomfb_a132_backlight_service_matched(dcp, false, complete_backlight_service_matched, out);
-
-	// return false for deferred ACK
-	return false;
+	return !iomfb_a132_backlight_service_matched(dcp, false,
+						   complete_backlight_service_matched,
+						   out);
 }
 
 static void iomfb_cb_pr_publish(struct apple_dcp *dcp, struct iomfb_property *prop)
@@ -331,9 +420,17 @@ static void iomfb_cb_pr_publish(struct apple_dcp *dcp, struct iomfb_property *pr
 	case IOMFB_PROPERTY_NITS:
 	{
 		if (dcp_has_panel(dcp)) {
-			dcp->brightness.nits = prop->value / dcp->brightness.scale;
+			u32 nits;
+
+			if (dcp->brightness.scale <= 0)
+				return;
+			nits = prop->value / dcp->brightness.scale;
+			if (nits > INT_MAX || nits > dcp->brightness.maximum)
+				return;
+			dcp->brightness.nits = nits;
 			/* notify backlight device of the initial brightness */
-			if (!dcp->brightness.bl_dev && dcp->brightness.maximum > 0)
+			if (dcp_takeover && !dcp->brightness.bl_dev &&
+			    dcp->brightness.maximum > 0)
 				schedule_work(&dcp->bl_register_wq);
 			trace_iomfb_brightness(dcp, prop->value);
 		}
@@ -372,8 +469,12 @@ static u8 iomfbep_cb_sr_set_property_int(struct apple_dcp *dcp,
 {
 	if (memcmp(req->obj, "FMOI", sizeof(req->obj)) == 0) { /* "IOMF */
 		if (strncmp(req->key, "Brightness_Scale", sizeof(req->key)) == 0) {
-			if (!req->value_null)
+			if (!req->value_null) {
+				/* The wire integer is 64-bit; our divisor is positive int. */
+				if (!req->value || req->value > INT_MAX)
+					return 0;
 				dcp->brightness.scale = req->value;
+			}
 		}
 	}
 
@@ -600,6 +701,12 @@ dcpep_cb_map_physical(struct apple_dcp *dcp, struct dcp_map_physical_req *req)
 
 static u64 dcpep_cb_get_frequency(struct apple_dcp *dcp)
 {
+	if (!dcp->clk) {
+		dev_warn_once(dcp->dev,
+			      "M4_DCP_CLK_ABSENT reporting %lu Hz to firmware\n",
+			      dcp_clk_hz);
+		return dcp_clk_hz;
+	}
 	return clk_get_rate(dcp->clk);
 }
 
@@ -662,6 +769,8 @@ static void iomfbep_cb_enable_backlight_message_ap_gated(struct apple_dcp *dcp,
 	 * DCP seems to set an invalid iDAC value after coming out of DPMS.
 	 * syslog: "[BrightnessLCD.cpp:743][AFK]nitsToDBV: iDAC out of range"
 	 */
+	if (!dcp_takeover)
+		return;
 	dcp->brightness.update = true;
 	schedule_work(&dcp->bl_update_wq);
 }
@@ -669,12 +778,16 @@ static void iomfbep_cb_enable_backlight_message_ap_gated(struct apple_dcp *dcp,
 /* Chunked data transfer for property dictionaries */
 static u8 dcpep_cb_prop_start(struct apple_dcp *dcp, u32 *length)
 {
-	if (dcp->chunks.data != NULL) {
+	if (dcp->chunks.data != NULL || dcp->chunks_received != NULL) {
 		dev_warn(dcp->dev, "ignoring spurious transfer start\n");
 		return false;
 	}
 
-	dcp->chunks.length = *length;
+	if (!*length || *length > INT_MAX) {
+		dev_warn(dcp->dev, "ignoring empty transfer\n");
+		return false;
+	}
+
 	dcp->chunks.data = devm_kzalloc(dcp->dev, *length, GFP_KERNEL);
 
 	if (!dcp->chunks.data) {
@@ -682,23 +795,51 @@ static u8 dcpep_cb_prop_start(struct apple_dcp *dcp, u32 *length)
 		return false;
 	}
 
+	/*
+	 * devm_bitmap_zalloc() registers a devres *action*, which devm_kfree()
+	 * cannot find (WARN, nothing freed).  A plain devres allocation can be
+	 * released with devm_kfree().
+	 */
+	dcp->chunks_received = devm_kcalloc(dcp->dev, BITS_TO_LONGS(*length),
+					    sizeof(unsigned long), GFP_KERNEL);
+	if (!dcp->chunks_received) {
+		devm_kfree(dcp->dev, dcp->chunks.data);
+		dcp->chunks.data = NULL;
+		return false;
+	}
+	dcp->chunks.length = *length;
+	dcp->chunk_calls = 0;
+	dcp->chunk_last_offset = 0;
+	dcp->chunk_last_length = 0;
+	dev_info(dcp->dev, "M4_DCP_PROP_START length=%u\n", *length);
 	return true;
 }
 
 static u8 dcpep_cb_prop_chunk(struct apple_dcp *dcp,
 			      struct dcp_set_dcpav_prop_chunk_req *req)
 {
-	if (!dcp->chunks.data) {
+	if (!dcp->chunks.data || !dcp->chunks_received) {
 		dev_warn(dcp->dev, "ignoring spurious chunk\n");
 		return false;
 	}
 
-	if (req->offset + req->length > dcp->chunks.length) {
+	if (req->length > sizeof(req->data) ||
+	    req->offset > dcp->chunks.length ||
+	    req->length > dcp->chunks.length - req->offset) {
 		dev_warn(dcp->dev, "ignoring overflowing chunk\n");
 		return false;
 	}
 
 	memcpy(dcp->chunks.data + req->offset, req->data, req->length);
+	if (req->length)
+		bitmap_set(dcp->chunks_received, req->offset, req->length);
+	if (dcp->chunk_calls < 4)
+		dev_info(dcp->dev, "M4_DCP_PROP_CHUNK #%u offset=%u length=%u of %zu\n",
+			 dcp->chunk_calls, req->offset, req->length,
+			 dcp->chunks.length);
+	dcp->chunk_calls++;
+	dcp->chunk_last_offset = req->offset;
+	dcp->chunk_last_length = req->length;
 	return true;
 }
 
@@ -724,17 +865,27 @@ static bool dcpep_process_chunks(struct apple_dcp *dcp,
 	}
 
 	if (!strcmp(req->key, "TimingElements")) {
-		dcp->modes = enumerate_modes(&ctx, &dcp->nr_modes,
-					     dcp->width_mm, dcp->height_mm,
-					     dcp->notch_height);
+		struct dcp_display_mode *modes;
+		unsigned int nr_modes;
 
-		if (IS_ERR(dcp->modes)) {
+		modes = enumerate_modes(&ctx, &nr_modes, dcp->width_mm,
+					dcp->height_mm, dcp->notch_height);
+		if (IS_ERR(modes)) {
 			dev_warn(dcp->dev, "failed to parse modes\n");
-			dcp->modes = NULL;
-			dcp->nr_modes = 0;
 			return false;
 		}
-		if (dcp->nr_modes == 0)
+
+		mutex_lock(&dcp->modes_lock);
+		kfree(dcp->modes);
+		dcp->modes = modes;
+		WRITE_ONCE(dcp->nr_modes, nr_modes);
+		mutex_unlock(&dcp->modes_lock);
+		dev_info(dcp->dev, "M4_DCP_MODES n=%u\n", nr_modes);
+		for (unsigned int i = 0; i < nr_modes && i < 4; i++)
+			dev_info(dcp->dev, "M4_DCP_MODE #%u %ux%u clock=%d vrefresh=%d\n",
+				 i, modes[i].mode.hdisplay, modes[i].mode.vdisplay,
+				 modes[i].mode.clock, drm_mode_vrefresh(&modes[i].mode));
+		if (nr_modes == 0)
 			dev_warn(dcp->dev, "TimingElements without valid modes!\n");
 	} else if (!strcmp(req->key, "DisplayAttributes")) {
 		ret = parse_display_attributes(&ctx, &dcp->width_mm,
@@ -745,6 +896,8 @@ static bool dcpep_process_chunks(struct apple_dcp *dcp,
 			return false;
 		}
 
+		dev_info(dcp->dev, "M4_DCP_DISPLAY_ATTRS width_mm=%d height_mm=%d\n",
+			 dcp->width_mm, dcp->height_mm);
 		dcp_set_dimensions(dcp);
 	}
 
@@ -754,64 +907,167 @@ static bool dcpep_process_chunks(struct apple_dcp *dcp,
 static u8 dcpep_cb_prop_end(struct apple_dcp *dcp,
 			    struct dcp_set_dcpav_prop_end_req *req)
 {
-	u8 resp = dcpep_process_chunks(dcp, req);
+	bool named, complete = false, relaxed = false;
+	unsigned long got = 0, gap = 0;
+	size_t len = dcp->chunks.length;
+	u8 resp;
 
-	/* move chunked data to connector to provide it via debugfs */
-	dcp_connector_update_dict(dcp->connector, req->key, &dcp->chunks);
+	if (!dcp->chunks.data) {
+		dev_warn(dcp->dev, "ignoring spurious end\n");
+		return false;
+	}
+
+	named = memchr(req->key, '\0', sizeof(req->key));
+	if (dcp->chunks_received) {
+		got = bitmap_weight(dcp->chunks_received, len);
+		gap = find_first_zero_bit(dcp->chunks_received, len);
+		complete = gap >= len;
+		/*
+		 * 26.6 declares N + 1 bytes and sends N: only the final
+		 * (terminator) byte is missing.  Everything before it must be
+		 * there; the zeroed backing store supplies the terminator.
+		 */
+		relaxed = !complete && len > 1 && gap == len - 1;
+	}
+
+	if (!named || !(complete || relaxed)) {
+		dev_warn(dcp->dev,
+			 "M4_DCP_PROP_INCOMPLETE key=%.*s named=%d length=%zu received=%lu first_gap=%lu chunks=%u last=%u+%u\n",
+			 named ? (int)sizeof(req->key) : 0, req->key, named,
+			 len, got, gap, dcp->chunk_calls,
+			 dcp->chunk_last_offset, dcp->chunk_last_length);
+		print_hex_dump(KERN_INFO, "M4_DCP_PROP_END_REQ ", DUMP_PREFIX_OFFSET,
+			       16, 1, req, sizeof(req->key), false);
+		dev_warn(dcp->dev, "ignoring incomplete or unnamed property\n");
+		devm_kfree(dcp->dev, dcp->chunks.data);
+		dcp->chunks.data = NULL;
+		dcp->chunks.length = 0;
+		devm_kfree(dcp->dev, dcp->chunks_received);
+		dcp->chunks_received = NULL;
+		return false;
+	}
+
+	if (relaxed)
+		dev_info(dcp->dev,
+			 "M4_DCP_PROP_RELAXED key=%s declared=%zu covered=%lu missing=1 trailing\n",
+			 req->key, len, got);
+
+	resp = dcpep_process_chunks(dcp, req);
+
+	dev_info(dcp->dev,
+		 "M4_DCP_PROP_END key=%s declared=%zu covered=%lu chunks=%u relaxed=%d parsed=%d\n",
+		 req->key, len, got, dcp->chunk_calls, relaxed, resp);
+
+	/* Debugfs takes data ownership, never the receipt bitmap. */
+	if (dcp->connector)
+		dcp_connector_update_dict(dcp->connector, req->key, &dcp->chunks);
+	else
+		devm_kfree(dcp->dev, dcp->chunks.data);
+	devm_kfree(dcp->dev, dcp->chunks_received);
+	dcp->chunks_received = NULL;
 	dcp->chunks.data = NULL;
 	dcp->chunks.length = 0;
-
 	return resp;
 }
 
 /* Boot sequence */
-static void boot_done(struct apple_dcp *dcp, void *out, void *cookie)
+static bool boot_reply_pending(struct apple_dcp *dcp, void *cookie)
 {
 	struct dcp_channel *ch = &dcp->ch_cb;
-	u8 *succ = ch->output[ch->depth - 1];
-	dev_dbg(dcp->dev, "boot done\n");
 
-	*succ = true;
+	return cookie && ch->depth && ch->depth <= DCP_MAX_CALL_DEPTH &&
+	       !ch->host_call[ch->depth - 1] &&
+	       ch->output[ch->depth - 1] == cookie;
+}
+
+static void boot_refused(struct apple_dcp *dcp, void *cookie)
+{
+	if (!boot_reply_pending(dcp, cookie))
+		return;
+	*(u8 *)cookie = false;
+	dcp_start_refused(dcp);
+	dcp_ack(dcp, DCP_CONTEXT_CB);
+}
+
+static void boot_done(struct apple_dcp *dcp, void *out, void *cookie)
+{
+	if (!boot_reply_pending(dcp, cookie))
+		return;
+	dev_dbg(dcp->dev, "boot done\n");
+	*(u8 *)cookie = !dcp->crashed;
 	dcp_ack(dcp, DCP_CONTEXT_CB);
 }
 
 static void boot_5(struct apple_dcp *dcp, void *out, void *cookie)
 {
-	dcp_set_display_refresh_properties(dcp, false, boot_done, NULL);
+	if (dcp->crashed) {
+		boot_refused(dcp, cookie);
+		return;
+	}
+	if (!dcp_set_display_refresh_properties(dcp, false, boot_done, cookie))
+		boot_refused(dcp, cookie);
 }
 
 static void boot_4(struct apple_dcp *dcp, void *out, void *cookie)
 {
 #if DCP_FW_VER >= DCP_FW_VERSION(13, 2, 0)
 	dcp_bool_arg_t v_true = dcp_bool_arg(true);
-	dcp_late_init_signal(dcp, false, &v_true, boot_5, NULL);
-#else
-	dcp_late_init_signal(dcp, false, boot_5, NULL);
 #endif
+	if (dcp->crashed) {
+		boot_refused(dcp, cookie);
+		return;
+	}
+#if DCP_FW_VER >= DCP_FW_VERSION(13, 2, 0)
+	if (!dcp_late_init_signal(dcp, false, &v_true, boot_5, cookie))
+#else
+	if (!dcp_late_init_signal(dcp, false, boot_5, cookie))
+#endif
+		boot_refused(dcp, cookie);
 }
 
 static void boot_3(struct apple_dcp *dcp, void *out, void *cookie)
 {
 	dcp_bool_arg_t v_true = dcp_bool_arg(true);
 
-	dcp_flush_supports_power(dcp, false, &v_true, boot_4, NULL);
+	if (dcp->crashed) {
+		boot_refused(dcp, cookie);
+		return;
+	}
+	if (!dcp_flush_supports_power(dcp, false, &v_true, boot_4, cookie))
+		boot_refused(dcp, cookie);
 }
 
 static void boot_2(struct apple_dcp *dcp, void *out, void *cookie)
 {
-	dcp_setup_video_limits(dcp, false, boot_3, NULL);
+	if (dcp->crashed) {
+		boot_refused(dcp, cookie);
+		return;
+	}
+	if (!dcp_setup_video_limits(dcp, false, boot_3, cookie))
+		boot_refused(dcp, cookie);
 }
 
 static void boot_1_5(struct apple_dcp *dcp, void *out, void *cookie)
 {
-	dcp_create_default_fb(dcp, false, boot_2, NULL);
+	if (dcp->crashed) {
+		boot_refused(dcp, cookie);
+		return;
+	}
+	if (!dcp_create_default_fb(dcp, false, boot_2, cookie))
+		boot_refused(dcp, cookie);
 }
 
 /* Use special function signature to defer the ACK */
+IOMFB_CB_SIZE(dcpep_cb_boot_1, 0, 1);
 static bool dcpep_cb_boot_1(struct apple_dcp *dcp, int tag, void *out, void *in)
 {
 	trace_iomfb_callback(dcp, tag, __func__);
-	dcp_set_create_dfb(dcp, false, boot_1_5, NULL);
+	if (dcp->crashed)
+		return true;
+	if (!dcp_set_create_dfb(dcp, false, boot_1_5, out)) {
+		dcp_start_refused(dcp);
+		return true;
+	}
 	return false;
 }
 
@@ -884,6 +1140,7 @@ static u64 dcpep_cb_get_time(struct apple_dcp *dcp)
 struct dcp_swap_cookie {
 	struct kref refcount;
 	struct completion done;
+	bool failed;
 	u32 swap_id;
 };
 
@@ -893,6 +1150,18 @@ static void release_swap_cookie(struct kref *ref)
 	cookie = container_of(ref, struct dcp_swap_cookie, refcount);
 
         kfree(cookie);
+}
+
+static void dcp_clear_refused(struct apple_dcp *dcp, void *cookie)
+{
+	struct dcp_swap_cookie *info = cookie;
+
+	dev_warn(dcp->dev, "clear-swap publication refused\n");
+	if (info) {
+		info->failed = true;
+		complete(&info->done);
+		kref_put(&info->refcount, release_swap_cookie);
+	}
 }
 
 static void dcp_swap_cleared(struct apple_dcp *dcp, void *data, void *cookie)
@@ -935,7 +1204,8 @@ static void dcp_swap_clear_started(struct apple_dcp *dcp, void *data,
 		info->swap_id = resp->swap_id;
 	}
 
-	dcp_swap_submit(dcp, false, &DCP_FW_UNION(dcp->swap), dcp_swap_cleared, cookie);
+	if (!dcp_swap_submit(dcp, false, &DCP_FW_UNION(dcp->swap), dcp_swap_cleared, cookie))
+		dcp_clear_refused(dcp, cookie);
 }
 
 static void dcp_on_final(struct apple_dcp *dcp, void *out, void *cookie)
@@ -973,14 +1243,16 @@ static void dcp_on_set_power_state(struct apple_dcp *dcp, void *out, void *cooki
 #if DCP_FW_VER >= DCP_FW_VERSION(26, 6, 0)
 	u32 handle = dcp->main_display ? 0 : 2;
 
-	dcp_set_display_device(dcp, false, &handle,
+	if (!dcp_set_display_device(dcp, false, &handle,
 			       dcp->main_display ? dcp_on_final : dcp_on_set_parameter,
-			       cookie);
+			       cookie))
+		dcp_wait_refused(dcp, cookie);
 #else
 	dcp_power_state_req_t req =
 		dcp_power_state_req(1, DCP_POWER_TRANSITION_NONE);
 
-	dcp_set_power_state(dcp, false, &req, dcp_on_final, cookie);
+	if (!dcp_set_power_state(dcp, false, &req, dcp_on_final, cookie))
+		dcp_wait_refused(dcp, cookie);
 #endif
 }
 
@@ -999,13 +1271,14 @@ static void dcp_on_set_parameter(struct apple_dcp *dcp, void *out, void *cookie)
 	memset(param.value, 0, count * sizeof(param.value[0]));
 	param.count = count;
 
-	dcp_set_parameter_dcp(dcp, false, &param,
+	if (!dcp_set_parameter_dcp(dcp, false, &param,
 #if DCP_FW_VER >= DCP_FW_VERSION(26, 6, 0)
 			      dcp_on_final,
 #else
 			      dcp_on_set_power_state,
 #endif
-			      cookie);
+			      cookie))
+		dcp_wait_refused(dcp, cookie);
 }
 
 #if DCP_FW_VER >= DCP_FW_VERSION(26, 6, 0)
@@ -1015,28 +1288,32 @@ static void dcp_poweron_after_main_display(struct apple_dcp *dcp, void *out,
 	dcp_power_state_req_t power_req =
 		dcp_power_state_req(1, DCP_POWER_TRANSITION_NONE);
 
-	dcp_set_power_state(dcp, false, &power_req, dcp_on_set_power_state,
-			    cookie);
+	if (!dcp_set_power_state(dcp, false, &power_req, dcp_on_set_power_state,
+			    cookie))
+		dcp_wait_refused(dcp, cookie);
 }
 
 static void dcp_poweron_after_finish_wake(struct apple_dcp *dcp, void *out,
 					  void *cookie)
 {
-	dcp_is_main_display(dcp, false, dcp_poweron_after_main_display, cookie);
+	if (!dcp_is_main_display(dcp, false, dcp_poweron_after_main_display, cookie))
+		dcp_wait_refused(dcp, cookie);
 }
 
 static void dcp_poweron_after_first_client(struct apple_dcp *dcp, void *out,
 					   void *cookie)
 {
-	dcp_push(dcp, false, &dcp_finish_wake_method, 0, sizeof(u32), NULL,
-		 dcp_poweron_after_finish_wake, cookie);
+	if (!dcp_push(dcp, false, &dcp_finish_wake_method, 0, sizeof(u32), NULL,
+		 dcp_poweron_after_finish_wake, cookie))
+		dcp_wait_refused(dcp, cookie);
 }
 
 static void dcp_poweron_after_prepare_wake(struct apple_dcp *dcp, void *out,
 					   void *cookie)
 {
-	dcp_first_client_open(dcp, false, dcp_poweron_after_first_client,
-			      cookie);
+	if (!dcp_first_client_open(dcp, false, dcp_poweron_after_first_client,
+			      cookie))
+		dcp_wait_refused(dcp, cookie);
 }
 #endif
 
@@ -1050,10 +1327,13 @@ void DCP_FW_NAME(iomfb_poweron)(struct apple_dcp *dcp)
 	u32 handle;
 #endif
 	dev_info(dcp->dev, "dcp_poweron() starting\n");
+	dcp->poweron_result = 0;
 
 	cookie = kzalloc(sizeof(*cookie), GFP_KERNEL);
-	if (!cookie)
+	if (!cookie) {
+		dcp->poweron_result = 3;
 		return;
+	}
 
 	init_completion(&cookie->done);
 	kref_init(&cookie->refcount);
@@ -1065,23 +1345,31 @@ void DCP_FW_NAME(iomfb_poweron)(struct apple_dcp *dcp)
 	 * external-display pipeline to sleep.  Omitting A414/A474, or selecting
 	 * the display before A473, leaves fControllerPowerState at zero and DCP
 	 * silently swallows every scanout swap. */
-	dcp_push(dcp, false, &dcp_prepare_wake_method, sizeof(prepare_wake),
+	if (!dcp_push(dcp, false, &dcp_prepare_wake_method, sizeof(prepare_wake),
 		 sizeof(u64), (void *)prepare_wake,
-		 dcp_poweron_after_prepare_wake, cookie);
+		 dcp_poweron_after_prepare_wake, cookie))
+		dcp_wait_refused(dcp, cookie);
 #else
 	if (dcp->main_display) {
 		handle = 0;
-		dcp_set_display_device(dcp, false, &handle, dcp_on_set_power_state,
-				       cookie);
+		if (!dcp_set_display_device(dcp, false, &handle, dcp_on_set_power_state,
+				       cookie))
+			dcp_wait_refused(dcp, cookie);
 	} else {
 		handle = 2;
-		dcp_set_display_device(dcp, false, &handle,
-				       dcp_on_set_parameter, cookie);
+		if (!dcp_set_display_device(dcp, false, &handle,
+				       dcp_on_set_parameter, cookie))
+			dcp_wait_refused(dcp, cookie);
 	}
 #endif
 	ret = wait_for_completion_timeout(&cookie->done, msecs_to_jiffies(10000));
 
-	if (ret == 0) {
+	if (cookie->failed) {
+		dcp->poweron_result = 2;
+		drm_connector_set_link_status_property(&dcp->connector->base,
+						       DRM_MODE_LINK_STATUS_BAD);
+	} else if (ret == 0) {
+		dcp->poweron_result = 1;
 		dev_warn(dcp->dev, "wait for power timed out, connector will be broken\n");
 	} else if (ret > 0) {
 		int msecs = jiffies_to_msecs(ret);
@@ -1090,10 +1378,13 @@ void DCP_FW_NAME(iomfb_poweron)(struct apple_dcp *dcp)
 		else
 			dev_warn(dcp->dev, "dcp_set_power_state_req returned, %d ms remaining\n", msecs);
 	} else {
+		dcp->poweron_result = 3;
 		drm_connector_set_link_status_property(&dcp->connector->base,
 						       DRM_MODE_LINK_STATUS_BAD);
 		dev_warn(dcp->dev, "wait for completion error: %d\n", ret);
 	}
+	dev_info(dcp->dev, "M4_DCP_POWERON result=%u (0 ok 1 timeout 2 refused 3 error)\n",
+		 dcp->poweron_result);
 
 	kref_put(&cookie->refcount, release_wait_cookie);;
 
@@ -1119,14 +1410,16 @@ static void dcp_poweroff_after_main_display(struct apple_dcp *dcp, void *out,
 	dcp_power_state_req_t power_req =
 		dcp_power_state_req(0, DCP_POWER_TRANSITION_DISPLAY_OFF);
 
-	dcp_set_power_state(dcp, false, &power_req, complete_set_powerstate,
-			    cookie);
+	if (!dcp_set_power_state(dcp, false, &power_req, complete_set_powerstate,
+			    cookie))
+		dcp_wait_refused(dcp, cookie);
 }
 
 static void dcp_poweroff_after_prepare_state(struct apple_dcp *dcp, void *out,
 					      void *cookie)
 {
-	dcp_is_main_display(dcp, false, dcp_poweroff_after_main_display, cookie);
+	if (!dcp_is_main_display(dcp, false, dcp_poweroff_after_main_display, cookie))
+		dcp_wait_refused(dcp, cookie);
 }
 #endif
 
@@ -1136,15 +1429,17 @@ static void last_client_closed_poff(struct apple_dcp *dcp, void *out,
 {
 	dcp_power_state_req_t power_req =
 		dcp_power_state_req(0, DCP_POWER_TRANSITION_DISPLAY_OFF);
-	dcp_set_power_state(dcp, false, &power_req, complete_set_powerstate,
-			    cookie);
+	if (!dcp_set_power_state(dcp, false, &power_req, complete_set_powerstate,
+			    cookie))
+		dcp_wait_refused(dcp, cookie);
 }
 
 static void aborted_swaps_dcp_poff(struct apple_dcp *dcp, void *out, void *cookie)
 {
 	struct iomfb_last_client_close_req last_client_req = {};
-	iomfb_last_client_close(dcp, false, &last_client_req,
-				last_client_closed_poff, cookie);
+	if (!iomfb_last_client_close(dcp, false, &last_client_req,
+				last_client_closed_poff, cookie))
+		dcp_wait_refused(dcp, cookie);
 }
 #endif
 
@@ -1206,10 +1501,13 @@ void DCP_FW_NAME(iomfb_poweroff)(struct apple_dcp *dcp)
 	swap->unkU32out_null = true;
 #endif
 
-	dcp_swap_start(dcp, false, &swap_req, dcp_swap_clear_started, cookie);
+	if (!dcp_swap_start(dcp, false, &swap_req, dcp_swap_clear_started, cookie))
+		dcp_clear_refused(dcp, cookie);
 
 	ret = wait_for_completion_timeout(&cookie->done, msecs_to_jiffies(50));
 	swap_id = cookie->swap_id;
+	if (cookie->failed)
+		ret = 0;
 	kref_put(&cookie->refcount, release_swap_cookie);
 	if (ret <= 0) {
 		dcp->crashed = true;
@@ -1236,24 +1534,32 @@ void DCP_FW_NAME(iomfb_poweroff)(struct apple_dcp *dcp)
 			0, 0, 0, 0, 0, 0xaa, 0xaa, 0xaa,
 		};
 
-		dcp_push(dcp, false, &dcp_prepare_wake_method,
+		if (!dcp_push(dcp, false, &dcp_prepare_wake_method,
 			 sizeof(prepare_state), sizeof(u64), (void *)prepare_state,
-			 dcp_poweroff_after_prepare_state, poff_cookie);
+			 dcp_poweroff_after_prepare_state, poff_cookie))
+			dcp_wait_refused(dcp, poff_cookie);
 	}
 #else
-	iomfb_abort_swaps_dcp(dcp, false, &abort_req,
-				aborted_swaps_dcp_poff, poff_cookie);
+	if (!iomfb_abort_swaps_dcp(dcp, false, &abort_req,
+				aborted_swaps_dcp_poff, poff_cookie))
+		dcp_wait_refused(dcp, poff_cookie);
 #endif
 	ret = wait_for_completion_timeout(&poff_cookie->done,
 					  msecs_to_jiffies(1000));
 
-	if (ret == 0)
+	if (poff_cookie->failed)
+		dev_warn(dcp->dev, "setPowerState(0) publication refused\n");
+	else if (ret == 0)
 		dev_warn(dcp->dev, "setPowerState(0) timeout %u ms\n", 1000);
 	else if (ret > 0)
 		dev_dbg(dcp->dev,
 			"setPowerState(0) finished with %d ms to spare",
 			jiffies_to_msecs(ret));
 
+	if (poff_cookie->failed) {
+		kref_put(&poff_cookie->refcount, release_wait_cookie);
+		return;
+	}
 	kref_put(&poff_cookie->refcount, release_wait_cookie);
 
 	dev_info(dcp->dev, "dcp_poweroff() done\n");
@@ -1263,13 +1569,15 @@ static void last_client_closed_sleep(struct apple_dcp *dcp, void *out, void *coo
 {
 	dcp_power_state_req_t power_req =
 		dcp_power_state_req(0, DCP_POWER_TRANSITION_RESTARTABLE_SLEEP);
-	dcp_set_power_state(dcp, false, &power_req, complete_set_powerstate, cookie);
+	if (!dcp_set_power_state(dcp, false, &power_req, complete_set_powerstate, cookie))
+		dcp_wait_refused(dcp, cookie);
 }
 
 static void aborted_swaps_dcp_sleep(struct apple_dcp *dcp, void *out, void *cookie)
 {
 	struct iomfb_last_client_close_req req = { 0 };
-	iomfb_last_client_close(dcp, false, &req, last_client_closed_sleep, cookie);
+	if (!iomfb_last_client_close(dcp, false, &req, last_client_closed_sleep, cookie))
+		dcp_wait_refused(dcp, cookie);
 }
 
 void DCP_FW_NAME(iomfb_sleep)(struct apple_dcp *dcp)
@@ -1287,14 +1595,21 @@ void DCP_FW_NAME(iomfb_sleep)(struct apple_dcp *dcp)
 	/* increase refcount to ensure the receiver has a reference */
 	kref_get(&cookie->refcount);
 
-	iomfb_abort_swaps_dcp(dcp, false, &req, aborted_swaps_dcp_sleep,
-				cookie);
+	if (!iomfb_abort_swaps_dcp(dcp, false, &req, aborted_swaps_dcp_sleep,
+				cookie))
+		dcp_wait_refused(dcp, cookie);
 	ret = wait_for_completion_timeout(&cookie->done,
 					  msecs_to_jiffies(1000));
 
-	if (ret == 0)
+	if (cookie->failed)
+		dev_warn(dcp->dev, "setDCPPower(0) publication refused\n");
+	else if (ret == 0)
 		dev_warn(dcp->dev, "setDCPPower(0) timeout %u ms\n", 1000);
 
+	if (cookie->failed) {
+		kref_put(&cookie->refcount, release_wait_cookie);
+		return;
+	}
 	kref_put(&cookie->refcount, release_wait_cookie);
 	dev_info(dcp->dev, "dcp_sleep() done\n");
 }
@@ -1465,14 +1780,29 @@ TRAMPOLINE_OUT(trampoline_create_backlight_service, dcpep_cb_create_backlight_se
  * complete event so we need to fake a vblank event early to avoid a hang.
  */
 
+static void dcp_swap_refused(struct apple_dcp *dcp)
+{
+	dev_warn(dcp->dev, "swap publication refused\n");
+	dev_err(dcp->dev, "M4_DCP_SWAP_REFUSED\n");
+	/* No scanout was published; retain buffers and retry pending state. */
+	dcp->brightness.update = true;
+	dcp->surfaces_cleared = false;
+	dcp_drm_crtc_vblank(dcp->crtc);
+}
+
 static void dcp_swapped(struct apple_dcp *dcp, void *data, void *cookie)
 {
 	struct DCP_FW_NAME(dcp_swap_submit_resp) *resp = data;
 
 	if (resp->ret) {
 		dev_err(dcp->dev, "swap failed! status %u\n", resp->ret);
+		dev_err(dcp->dev, "M4_DCP_SWAP_FAILED status=%u\n", resp->ret);
 		dcp_drm_crtc_vblank(dcp->crtc);
 		return;
+	}
+	if (dcp->m4_swaps_ok < 3) {
+		dcp->m4_swaps_ok++;
+		dev_info(dcp->dev, "M4_DCP_SWAP_SUBMIT_OK n=%u\n", dcp->m4_swaps_ok);
 	}
 	dcp->swap_start = ktime_get();
 
@@ -1496,7 +1826,8 @@ static void dcp_swap_started(struct apple_dcp *dcp, void *data, void *cookie)
 	DCP_FW_UNION(dcp->swap).swap.swap_id = resp->swap_id;
 
 	trace_iomfb_swap_submit(dcp, resp->swap_id);
-	dcp_swap_submit(dcp, false, &DCP_FW_UNION(dcp->swap), dcp_swapped, NULL);
+	if (!dcp_swap_submit(dcp, false, &DCP_FW_UNION(dcp->swap), dcp_swapped, NULL))
+		dcp_swap_refused(dcp);
 }
 
 /* Helpers to modeset and swap, used to flush */
@@ -1505,9 +1836,10 @@ static void do_swap(struct apple_dcp *dcp, void *data, void *cookie)
 	struct DCP_FW_NAME(dcp_swap_start_req) start_req =
 		dcp_swap_start_request(dcp);
 
-	if (dcp->connector && dcp->connector->connected)
-		dcp_swap_start(dcp, false, &start_req, dcp_swap_started, NULL);
-	else
+	if (dcp->connector && dcp->connector->connected) {
+		if (!dcp_swap_start(dcp, false, &start_req, dcp_swap_started, NULL))
+			dcp_swap_refused(dcp);
+	} else
 		dcp_drm_crtc_vblank(dcp->crtc);
 }
 
@@ -1527,6 +1859,8 @@ static void complete_set_digital_out_mode(struct apple_dcp *dcp, void *data,
 	struct dcp_wait_cookie *wait = cookie;
 
 	if (wait) {
+		if (dcp->crashed)
+			wait->failed = true;
 #if DCP_FW_VER >= DCP_FW_VERSION(26, 6, 0)
 		((struct dcp_modeset_cookie *)cookie)->result =
 			get_unaligned_le32(data);
@@ -1538,7 +1872,7 @@ static void complete_set_digital_out_mode(struct apple_dcp *dcp, void *data,
 
 #if DCP_FW_VER >= DCP_FW_VERSION(26, 6, 0)
 
-static void dcp_get_mode_info(struct apple_dcp *dcp,
+static bool dcp_get_mode_info(struct apple_dcp *dcp,
 			      const struct dcp_set_digital_out_mode_req *mode,
 			      dcp_callback_t cb, void *cookie)
 {
@@ -1554,7 +1888,7 @@ static void dcp_get_mode_info(struct apple_dcp *dcp,
 	req.result_null = 0;
 	memset(req.padding1, 0, sizeof(req.padding1));
 
-	dcp_push(dcp, false, &dcp_get_mode_info_method, sizeof(req),
+	return dcp_push(dcp, false, &dcp_get_mode_info_method, sizeof(req),
 		 sizeof(struct dcp_get_mode_info_resp_v26_6), &req, cb, cookie);
 }
 
@@ -1563,8 +1897,9 @@ static void dcp_modeset_after_actual_info(struct apple_dcp *dcp, void *data,
 {
 	struct dcp_modeset_cookie *modeset = cookie;
 
-	dcp_set_digital_out_mode(dcp, false, &modeset->actual,
-				 complete_set_digital_out_mode, cookie);
+	if (dcp->crashed || !dcp_set_digital_out_mode(dcp, false, &modeset->actual,
+				 complete_set_digital_out_mode, cookie))
+		dcp_wait_refused(dcp, cookie);
 }
 
 static void dcp_modeset_after_bootstrap(struct apple_dcp *dcp, void *data,
@@ -1577,8 +1912,9 @@ static void dcp_modeset_after_bootstrap(struct apple_dcp *dcp, void *data,
 		return;
 	}
 
-	dcp_get_mode_info(dcp, &modeset->actual,
-			  dcp_modeset_after_actual_info, cookie);
+	if (dcp->crashed || !dcp_get_mode_info(dcp, &modeset->actual,
+			  dcp_modeset_after_actual_info, cookie))
+		dcp_wait_refused(dcp, cookie);
 }
 
 static void dcp_modeset_after_bootstrap_info(struct apple_dcp *dcp, void *data,
@@ -1586,15 +1922,18 @@ static void dcp_modeset_after_bootstrap_info(struct apple_dcp *dcp, void *data,
 {
 	struct dcp_modeset_cookie *modeset = cookie;
 
-	dcp_set_digital_out_mode(dcp, false, &modeset->bootstrap,
-				 dcp_modeset_after_bootstrap, cookie);
+	if (dcp->crashed || !dcp_set_digital_out_mode(dcp, false, &modeset->bootstrap,
+				 dcp_modeset_after_bootstrap, cookie))
+		dcp_wait_refused(dcp, cookie);
 }
 #endif
 
 int DCP_FW_NAME(iomfb_modeset)(struct apple_dcp *dcp,
 			       struct drm_crtc_state *crtc_state)
 {
-	struct dcp_display_mode *mode;
+	struct dcp_display_mode matched_mode;
+	struct dcp_display_mode *mode = &matched_mode;
+	unsigned int nr_modes;
 	struct dcp_wait_cookie *cookie;
 	struct dcp_color_mode *cmode = NULL;
 #if DCP_FW_VER >= DCP_FW_VERSION(26, 6, 0)
@@ -1602,8 +1941,11 @@ int DCP_FW_NAME(iomfb_modeset)(struct apple_dcp *dcp,
 #endif
 	int ret;
 
-	mode = lookup_mode(dcp, &crtc_state->mode);
-	if (!mode) {
+	if (dcp->crashed)
+		return -ENODEV;
+
+	nr_modes = lookup_mode(dcp, &crtc_state->mode, mode);
+	if (!nr_modes) {
 		dev_err(dcp->dev, "no match for " DRM_MODE_FMT "\n",
 			DRM_MODE_ARG(&crtc_state->mode));
 		return -EIO;
@@ -1627,6 +1969,8 @@ int DCP_FW_NAME(iomfb_modeset)(struct apple_dcp *dcp,
 			"colorimetry:%u eotf:%u range:%u vrr:%u\n", cmode->depth,
 			cmode->format, cmode->colorimetry, cmode->eotf,
 			cmode->range, mode->vrr);
+	dev_info(dcp->dev, "M4_DCP_MODE_VRR timing:%u vrr_marked:%d min_vrr:%u max_vrr:%u\n",
+		 mode->timing_mode_id, mode->vrr, mode->min_vrr, mode->max_vrr);
 
 	dcp->mode = (struct dcp_set_digital_out_mode_req){
 		.color_mode_id = mode->color_mode_id,
@@ -1643,7 +1987,7 @@ int DCP_FW_NAME(iomfb_modeset)(struct apple_dcp *dcp,
 	 * single firmware-advertised non-VRR timing, already matched above.
 	 */
 	if (dcp_has_panel(dcp) && dcp->main_display &&
-	    dcp->nr_modes == 1 && !mode->vrr) {
+	    nr_modes == 1 && !mode->vrr) {
 		dcp->valid_mode = true;
 		return 0;
 	}
@@ -1678,17 +2022,20 @@ int DCP_FW_NAME(iomfb_modeset)(struct apple_dcp *dcp,
 			 "bootstrapping generic pipe (color:%u timing:%u)\n",
 			 modeset_cookie->bootstrap.color_mode_id,
 			 modeset_cookie->bootstrap.timing_mode_id);
-		dcp_get_mode_info(dcp, &modeset_cookie->bootstrap,
+		if (dcp->crashed || !dcp_get_mode_info(dcp, &modeset_cookie->bootstrap,
 				  dcp_modeset_after_bootstrap_info,
-				  modeset_cookie);
+				  modeset_cookie))
+			dcp_wait_refused(dcp, cookie);
 	} else {
-		dcp_get_mode_info(dcp, &modeset_cookie->actual,
+		if (dcp->crashed || !dcp_get_mode_info(dcp, &modeset_cookie->actual,
 				  dcp_modeset_after_actual_info,
-				  modeset_cookie);
+				  modeset_cookie))
+			dcp_wait_refused(dcp, cookie);
 	}
 #else
-	dcp_set_digital_out_mode(dcp, false, &dcp->mode,
-				 complete_set_digital_out_mode, cookie);
+	if (dcp->crashed || !dcp_set_digital_out_mode(dcp, false, &dcp->mode,
+				 complete_set_digital_out_mode, cookie))
+		dcp_wait_refused(dcp, cookie);
 #endif
 
 	/*
@@ -1698,15 +2045,17 @@ int DCP_FW_NAME(iomfb_modeset)(struct apple_dcp *dcp,
 	 */
 	ret = wait_for_completion_timeout(&cookie->done,
 					  msecs_to_jiffies(8500));
+	if (cookie->failed)
+		ret = -EIO;
 #if DCP_FW_VER >= DCP_FW_VERSION(26, 6, 0)
 	if (ret > 0 && modeset_cookie->result) {
 		dev_err(dcp->dev, "set_digital_out_mode returned 0x%08x\n",
 			modeset_cookie->result);
 		ret = -EIO;
 	}
+#endif
 	if (ret <= 0)
 		dcp->valid_mode = false;
-#endif
 
 	kref_put(&cookie->refcount, release_wait_cookie);
 	dcp->during_modeset = false;
@@ -1738,8 +2087,20 @@ void DCP_FW_NAME(iomfb_flush)(struct apple_dcp *dcp, struct drm_crtc *crtc, stru
 	struct DCP_FW_NAME(dcp_swap_submit_req) *req = &DCP_FW_UNION(dcp->swap);
 	int plane_idx, l;
 	int has_surface = 0;
+	u32 m4_mask = 0;
 
 	crtc_state = drm_atomic_get_new_crtc_state(state, crtc);
+	dcp->m4_commit_time = ktime_get();
+	if (dcp->m4_flushes < 3) {
+		dcp->m4_flushes++;
+		dev_info(dcp->dev,
+			 "M4_DCP_FLUSH n=%u valid_mode=%d connected=%d active=%d mode_changed=%d planes_changed=%d\n",
+			 dcp->m4_flushes, dcp->valid_mode,
+			 dcp->connector ? dcp->connector->connected : -1,
+			 crtc_state ? crtc_state->active : -1,
+			 crtc_state ? crtc_state->mode_changed : -1,
+			 crtc_state ? crtc_state->planes_changed : -1);
+	}
 
 	/* Reset all surfaces to defaults */
 	memset(req, 0, sizeof(*req));
@@ -1803,6 +2164,7 @@ void DCP_FW_NAME(iomfb_flush)(struct apple_dcp *dcp, struct drm_crtc *crtc, stru
 
 		req->surf_null[l] = false;
 		has_surface = 1;
+		m4_mask |= BIT(l & 1);
 		req->swap.src_rect[l] = apple_state->src_rect;
 		req->swap.dst_rect[l] = apple_state->dst_rect;
 
@@ -1817,6 +2179,8 @@ void DCP_FW_NAME(iomfb_flush)(struct apple_dcp *dcp, struct drm_crtc *crtc, stru
 			req->surf[l].base.colorspace = DCP_COLORSPACE_NATIVE;
 	}
 
+	dcp->m4_stats_mask[m4_mask & 3]++;
+
 	if (!has_surface && !crtc_state->color_mgmt_changed) {
 		if (crtc_state->enable && crtc_state->active &&
 		    !crtc_state->planes_changed) {
@@ -1830,7 +2194,7 @@ void DCP_FW_NAME(iomfb_flush)(struct apple_dcp *dcp, struct drm_crtc *crtc, stru
 		req->clear = 1;
 	}
 
-	if (has_surface && dcp->use_timestamps) {
+	if (has_surface && dcp->use_timestamps && dcp_swap_timestamps) {
 		/*
 		 * Fake timstamps to get 120hz refresh rate. It looks
 		 * like the actual value does not matter, as long  as it is non zero.
@@ -1844,6 +2208,21 @@ void DCP_FW_NAME(iomfb_flush)(struct apple_dcp *dcp, struct drm_crtc *crtc, stru
 	req->swap.swap_completed = req->swap.swap_enabled;
 
 	/* update brightness if changed */
+#if DCP_FW_VER >= DCP_FW_VERSION(26, 6, 0)
+	/*
+	 * M4: 26.6 publishes no initial nits, so nits is 0 until userspace writes
+	 * the backlight. Do not push "0 nits" from the forced post-poweron update:
+	 * it turns the panel off while the swap itself works. Leave the level
+	 * iBoot set until a brightness was really requested.
+	 */
+	if (dcp_has_panel(dcp) && dcp->brightness.update &&
+	    !dcp->brightness.requested) {
+		dev_info_once(dcp->dev,
+			      "M4_DCP_BRIGHTNESS_SKIP nits=%d requested=0 (panel keeps the firmware level)\n",
+			      dcp->brightness.nits);
+		dcp->brightness.update = false;
+	}
+#endif
 	if (dcp_has_panel(dcp) && dcp->brightness.update) {
 #if DCP_FW_VER >= DCP_FW_VERSION(26, 6, 0)
 		dcp_swap_set_brightness(&req->swap, dcp->brightness.nits);
@@ -1871,7 +2250,8 @@ void DCP_FW_NAME(iomfb_flush)(struct apple_dcp *dcp, struct drm_crtc *crtc, stru
 			mat.matrix[0] = mat.matrix[4] = mat.matrix[8] = 1LLU << 32;
 		}
 
-		iomfb_set_matrix(dcp, false, &mat, do_swap, NULL);
+		if (!iomfb_set_matrix(dcp, false, &mat, do_swap, NULL))
+			dcp_swap_refused(dcp);
 	} else
 		do_swap(dcp, NULL, NULL);
 }
@@ -1880,13 +2260,16 @@ static void res_is_main_display(struct apple_dcp *dcp, void *out, void *cookie)
 {
 	struct apple_connector *connector;
 	int result = *(int *)out;
+
+	if (dcp->crashed)
+		return;
 	dev_info(dcp->dev, "DCP is_main_display: %d\n", result);
 
 	dcp->main_display = result != 0;
 
 	connector = dcp->connector;
 	if (connector) {
-		connector->connected = dcp->nr_modes > 0;
+		connector->connected = READ_ONCE(dcp->nr_modes) > 0;
 		schedule_work(&connector->hotplug_wq);
 	}
 
@@ -1894,27 +2277,39 @@ static void res_is_main_display(struct apple_dcp *dcp, void *out, void *cookie)
 #if DCP_FW_VER >= DCP_FW_VERSION(26, 6, 0)
 	/* 26.6 no longer publishes the legacy initial-nits property (D300/15).
 	 * Start with the requested value zero; userspace sets its desired nits.
+	 *
+	 * M4 (R37): the backlight device is registered by the DRM master after
+	 * drm_dev_register() (dcp_backlight_takeover_registered()), not here: a
+	 * handshake-only load has no CRTC and an aborted gate has no DRM device,
+	 * and a write to the device would reach neither.
 	 */
-	if (dcp_has_panel(dcp) && dcp->brightness.maximum > 0)
-		schedule_work(&dcp->bl_register_wq);
 #endif
 	complete(&dcp->start_done);
 }
 
 static void init_3(struct apple_dcp *dcp, void *out, void *cookie)
 {
-	dcp_is_main_display(dcp, false, res_is_main_display, NULL);
+	if (dcp->crashed)
+		return;
+	if (!dcp_is_main_display(dcp, false, res_is_main_display, NULL))
+		dcp_start_refused(dcp);
 }
 
 static void init_2(struct apple_dcp *dcp, void *out, void *cookie)
 {
-	dcp_first_client_open(dcp, false, init_3, NULL);
+	if (dcp->crashed)
+		return;
+	if (!dcp_first_client_open(dcp, false, init_3, NULL))
+		dcp_start_refused(dcp);
 }
 
 static void init_1(struct apple_dcp *dcp, void *out, void *cookie)
 {
 	u32 val = 0;
-	dcp_enable_disable_video_power_savings(dcp, false, &val, init_2, NULL);
+	if (dcp->crashed)
+		return;
+	if (!dcp_enable_disable_video_power_savings(dcp, false, &val, init_2, NULL))
+		dcp_start_refused(dcp);
 }
 
 static void dcp_started(struct apple_dcp *dcp, void *data, void *cookie)
@@ -1924,9 +2319,22 @@ static void dcp_started(struct apple_dcp *dcp, void *data, void *cookie)
 			.mode = 6,
 		};
 
+	if (dcp->crashed)
+		return;
 	dev_info(dcp->dev, "DCP booted\n");
+	dev_info(dcp->dev, "M4_DCP_IOMFB_STARTED\n");
 
-	iomfb_get_color_remap_mode(dcp, false, &color_remap, init_1, cookie);
+	if (!dcp_takeover) {
+		/*
+		 * Handshake only: start_signal was acknowledged.  Do not run
+		 * the client-open / main-display init chain.
+		 */
+		complete(&dcp->start_done);
+		return;
+	}
+
+	if (!iomfb_get_color_remap_mode(dcp, false, &color_remap, init_1, cookie))
+		dcp_start_refused(dcp);
 }
 
 void DCP_FW_NAME(iomfb_shutdown)(struct apple_dcp *dcp)
@@ -1934,5 +2342,9 @@ void DCP_FW_NAME(iomfb_shutdown)(struct apple_dcp *dcp)
 	dcp_power_state_req_t req =
 		dcp_power_state_req(0, DCP_POWER_TRANSITION_SHUTDOWN);
 
-	dcp_set_power_state(dcp, false, &req, NULL, NULL);
+	if (!dcp_set_power_state(dcp, false, &req, NULL, NULL)) {
+		dev_warn(dcp->dev, "shutdown request publication refused\n");
+		dcp->crashed = true;
+		complete(&dcp->start_done);
+	}
 }

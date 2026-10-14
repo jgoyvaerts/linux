@@ -59,6 +59,11 @@ struct apple_drm_private {
 	struct drm_device drm;
 	struct resource scanout_pool;
 	bool scanout_pool_attached;
+	/* M4: the DCPs the master started, kept for the pre-eviction gate. */
+	struct platform_device *dcp[MAX_COPROCESSORS];
+	int num_dcp;
+	/* M4: the gate refused; no DRM device was registered, simpledrm stays. */
+	bool aborted;
 };
 
 struct apple_drm_gem_object {
@@ -506,6 +511,19 @@ static const struct drm_crtc_helper_funcs apple_crtc_helper_funcs = {
 	.mode_fixup		= dcp_crtc_mode_fixup,
 };
 
+/*
+ * M4 (R38): expose the topmost overlay surface as a DRM cursor plane so the
+ * compositor can use a hardware cursor instead of re-composing the primary
+ * plane for every pointer move. Off by default: the loader grants a second
+ * surface (apple,iomfb-surfaces = <1 1 0 0>) but nothing has driven a second
+ * DCP layer on T6040 yet, so the owner (or an attended request) asks for it.
+ * With one surface, or with this off, the planes are exactly the R37 ones.
+ */
+static bool cursor_plane;
+module_param(cursor_plane, bool, 0444);
+MODULE_PARM_DESC(cursor_plane,
+		 "Expose the highest-z non-primary IOMFB surface as the CRTC cursor plane (default 0)");
+
 static int apple_probe_per_dcp(struct device *dev,
 			       struct drm_device *drm,
 			       struct platform_device *dcp,
@@ -515,6 +533,7 @@ static int apple_probe_per_dcp(struct device *dev,
 	struct apple_connector *connector;
 	struct apple_encoder *enc;
 	struct drm_plane *primary_plane = NULL;
+	struct drm_plane *cursor = NULL;
 	struct drm_plane *planes[DCP_MAX_PLANES];
 	unsigned long *iomfb_surfaces = dcp_get_iomfb_surfaces(dcp);
 	u32 surface_order[DCP_MAX_PLANES];
@@ -569,6 +588,8 @@ static int apple_probe_per_dcp(struct device *dev,
 
 		if (surf == primary_surface)
 			plane_type = DRM_PLANE_TYPE_PRIMARY;
+		else if (cursor_plane && zpos == surface_count - 1)
+			plane_type = DRM_PLANE_TYPE_CURSOR;
 		else
 			plane_type = DRM_PLANE_TYPE_OVERLAY;
 		planes[zpos] = apple_plane_init(drm, 1U << num, surf,
@@ -582,14 +603,22 @@ static int apple_probe_per_dcp(struct device *dev,
 			return ret;
 		if (plane_type == DRM_PLANE_TYPE_PRIMARY)
 			primary_plane = planes[zpos];
+		else if (plane_type == DRM_PLANE_TYPE_CURSOR)
+			cursor = planes[zpos];
 	}
 
 	crtc = kzalloc(sizeof(*crtc), GFP_KERNEL);
 	ret = drm_crtc_init_with_planes(drm, &crtc->base, primary_plane,
-					NULL,
+					cursor,
 					&apple_crtc_funcs, NULL);
 	if (ret)
 		return ret;
+	if (cursor) {
+		drm->mode_config.cursor_width = 128;
+		drm->mode_config.cursor_height = 128;
+		dev_info(dev, "M4_DCP_CURSOR_PLANE enabled surface=%u size=128x128\n",
+			 to_apple_plane(cursor)->iomfb_surf);
+	}
 
 	drm_crtc_helper_add(&crtc->base, &apple_crtc_helper_funcs);
 	drm_crtc_enable_color_mgmt(&crtc->base, 0, true, 0);
@@ -736,9 +765,11 @@ static int apple_drm_init_dcp(struct device *dev)
 		return -ENODEV;
 
 	/*
-	 * Starting DPTX might take some time.
+	 * Starting DPTX might take some time. M4: the takeover init chain
+	 * (client open, main display, power state) has never run on this
+	 * firmware, so wait as long as the handshake does before giving up.
 	 */
-	timeout = get_jiffies_64() + msecs_to_jiffies(3000);
+	timeout = get_jiffies_64() + msecs_to_jiffies(10000);
 
 	for (i = 0; i < num_dcp; ++i) {
 		u64 jiffies = get_jiffies_64();
@@ -756,6 +787,10 @@ static int apple_drm_init_dcp(struct device *dev)
 	/* HACK: Wait for dcp* to settle before a modeset */
 	msleep(100);
 
+	for (i = 0; i < num_dcp; i++)
+		apple->dcp[i] = dcp[i];
+	apple->num_dcp = num_dcp;
+
 	return 0;
 }
 
@@ -765,7 +800,14 @@ static int apple_drm_init(struct device *dev)
 	struct resource fb_r;
 	resource_size_t fb_size;
 	bool use_nomap_pool;
-	int ret;
+	int ret, i;
+
+	/*
+	 * Defence in depth: the master is not registered without takeover=1,
+	 * but never reach component_bind_all() or the aperture eviction below.
+	 */
+	if (!dcp_takeover)
+		return -EPERM;
 
 	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(42));
 	if (ret)
@@ -833,18 +875,59 @@ static int apple_drm_init(struct device *dev)
 	drm_mode_config_reset(&apple->drm);
 
 	fb_size = fb_r.end - fb_r.start + 1;
+	dev_info(dev, "M4_DCP_TAKEOVER_GATE fb=%pa size=%pa dcp=%d\n",
+		 &fb_r.start, &fb_size, apple->num_dcp);
+
+	/*
+	 * M4: everything that can still be refused is tried while simpledrm owns
+	 * the screen. Past the aperture removal there is no way back.
+	 */
+	for (i = 0; i < apple->num_dcp; i++) {
+		const char *reason = "none";
+
+		ret = dcp_takeover_trial(apple->dcp[i], &reason);
+		if (!ret)
+			continue;
+
+		/*
+		 * Do not unbind: that runs the DCP shutdown sequence, which can
+		 * crash the DCP and blank the panel. Leave it running, pin the
+		 * module (like the handshake) and keep simpledrm.
+		 */
+		dev_err(dev,
+			"M4_DCP_TAKEOVER_ABORT reason=%s rc=%d dcp=%d (simpledrm keeps the screen; DCP left running, module pinned)\n",
+			reason, ret, i);
+		__module_get(THIS_MODULE);
+		apple->aborted = true;
+		return 0;
+	}
+
 	ret = aperture_remove_conflicting_devices(fb_r.start, fb_size,
 						  apple_drm_driver.name);
 	if (ret) {
 		dev_err(dev, "Failed remove fb: %d\n", ret);
+		dev_err(dev, "M4_DCP_TAKEOVER_EVICT_FAILED rc=%d\n", ret);
 		goto err_unbind;
 	}
+	dev_info(dev, "M4_DCP_TAKEOVER_EVICTED boot framebuffer %pa+%pa removed\n",
+		 &fb_r.start, &fb_size);
 
 	ret = drm_dev_register(&apple->drm, 0);
-	if (ret)
+	if (ret) {
+		dev_err(dev,
+			"M4_DCP_TAKEOVER_REGISTER_FAILED rc=%d (boot framebuffer already evicted)\n",
+			ret);
 		goto err_unbind;
+	}
+	dev_info(dev, "M4_DCP_TAKEOVER_REGISTERED card=%d\n",
+		 apple->drm.primary ? apple->drm.primary->index : -1);
+
+	/* M4 (R37): only now is there a DRM device a backlight write can reach. */
+	for (i = 0; i < apple->num_dcp; i++)
+		dcp_backlight_takeover_registered(apple->dcp[i]);
 
 	drm_client_setup_with_fourcc(&apple->drm, DRM_FORMAT_XRGB8888);
+	dev_info(dev, "M4_DCP_TAKEOVER_CLIENT_SETUP fbdev XRGB8888 requested\n");
 
 	return 0;
 
@@ -861,6 +944,12 @@ err_release_rmem:
 static void apple_drm_uninit(struct device *dev)
 {
 	struct apple_drm_private *apple = dev_get_drvdata(dev);
+
+	if (apple->aborted) {
+		/* M4: never registered, DCP deliberately left running. */
+		dev_set_drvdata(dev, NULL);
+		return;
+	}
 
 	drm_dev_unregister(&apple->drm);
 	drm_atomic_helper_shutdown(&apple->drm);
@@ -965,7 +1054,7 @@ static int apple_platform_suspend(struct device *dev)
 {
 	struct apple_drm_private *apple = dev_get_drvdata(dev);
 
-	if (apple)
+	if (apple && !apple->aborted)
 		return drm_mode_config_helper_suspend(&apple->drm);
 
 	return 0;
@@ -975,7 +1064,7 @@ static int apple_platform_resume(struct device *dev)
 {
 	struct apple_drm_private *apple = dev_get_drvdata(dev);
 
-	if (apple)
+	if (apple && !apple->aborted)
 		drm_mode_config_helper_resume(&apple->drm);
 
 	return 0;
@@ -1010,7 +1099,10 @@ static int __init appledrm_register(void)
 	dcp_audio_register();
 #endif
 	dcp_register();
-	platform_driver_register(&apple_platform_driver);
+	if (dcp_takeover)
+		platform_driver_register(&apple_platform_driver);
+	else
+		pr_info("appledrm: M4_DCP_MASTER_NOT_REGISTERED takeover=0, display subsystem left to simpledrm\n");
 
 	return 0;
 }
@@ -1021,7 +1113,8 @@ static void __exit appledrm_unregister(void)
 	dcp_audio_unregister();
 #endif
 	dcp_unregister();
-	platform_driver_unregister(&apple_platform_driver);
+	if (dcp_takeover)
+		platform_driver_unregister(&apple_platform_driver);
 }
 
 module_init(appledrm_register);

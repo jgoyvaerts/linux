@@ -39,6 +39,8 @@ unsigned long* dcp_get_iomfb_surfaces(struct platform_device *pdev);
 void dcp_link(struct platform_device *pdev, struct apple_crtc *apple,
 	      struct apple_connector *connector);
 int dcp_start(struct platform_device *pdev);
+int dcp_takeover_trial(struct platform_device *pdev, const char **reason);
+void dcp_backlight_takeover_registered(struct platform_device *pdev);
 int dcp_wait_ready(struct platform_device *pdev, u64 timeout);
 void dcp_flush(struct drm_crtc *crtc, struct drm_atomic_state *state);
 bool dcp_is_initialized(struct platform_device *pdev);
