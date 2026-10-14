@@ -112,10 +112,10 @@ MODULE_PARM_DESC(backlight_default_nits,
  * numbers cannot say whether the display driver completes swaps late. One line per 2 s window, only while swaps
  * complete: rate, gap between completions and submit-to-complete latency.
  */
-bool dcp_swap_stats = true;
+bool dcp_swap_stats;
 module_param_named(swap_stats, dcp_swap_stats, bool, 0644);
 MODULE_PARM_DESC(swap_stats,
-		 "Log one M4_DCP_SWAP_STATS line per 2 s of completed swaps (default 1)");
+		 "Log one M4_DCP_SWAP_STATS line per 2 s of completed swaps (default 0; fpsprobe and frame-pacing tests turn it on)");
 
 /*
  * M4 (R39 prep): page-flip event policy. The mainline-derived default (0) estimates the scanout time from the
