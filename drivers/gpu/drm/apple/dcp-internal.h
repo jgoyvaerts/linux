@@ -34,6 +34,8 @@ extern bool dcp_swap_stats;
 /* M4 (R39 prep): page-flip event policy (bit0 raw completion time, bit1 running sequence) and fake swap timestamps */
 extern unsigned int dcp_flip_event_mode;
 extern bool dcp_swap_timestamps;
+/* M4 (R52): minimum refresh rate (Hz) sent in IOMFBParameter 14 (adaptive sync); 0 = off */
+extern unsigned int dcp_adaptive_sync_min_hz;
 extern unsigned int dcp_backlight_default_nits;
 extern unsigned long dcp_clk_hz;
 
