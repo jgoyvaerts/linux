@@ -174,6 +174,15 @@ static int macsmc_input_probe(struct platform_device *pdev)
 
 	input_sync(smcin->input);
 
+	/*
+	 * Register the wakeup cleanup before the notifier, so that removal
+	 * drains the notifier callbacks first, while both the input device
+	 * and the wakeup source are still alive.
+	 */
+	error = devm_device_init_wakeup(&pdev->dev);
+	if (error)
+		return error;
+
 	smcin->nb.notifier_call = macsmc_input_event;
 	error = blocking_notifier_chain_register(&smc->event_handlers, &smcin->nb);
 	if (error)
@@ -188,8 +197,6 @@ static int macsmc_input_probe(struct platform_device *pdev)
 					 macsmc_input_unregister_notifier, smcin);
 	if (error)
 		return error;
-
-	device_init_wakeup(&pdev->dev, true);
 
 	return 0;
 }
