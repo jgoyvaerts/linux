@@ -619,12 +619,16 @@ static int macsmc_battery_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD:
 		if (power->has_chls) {
 			ret = apple_smc_read_u16(power->smc, SMC_KEY(CHLS), &vu16);
+			if (ret < 0)
+				return ret;
 			val->intval = vu16 & 0xff;
 			if (val->intval < CHLS_MIN_END_THRESHOLD || val->intval >= 100)
 				val->intval = 100;
 		} else if (power->has_chwa) {
 			flag = false;
 			ret = apple_smc_read_flag(power->smc, SMC_KEY(CHWA), &flag);
+			if (ret < 0)
+				return ret;
 			val->intval = flag ? CHWA_FIXED_END_THRESHOLD : 100;
 		} else {
 			return -EINVAL;
@@ -645,6 +649,11 @@ static int macsmc_battery_set_property(struct power_supply *psy,
 				       const union power_supply_propval *val)
 {
 	struct macsmc_power *power = power_supply_get_drvdata(psy);
+
+	if ((psp == POWER_SUPPLY_PROP_CHARGE_CONTROL_START_THRESHOLD ||
+	     psp == POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD) &&
+	    (val->intval < 0 || val->intval > 100))
+		return -EINVAL;
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR:
