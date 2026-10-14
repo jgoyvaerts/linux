@@ -354,7 +354,7 @@ static int magicmouse_open(struct input_dev *dev)
 		ret = magicmouse_enable_multitouch(hdev);
 		if (ret != -EIO && ret < 0) {
 			hid_err(hdev, "unable to request touch data (%d)\n", ret);
-			return ret;
+			goto err_close;
 		}
 		if (ret == -EIO && (hdev->product == USB_DEVICE_ID_APPLE_MAGICMOUSE2 ||
 				hdev->product == USB_DEVICE_ID_APPLE_MAGICMOUSE2_USBC)) {
@@ -380,15 +380,31 @@ static int magicmouse_open(struct input_dev *dev)
 			__le16 max_x;
 			__le16 max_y;
 		} dim;
-		uint32_t x_span, y_span;
+		int x_span, y_span;
+		u32 x_res, y_res;
 
 		ret = hid_hw_raw_request(hdev, SENSOR_DIMENSIONS_REPORT_ID, buf, sizeof(buf), HID_FEATURE_REPORT, HID_REQ_GET_REPORT);
 		if (ret < (int)(1 + sizeof(dim))) {
 			hid_err(hdev, "unable to request dimensions (%d)\n", ret);
-			return ret;
+			ret = ret < 0 ? ret : -EPROTO;
+			goto err_close;
 		}
 
 		memcpy(&dim, buf + 1, sizeof(dim));
+
+		x_span = le16_to_int(dim.max_x) - le16_to_int(dim.min_x);
+		y_span = le16_to_int(dim.max_y) - le16_to_int(dim.min_y);
+
+		/* Validate both axes before publishing any new geometry. */
+		if (buf[0] != SENSOR_DIMENSIONS_REPORT_ID ||
+		    x_span <= 0 || y_span <= 0 ||
+		    !le32_to_cpu(dim.width) || !le32_to_cpu(dim.height))
+			goto err_dimensions;
+
+		x_res = 100 * x_span / le32_to_cpu(dim.width);
+		y_res = 100 * y_span / le32_to_cpu(dim.height);
+		if (!x_res || !y_res)
+			goto err_dimensions;
 
 		/* finger position */
 		input_set_abs_params(input, ABS_MT_POSITION_X,
@@ -396,12 +412,10 @@ static int magicmouse_open(struct input_dev *dev)
 		/* Y axis is inverted */
 		input_set_abs_params(input, ABS_MT_POSITION_Y,
 				     -le16_to_int(dim.max_y), -le16_to_int(dim.min_y), 0, 0);
-		x_span = le16_to_int(dim.max_x) - le16_to_int(dim.min_x);
-		y_span = le16_to_int(dim.max_y) - le16_to_int(dim.min_y);
 
 		/* X/Y resolution */
-		input_abs_set_res(input, ABS_MT_POSITION_X, 100 * x_span / le32_to_cpu(dim.width) );
-		input_abs_set_res(input, ABS_MT_POSITION_Y, 100 * y_span / le32_to_cpu(dim.height) );
+		input_abs_set_res(input, ABS_MT_POSITION_X, x_res);
+		input_abs_set_res(input, ABS_MT_POSITION_Y, y_res);
 
 		/* copy info, as input_mt_init_slots() does */
 		dev->absinfo[ABS_X] = dev->absinfo[ABS_MT_POSITION_X];
@@ -411,6 +425,13 @@ static int magicmouse_open(struct input_dev *dev)
 	}
 
 	return 0;
+
+err_dimensions:
+	hid_err(hdev, "invalid touchpad dimensions\n");
+	ret = -EPROTO;
+err_close:
+	hid_hw_close(hdev);
+	return ret;
 }
 
 static void magicmouse_close(struct input_dev *dev)
