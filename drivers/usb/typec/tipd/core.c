@@ -272,8 +272,11 @@ static int tps6598x_connect(struct tps6598x *tps, u32 status)
 		return ret;
 
 	tps->partner = typec_register_partner(tps->port, &desc);
-	if (IS_ERR(tps->partner))
-		return PTR_ERR(tps->partner);
+	if (IS_ERR(tps->partner)) {
+		ret = PTR_ERR(tps->partner);
+		tps->partner = NULL;
+		return ret;
+	}
 
 	if (desc.identity)
 		typec_partner_set_identity(tps->partner);
@@ -429,7 +432,7 @@ static int tps6598x_dr_set(struct typec_port *port, enum typec_data_role role)
 		goto out_unlock;
 	}
 
-	tps6598x_set_data_role(tps, role, true);
+	ret = tps6598x_set_data_role(tps, role, true);
 
 out_unlock:
 	mutex_unlock(&tps->lock);
