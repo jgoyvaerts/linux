@@ -41,6 +41,8 @@
 #include <linux/time64.h>
 
 #include "nvme.h"
+#include "apple-m4-readonly.h"
+#include "apple-m4-partition.h"
 
 #define APPLE_ANS_BOOT_TIMEOUT	  USEC_PER_SEC
 
@@ -198,6 +200,8 @@ struct apple_nvme_hw {
 	bool has_queue_count;
 	bool has_separate_nvmmu;
 	bool needs_ioq_registers;
+	/* J616s guard: no namespace mutation commands outside one partition. */
+	bool partition_write_probe;
 	/*
 	 * T6040: the linear submission queue doorbells are in the NVMMU block
 	 * (the "nvme" block ends at 0x10000), and LINEAR_SQ_CTRL is left as the
@@ -240,6 +244,7 @@ struct apple_nvme {
 	struct reset_control *reset;
 	bool owns_rtkit;
 	bool inherited_rtkit;
+	u64 write_lba_range[2]; /* first inclusive, end exclusive; immutable */
 
 	struct dma_pool *prp_page_pool;
 	struct dma_pool *prp_small_pool;
@@ -342,6 +347,16 @@ static bool apple_nvme_can_adopt_rtkit(struct apple_nvme *anv)
 		return false;
 	cc = readl(anv->mmio_nvme + NVME_REG_CC);
 	csts = readl(anv->mmio_nvme + NVME_REG_CSTS);
+
+	/*
+	 * The J616s loader reads the SSD, disables the controller and leaves
+	 * its RTKit session running for this driver, and says so in
+	 * /chosen/m4,ans-live (m4 Boot ABI). That session is live although
+	 * the controller is no longer enabled.
+	 */
+	if (anv->hw->partition_write_probe && of_chosen &&
+	    of_property_present(of_chosen, "m4,ans-live"))
+		return !(csts & NVME_CSTS_CFS);
 
 	/*
 	 * CPU_RUN and BOOT_STATUS alone survive a session that has gone
@@ -1109,6 +1124,20 @@ static blk_status_t apple_nvme_queue_rq(struct blk_mq_hw_ctx *hctx,
 			ret = BLK_STS_NOTSUPP;
 			goto out_free_cmd;
 		}
+	}
+
+	if (anv->hw->partition_write_probe &&
+	    !apple_m4_partition_allowed(q->is_adminq, cmnd->common.opcode,
+			le32_to_cpu(cmnd->common.cdw10),
+			le32_to_cpu(cmnd->common.nsid),
+			ns && ns->head ? ns->head->lba_shift : 0,
+			le64_to_cpu(cmnd->rw.slba), le16_to_cpu(cmnd->rw.length),
+			anv->write_lba_range[0], anv->write_lba_range[1])) {
+		dev_warn_ratelimited(anv->dev,
+			"partition guard rejected %s opcode 0x%x\n",
+			q->is_adminq ? "admin" : "I/O", cmnd->common.opcode);
+		ret = BLK_STS_IOERR;
+		goto out_free_cmd;
 	}
 
 	if (blk_rq_nr_phys_segments(req)) {
@@ -2257,6 +2286,18 @@ static struct apple_nvme *apple_nvme_alloc(struct platform_device *pdev)
 		ret = -ENODEV;
 		goto out_detach_genpd;
 	}
+	if (anv->hw->partition_write_probe) {
+		ret = of_property_read_u64_array(dev->of_node, "lab,write-lba-range",
+						 anv->write_lba_range, 2);
+		if (ret || !apple_m4_partition_range_valid(anv->write_lba_range[0],
+							   anv->write_lba_range[1])) {
+			dev_err(dev, "Missing/invalid partition write bounds\n");
+			ret = -EINVAL;
+			goto out_detach_genpd;
+		}
+		dev_info(dev, "Writes restricted to namespace 1, 4096-byte LBAs [%llu,%llu)\n",
+			 anv->write_lba_range[0], anv->write_lba_range[1]);
+	}
 
 	ret = apple_nvme_attach_genpd(anv);
 	if (ret < 0) {
@@ -2667,7 +2708,22 @@ static const struct apple_nvme_hw apple_nvme_t6040_hw = {
 	.quirks = NVME_QUIRK_NO_APST,
 };
 
+/*
+ * J616s (T6040, 26.x firmware): the post-M4 controller of T8132 behind a
+ * command guard. Bound only by our own device tree.
+ */
+static const struct apple_nvme_hw apple_nvme_j616_partition_hw = {
+	.has_lsq_nvmmu = true,
+	.has_separate_nvmmu = true,
+	.needs_ioq_registers = true,
+	.partition_write_probe = true,
+	.lsq_in_nvmmu = true,
+	.max_queue_depth = 64,
+	.quirks = NVME_QUIRK_NO_APST,
+};
+
 static const struct of_device_id apple_nvme_of_match[] = {
+	{ .compatible = "lab,j616-nvme-partition-25g83", .data = &apple_nvme_j616_partition_hw },
 	{ .compatible = "apple,t6040-nvme-ans2", .data = &apple_nvme_t6040_hw },
 	{ .compatible = "apple,t8015-nvme-ans2", .data = &apple_nvme_t8015_hw },
 	{ .compatible = "apple,t8103-nvme-ans2", .data = &apple_nvme_t8103_hw },
