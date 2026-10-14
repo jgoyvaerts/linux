@@ -10,6 +10,7 @@
 
 /* Fixed size of shared memory between DCP and AP */
 #define DCP_SHMEM_SIZE 0x100000
+#define DCP_CHANNEL_SIZE 0x8000
 
 /* DCP message contexts */
 enum dcp_context_id {
@@ -179,6 +180,12 @@ struct dcp_method_entry {
 struct apple_dcp;
 
 typedef bool (*iomfb_cb_handler)(struct apple_dcp *, int, void *, void *);
+
+/* Bytes actually accessed by the selected handler; not a complete wire ABI. */
+struct iomfb_cb_entry {
+ iomfb_cb_handler handler;
+ u32 min_in, min_out;
+};
 
 /* Prototypes */
 

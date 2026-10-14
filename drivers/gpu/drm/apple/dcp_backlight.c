@@ -9,6 +9,7 @@
 #include <linux/backlight.h>
 #include <linux/completion.h>
 #include <linux/delay.h>
+#include <linux/limits.h>
 #include "linux/jiffies.h"
 
 #include "dcp.h"
@@ -120,7 +121,7 @@ static u32 calculate_dac(struct apple_dcp *dcp, int val)
 	else if (val == MIN_BRIGHTNESS_PART2)
 		return 16 * brightness_part2[0];
 	else if (val >= MAX_BRIGHTNESS_PART2)
-		return brightness_part2[ARRAY_SIZE(brightness_part2) - 1];
+		return 16 * brightness_part2[ARRAY_SIZE(brightness_part2) - 1];
 
 	if (val < MAX_BRIGHTNESS_PART1) {
 		dac = interpolate(val, MIN_BRIGHTNESS_PART1, MAX_BRIGHTNESS_PART1,
@@ -148,8 +149,11 @@ static int drm_crtc_set_brightness(struct apple_dcp *dcp)
 	ret = drm_modeset_lock(&crtc->mutex, &ctx);
 	if (ret == -EDEADLK) {
 		drm_modeset_backoff(&ctx);
+		drm_modeset_drop_locks(&ctx);
+		drm_modeset_acquire_fini(&ctx);
 		return -EDEADLK;
 	} else if (ret == -ERESTARTSYS) {
+		drm_modeset_acquire_fini(&ctx);
 		return -ERESTARTSYS;
 	}
 
@@ -177,6 +181,7 @@ fail:
 	drm_atomic_state_put(state);
 done:
 	drm_modeset_drop_locks(&ctx);
+	drm_modeset_acquire_fini(&ctx);
 
 	return ret;
 }
@@ -206,24 +211,58 @@ static int dcp_set_brightness(struct backlight_device *bd)
 	struct drm_modeset_acquire_ctx ctx;
 	int brightness = backlight_get_brightness(bd);
 
+	if (brightness < 0 || brightness > bd->props.max_brightness)
+		return -ERANGE;
+	/*
+	 * M4: a userspace level of 0 must not turn the panel off (R36 dark-panel
+	 * lesson; use DPMS for off). A blanked panel keeps its non-zero user level
+	 * and still gets 0 here.
+	 */
+	if (dcp->fw_compat == DCP_FIRMWARE_V_26_6 && !brightness &&
+	    !bd->props.brightness)
+		brightness = min(bd->props.max_brightness, 2);
+	if (dcp->fw_compat != DCP_FIRMWARE_V_12_3 &&
+	    dcp->fw_compat != DCP_FIRMWARE_V_13_5 &&
+	    dcp->fw_compat != DCP_FIRMWARE_V_26_6)
+		return -EOPNOTSUPP;
+
 	drm_modeset_acquire_init(&ctx, DRM_MODESET_ACQUIRE_INTERRUPTIBLE);
 	ret = drm_modeset_lock(&dcp->crtc->base.mutex, &ctx);
 	if (ret == -EDEADLK) {
 		drm_modeset_backoff(&ctx);
+		drm_modeset_drop_locks(&ctx);
+		drm_modeset_acquire_fini(&ctx);
 		return -EDEADLK;
 	} else if (ret == -ERESTARTSYS) {
+		drm_modeset_acquire_fini(&ctx);
 		return -ERESTARTSYS;
 	}
 
-	if (dcp->fw_compat == DCP_FIRMWARE_V_26_6)
-		dcp->brightness.nits = brightness;
-	else
+	if (dcp->fw_compat != DCP_FIRMWARE_V_26_6)
 		dcp->brightness.dac = calculate_dac(dcp, brightness);
+	dcp->brightness.nits = brightness;
+	dcp->brightness.requested = true;
 	dcp->brightness.update = true;
 
 	drm_modeset_drop_locks(&ctx);
+	drm_modeset_acquire_fini(&ctx);
 
 	return dcp_backlight_update(dcp);
+}
+
+/*
+ * M4 (R37): called by the DRM master once the DRM device is registered. The
+ * 26.6 firmware publishes no initial nits, so nothing else triggers the
+ * registration; it is skipped for a handshake-only load and an aborted gate.
+ */
+void dcp_backlight_takeover_registered(struct platform_device *pdev)
+{
+	struct apple_dcp *dcp = platform_get_drvdata(pdev);
+
+	if (!dcp || !dcp_takeover || !dcp_has_panel(dcp) ||
+	    !dcp->brightness.maximum)
+		return;
+	schedule_work(&dcp->bl_register_wq);
 }
 
 static const struct backlight_ops dcp_backlight_ops = {
@@ -241,11 +280,30 @@ int dcp_backlight_register(struct apple_dcp *dcp)
 		.brightness = dcp->brightness.nits,
 		.scale = BACKLIGHT_SCALE_LINEAR,
 	};
+	if (!dcp->brightness.maximum || dcp->brightness.maximum > INT_MAX)
+		return -ERANGE;
 	if (dcp->fw_compat == DCP_FIRMWARE_V_26_6)
 		props.max_brightness = dcp->brightness.maximum;
-	else
+	else if (dcp->fw_compat == DCP_FIRMWARE_V_12_3 ||
+		 dcp->fw_compat == DCP_FIRMWARE_V_13_5)
 		props.max_brightness = min(dcp->brightness.maximum,
 					  MAX_BRIGHTNESS_PART2 - 1);
+	else
+		return -EOPNOTSUPP;
+	/*
+	 * M4: 26.6 publishes no initial nits, so the level is unknown. Report a
+	 * sane default instead of 0 so the first "+5%" is relative to something
+	 * real. It is not sent to the panel: that happens only on a userspace write.
+	 */
+	if (dcp->fw_compat == DCP_FIRMWARE_V_26_6 && !props.brightness) {
+		props.brightness = min_t(u32, dcp_backlight_default_nits,
+					 props.max_brightness);
+		dcp->brightness.nits = props.brightness;
+		dev_info(dev, "M4_DCP_BACKLIGHT_REGISTER max=%d initial=%d (assumed, not sent)\n",
+			 props.max_brightness, props.brightness);
+	}
+	if (props.brightness < 0 || props.brightness > props.max_brightness)
+		return -ERANGE;
 
 	bl_dev = devm_backlight_device_register(dev, "apple-panel-bl", dev, dcp,
 						&dcp_backlight_ops, &props);

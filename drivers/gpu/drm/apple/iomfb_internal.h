@@ -12,40 +12,40 @@ typedef void (*dcp_callback_t)(struct apple_dcp *, void *, void *);
 
 
 #define DCP_THUNK_VOID(func, handle)                                         \
-	static void func(struct apple_dcp *dcp, bool oob, dcp_callback_t cb, \
+	static bool func(struct apple_dcp *dcp, bool oob, dcp_callback_t cb, \
 			 void *cookie)                                       \
 	{                                                                    \
-		dcp_push(dcp, oob, &dcp_methods[handle], 0, 0, NULL, cb, cookie);          \
+		return dcp_push(dcp, oob, &dcp_methods[handle], 0, 0, NULL, cb, cookie);          \
 	}
 
 #define DCP_THUNK_OUT(func, handle, T)                                       \
-	static void func(struct apple_dcp *dcp, bool oob, dcp_callback_t cb, \
+	static bool func(struct apple_dcp *dcp, bool oob, dcp_callback_t cb, \
 			 void *cookie)                                       \
 	{                                                                    \
-		dcp_push(dcp, oob, &dcp_methods[handle], 0, sizeof(T), NULL, cb, cookie);  \
+		return dcp_push(dcp, oob, &dcp_methods[handle], 0, sizeof(T), NULL, cb, cookie); \
 	}
 
 #define DCP_THUNK_IN(func, handle, T)                                       \
-	static void func(struct apple_dcp *dcp, bool oob, T *data,          \
+	static bool func(struct apple_dcp *dcp, bool oob, T *data,          \
 			 dcp_callback_t cb, void *cookie)                   \
 	{                                                                   \
-		dcp_push(dcp, oob, &dcp_methods[handle], sizeof(T), 0, data, cb, cookie); \
+		return dcp_push(dcp, oob, &dcp_methods[handle], sizeof(T), 0, data, cb, cookie); \
 	}
 
 #define DCP_THUNK_INOUT(func, handle, T_in, T_out)                            \
-	static void func(struct apple_dcp *dcp, bool oob, T_in *data,         \
+	static bool func(struct apple_dcp *dcp, bool oob, T_in *data,         \
 			 dcp_callback_t cb, void *cookie)                     \
 	{                                                                     \
-		dcp_push(dcp, oob, &dcp_methods[handle], sizeof(T_in), sizeof(T_out), data, \
+		return dcp_push(dcp, oob, &dcp_methods[handle], sizeof(T_in), sizeof(T_out), data, \
 			 cb, cookie);                                         \
 	}
 
 #define IOMFB_THUNK_INOUT(name)                                     \
-	static void iomfb_ ## name(struct apple_dcp *dcp, bool oob, \
+	static bool iomfb_ ## name(struct apple_dcp *dcp, bool oob, \
 			struct iomfb_ ## name ## _req *data,        \
 			dcp_callback_t cb, void *cookie)            \
 	{                                                           \
-		dcp_push(dcp, oob, &dcp_methods[iomfbep_ ## name],                \
+		return dcp_push(dcp, oob, &dcp_methods[iomfbep_ ## name],                \
 			 sizeof(struct iomfb_ ## name ## _req),     \
 			 sizeof(struct iomfb_ ## name ## _resp),    \
 			 data,  cb, cookie);                        \
@@ -56,7 +56,13 @@ typedef void (*dcp_callback_t)(struct apple_dcp *, void *, void *);
  * input data (so if the types don't match, gcc errors out).
  */
 
+#define IOMFB_CB_SIZE(func, in_bytes, out_bytes) \
+ enum { func##_in_size = (in_bytes), func##_out_size = (out_bytes) }
+#define IOMFB_CB_ENTRY(func) \
+ { .handler = (func), .min_in = func##_in_size, .min_out = func##_out_size }
+
 #define TRAMPOLINE_VOID(func, handler)                                        \
+	IOMFB_CB_SIZE(func, 0, 0); \
 	static bool __maybe_unused func(struct apple_dcp *dcp, int tag, void *out, void *in) \
 	{                                                                     \
 		trace_iomfb_callback(dcp, tag, #handler);                     \
@@ -65,6 +71,7 @@ typedef void (*dcp_callback_t)(struct apple_dcp *, void *, void *);
 	}
 
 #define TRAMPOLINE_IN(func, handler, T_in)                                    \
+	IOMFB_CB_SIZE(func, sizeof(T_in), 0); \
 	typedef void (*callback_##handler)(struct apple_dcp *, T_in *);       \
                                                                               \
 	static bool __maybe_unused func(struct apple_dcp *dcp, int tag, void *out, void *in) \
@@ -77,6 +84,7 @@ typedef void (*dcp_callback_t)(struct apple_dcp *, void *, void *);
 	}
 
 #define TRAMPOLINE_INOUT(func, handler, T_in, T_out)                          \
+	IOMFB_CB_SIZE(func, sizeof(T_in), sizeof(T_out)); \
 	typedef T_out (*callback_##handler)(struct apple_dcp *, T_in *);      \
                                                                               \
 	static bool __maybe_unused func(struct apple_dcp *dcp, int tag, void *out, void *in) \
@@ -90,6 +98,7 @@ typedef void (*dcp_callback_t)(struct apple_dcp *, void *, void *);
 	}
 
 #define TRAMPOLINE_OUT(func, handler, T_out)                                  \
+	IOMFB_CB_SIZE(func, 0, sizeof(T_out)); \
 	static bool __maybe_unused func(struct apple_dcp *dcp, int tag, void *out, void *in) \
 	{                                                                     \
 		T_out *typed_out = out;                                       \
@@ -100,7 +109,7 @@ typedef void (*dcp_callback_t)(struct apple_dcp *, void *, void *);
 	}
 
 /* Call a DCP function given by a tag */
-void dcp_push(struct apple_dcp *dcp, bool oob, const struct dcp_method_entry *call,
+bool dcp_push(struct apple_dcp *dcp, bool oob, const struct dcp_method_entry *call,
 		     u32 in_len, u32 out_len, void *data, dcp_callback_t cb,
 		     void *cookie);
 
@@ -109,6 +118,7 @@ int dcp_parse_tag(char tag[4]);
 
 void dcp_ack(struct apple_dcp *dcp, enum dcp_context_id context);
 
-/* The user may own drm_display_mode, so we need to search for our copy */
-struct dcp_display_mode *lookup_mode(struct apple_dcp *dcp,
-					    const struct drm_display_mode *mode);
+/* Copy a matching mode while locked; return its array count, or zero. */
+unsigned int lookup_mode(struct apple_dcp *dcp,
+			 const struct drm_display_mode *mode,
+			 struct dcp_display_mode *out);

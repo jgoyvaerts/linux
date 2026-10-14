@@ -27,6 +27,15 @@ struct apple_dcp;
 struct apple_dcp_afkep;
 
 extern bool dcp_disable_rt_bandwidth;
+/* M4: 0 = RTKit/IOMFB start handshake only, 1 = full DRM takeover. */
+extern bool dcp_takeover;
+/* M4 (R38): one M4_DCP_SWAP_STATS line per 2 s window while swaps complete (default on). */
+extern bool dcp_swap_stats;
+/* M4 (R39 prep): page-flip event policy (bit0 raw completion time, bit1 running sequence) and fake swap timestamps */
+extern unsigned int dcp_flip_event_mode;
+extern bool dcp_swap_timestamps;
+extern unsigned int dcp_backlight_default_nits;
+extern unsigned long dcp_clk_hz;
 
 struct dcpav_service_epic;
 
@@ -81,7 +90,9 @@ struct dcp_channel {
 	dcp_callback_t callbacks[DCP_MAX_CALL_DEPTH];
 	void *cookies[DCP_MAX_CALL_DEPTH];
 	void *output[DCP_MAX_CALL_DEPTH];
+	u16 start[DCP_MAX_CALL_DEPTH];
 	u16 end[DCP_MAX_CALL_DEPTH];
+	bool host_call[DCP_MAX_CALL_DEPTH];
 
 	/* Current depth of the call stack. Less than DCP_MAX_CALL_DEPTH */
 	u8 depth;
@@ -104,6 +115,8 @@ struct dcp_brightness {
 	int nits;
 	int scale;
 	bool update;
+	/* M4: userspace wrote a brightness through the backlight device. */
+	bool requested;
 };
 
 struct audiosrv_data;
@@ -178,10 +191,13 @@ struct apple_dcp {
 	struct dcp_channel ch_cb, ch_oobcb, ch_async, ch_oobasync;
 
 	/* iomfb EP callback handlers */
-	const iomfb_cb_handler *cb_handlers;
+	const struct iomfb_cb_entry *cb_handlers;
 
 	/* Active chunked transfer. There can only be one at a time. */
 	struct dcp_chunks chunks;
+	unsigned long *chunks_received;
+	/* Per-transfer diagnostics for the 26.6 property path (M4_DCP_PROP_*). */
+	u32 chunk_calls, chunk_last_offset, chunk_last_length;
 
 	/* Queued swap. Owned by the DCP to avoid per-swap memory allocation */
 	union {
@@ -204,6 +220,25 @@ struct apple_dcp {
 	 * a mismatched power-on sequence on reconnect.
 	 */
 	bool hotplug_keepalive;
+	/*
+	 * M4 takeover: the pre-eviction trial already ran poweron and a modeset.
+	 * The first real atomic enable reuses them instead of repeating them.
+	 */
+	bool trial_powered;
+	bool trial_modeset_ok;
+	u32 trial_timing_mode_id, trial_color_mode_id;
+	/* M4: outcome of the last iomfb_poweron(): 0 ok, 1 timeout, 2 refused, 3 error. */
+	u8 poweron_result;
+	/* M4: first swaps logged (M4_DCP_SWAP_*). */
+	u32 m4_swaps_started, m4_swaps_ok, m4_swaps_complete, m4_flushes;
+	/* M4 (R38): swap completion statistics for the present-rate question (R37 measured 65-80 fps at 120 Hz) */
+	ktime_t m4_stats_window, m4_stats_last;
+	u32 m4_stats_n, m4_stats_gap_max_us, m4_stats_lat_max_us;
+	u64 m4_stats_gap_sum_us, m4_stats_lat_sum_us;
+	/* M4 (R39 prep): commit-to-complete latency, which surfaces each flush carried, event sequence */
+	ktime_t m4_commit_time;
+	u32 m4_stats_commit_max_us, m4_stats_mask[4];
+	u64 m4_stats_commit_sum_us, m4_flip_seq;
 	bool use_timestamps;
 	struct dcp_set_digital_out_mode_req mode;
 
@@ -223,6 +258,7 @@ struct apple_dcp {
 	bool crc_enabled;
 
 	/* Modes valid for the connected display */
+	struct mutex modes_lock;
 	struct dcp_display_mode *modes;
 	unsigned int nr_modes;
 
@@ -267,6 +303,9 @@ struct apple_dcp {
 	struct apple_dcp_afkep *epicep2c;
 	struct apple_dcp_afkep *expertep;
 	struct apple_dcp_afkep *epicep25;
+	/* M4: panel DCP graph endpoints started / skipped (bit = endpoint - 0x20) */
+	u32 graph_started;
+	u32 graph_skipped;
 	struct apple_dcp_afkep *hdcpep;
 	struct completion hdcp_ready;
 	struct apple_epic_service *hdcp_service[2];

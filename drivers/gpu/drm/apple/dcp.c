@@ -78,6 +78,81 @@ static bool unstable_edid = true;
 module_param(unstable_edid, bool, 0644);
 MODULE_PARM_DESC(unstable_edid, "Enable unstable EDID retrival support");
 
+bool dcp_takeover;
+module_param_named(takeover, dcp_takeover, bool, 0444);
+MODULE_PARM_DESC(takeover,
+		 "Bind the display DRM master, evict the boot framebuffer and drive fbcon (default 0: only run the DCP RTKit/IOMFB start handshake, no DRM, no modeset)");
+
+/*
+ * M4 (R37): the J616s panel node is disabled and carries no apple,max-brightness,
+ * so no backlight device registered and no brightness key could work. These two
+ * defaults apply only when the device tree gives no maximum. 0 disables the
+ * default (no backlight device, as in R36).
+ *
+ * R38: the maximum is the panel's own user-accessible SDR maximum, 600 nits.
+ * It is the ADT property user-accessible-max-nits of the Mac16,7 (J616s) panel,
+ * a fixed16 word 0x02580000 = 600.0. The project's panel-reference.json keeps
+ * only that property's SHA-256; the value was recovered by matching the hash
+ * against the little-endian word 0x02580000 (600 << 16). LmaxProduct (1600
+ * nits) is the HDR peak and aurora-maximum-nits (1000) an outdoor figure;
+ * neither is a level for an SDR desktop. R37's 500 was a guess.
+ */
+static unsigned int backlight_max_nits = 600;
+module_param(backlight_max_nits, uint, 0444);
+MODULE_PARM_DESC(backlight_max_nits,
+		 "Backlight maximum in nits when the panel node has no apple,max-brightness (default 600, the panel's user-accessible SDR maximum; 0 = no backlight device)");
+
+unsigned int dcp_backlight_default_nits = 250;
+module_param_named(backlight_default_nits, dcp_backlight_default_nits, uint, 0444);
+MODULE_PARM_DESC(backlight_default_nits,
+		 "Level the backlight device reports before userspace writes one; not sent to the panel (default 250)");
+
+/*
+ * M4 (R38): swap completion statistics. The R37 desktop presented 65-80 fps in a 120 Hz mode; the compositor's own
+ * numbers cannot say whether the display driver completes swaps late. One line per 2 s window, only while swaps
+ * complete: rate, gap between completions and submit-to-complete latency.
+ */
+bool dcp_swap_stats = true;
+module_param_named(swap_stats, dcp_swap_stats, bool, 0644);
+MODULE_PARM_DESC(swap_stats,
+		 "Log one M4_DCP_SWAP_STATS line per 2 s of completed swaps (default 1)");
+
+/*
+ * M4 (R39 prep): page-flip event policy. The mainline-derived default (0) estimates the scanout time from the
+ * submit-to-complete delta and always reports sequence 0; compositors that derive their presentation clock from
+ * the events (mpv vsync-jitter, Hyprland frame scheduling) see that estimate as jitter. bit0: report the raw swap
+ * completion time. bit1: report a running sequence number. Default 0 = exactly R38.
+ */
+unsigned int dcp_flip_event_mode;
+module_param_named(flip_event_mode, dcp_flip_event_mode, uint, 0644);
+MODULE_PARM_DESC(flip_event_mode,
+		 "Page-flip event: bit0 raw completion time, bit1 running sequence (default 0 = R38 behaviour)");
+
+/* M4 (R39 prep): 0 stops faking the non-zero swap timestamps that make the 120 Hz mode run (test only). */
+bool dcp_swap_timestamps = true;
+module_param_named(swap_timestamps, dcp_swap_timestamps, bool, 0644);
+MODULE_PARM_DESC(swap_timestamps,
+		 "Send the fake non-zero swap timestamps in VRR-marked modes (default 1)");
+
+unsigned long dcp_clk_hz;
+module_param_named(dcp_clk_hz, dcp_clk_hz, ulong, 0444);
+MODULE_PARM_DESC(dcp_clk_hz,
+		 "Rate reported to DCP firmware when the DT provides no DCP clock (default 0)");
+
+/*
+ * Panel DCP (internal eDP, no DP PHY): 1 = also start every other graph
+ * endpoint the firmware advertises (what macOS does), 0 = only the five
+ * endpoints the t8132 HDMI graph always started, and only when advertised.
+ */
+static unsigned int panel_graph = 1;
+module_param(panel_graph, uint, 0444);
+MODULE_PARM_DESC(panel_graph,
+		 "Panel DCP: 1 = start every advertised graph endpoint (default), 0 = only the t8132 five when advertised");
+
+#define M4_DCP_HANDSHAKE_TIMEOUT_MS	10000
+#define M4_DCP_FAIL(dev, reason, fmt, ...) \
+	dev_err(dev, "M4_DCP_HANDSHAKE_FAIL reason=" reason " " fmt, ##__VA_ARGS__)
+
 /* copied and simplified from drm_vblank.c */
 static void send_vblank_event(struct drm_device *dev,
 		struct drm_pending_vblank_event *e,
@@ -125,15 +200,15 @@ static void send_vblank_event(struct drm_device *dev,
  */
 static void dcp_crtc_send_page_flip_event(struct apple_crtc *crtc,
 					  struct drm_pending_vblank_event *e,
-					  ktime_t now, ktime_t start)
+					  ktime_t now, ktime_t start, u64 seq)
 {
 	struct drm_device *dev = crtc->base.dev;
-	u64 seq;
 	unsigned int pipe = drm_crtc_index(&crtc->base);
 	ktime_t flip;
 
-	seq = 0;
-	if (start != KTIME_MIN) {
+	if (dcp_flip_event_mode & 1) {
+		flip = now;
+	} else if (start != KTIME_MIN) {
 		s64 delta = ktime_us_delta(now, start);
 		if (delta <= 500)
 			flip = now;
@@ -153,6 +228,9 @@ void dcp_drm_crtc_vblank(struct apple_crtc *crtc)
 {
 	unsigned long flags;
 
+	if (!crtc)
+		return;
+
 	spin_lock_irqsave(&crtc->base.dev->event_lock, flags);
 	if (crtc->event) {
 		drm_crtc_send_vblank_event(&crtc->base, crtc->event);
@@ -166,10 +244,14 @@ void dcp_drm_crtc_page_flip(struct apple_dcp *dcp, ktime_t now)
 	unsigned long flags;
 	struct apple_crtc *crtc = dcp->crtc;
 
+	if (!crtc)
+		return;
+
 	spin_lock_irqsave(&crtc->base.dev->event_lock, flags);
 	if (crtc->event) {
 		if (crtc->event->event.base.type == DRM_EVENT_FLIP_COMPLETE)
-			dcp_crtc_send_page_flip_event(crtc, crtc->event, now, dcp->swap_start);
+			dcp_crtc_send_page_flip_event(crtc, crtc->event, now, dcp->swap_start,
+						      (dcp_flip_event_mode & 2) ? ++dcp->m4_flip_seq : 0);
 		else
 			drm_crtc_send_vblank_event(&crtc->base, crtc->event);
 		crtc->event = NULL;
@@ -204,10 +286,12 @@ void dcp_set_dimensions(struct apple_dcp *dcp)
 	 * TimingElements, dimensions are calculated when parsing
 	 * DisplayAttributes, and TimingElements may be sent first
 	 */
+	mutex_lock(&dcp->modes_lock);
 	for (i = 0; i < dcp->nr_modes; ++i) {
 		dcp->modes[i].mode.width_mm = width_mm;
 		dcp->modes[i].mode.height_mm = height_mm;
 	}
+	mutex_unlock(&dcp->modes_lock);
 }
 
 bool dcp_has_panel(struct apple_dcp *dcp)
@@ -1034,6 +1118,137 @@ static int dcp_activate_dpavctrl(struct apple_dcp *dcp)
 	return afk_start_service(dcp->dpavctrl_late_service);
 }
 
+/*
+ * A panel DCP (internal eDP, no DP PHY, e.g. J616s) does not host the t8132
+ * HDMI controller graph.  macOS shows this machine's internal DCP advertising
+ * 0x24 (DPAVCTRL) and a graph shifted by two from the t8132 numbering (see
+ * 0003 in the R34 dcp-r34 README), and never 0x26/0x27.  Start only what the
+ * firmware offers, and treat a failed graph endpoint as non-fatal so IOMFB can
+ * still start.  The t8132 mini/HDMI path is untouched.
+ */
+static bool dcp_panel_only(struct apple_dcp *dcp)
+{
+	return dcp_has_panel(dcp) && !dcp->phy;
+}
+
+static void dcp_log_endpoints(struct apple_dcp *dcp)
+{
+	u32 low = 0, map = 0;
+	int ep;
+
+	for (ep = 0; ep < 0x20; ep++)
+		if (apple_rtkit_has_endpoint(dcp->rtk, ep))
+			low |= BIT(ep);
+	for (ep = 0x20; ep < 0x40; ep++)
+		if (apple_rtkit_has_endpoint(dcp->rtk, ep))
+			map |= BIT(ep - 0x20);
+	dev_info(dcp->dev, "M4_DCP_EPMAP base=0x00 map=0x%08x\n", low);
+	dev_info(dcp->dev, "M4_DCP_EPMAP base=0x20 map=0x%08x\n", map);
+}
+
+static const struct {
+	u32 endpoint;
+	const char *name;
+	bool extra;	/* not part of the t8132 five; only with panel_graph=1 */
+} dcp_panel_graph_eps[] = {
+	{ DPAVCTRL_ENDPOINT, "DPAVCTRL", false },
+	{ EPIC25_ENDPOINT, "EPIC25", true },
+	{ DPSAC_ENDPOINT, "DPSAC", false },
+	{ DPDEV_ENDPOINT, "DPDEV", false },
+	{ DPAVSERV_ENDPOINT, "DPAVSERV", true },
+	{ AV_ENDPOINT, "AV", false },
+	{ DPTX_ENDPOINT, "DPTX", true },
+	{ HDCP_ENDPOINT, "HDCP", true },
+	{ EPIC2C_ENDPOINT, "EPIC2C", true },
+	{ REMOTE_ALLOC_ENDPOINT, "REMOTEALLOC", false },
+};
+
+static struct apple_dcp_afkep **dcp_graph_slot(struct apple_dcp *dcp,
+					       u32 endpoint)
+{
+	switch (endpoint) {
+	case EPIC25_ENDPOINT:
+		return &dcp->epicep25;
+	case DPSAC_ENDPOINT:
+		return &dcp->dpsacep;
+	case DPDEV_ENDPOINT:
+		return &dcp->dpdevep;
+	case DPAVSERV_ENDPOINT:
+		return &dcp->dcpavservep;
+	case AV_ENDPOINT:
+		return &dcp->avauxep;
+	case DPTX_ENDPOINT:
+		return &dcp->dptxep;
+	case HDCP_ENDPOINT:
+		return &dcp->hdcpep;
+	case EPIC2C_ENDPOINT:
+		return &dcp->epicep2c;
+	case REMOTE_ALLOC_ENDPOINT:
+		return &dcp->remoteallocep;
+	}
+	return NULL;
+}
+
+static void dcp_graph_skip(struct apple_dcp *dcp, u32 endpoint,
+			   const char *name, const char *reason, int rc)
+{
+	dcp->graph_skipped |= BIT(endpoint - 0x20);
+	dev_info(dcp->dev,
+		 "M4_DCP_GRAPH_SKIP ep=0x%02x name=%s reason=%s rc=%d\n",
+		 endpoint, name, reason, rc);
+}
+
+static int dcp_start_panel_graph(struct apple_dcp *dcp)
+{
+	int ret;
+	int i;
+
+	ret = apple_rtkit_start_ep(dcp->rtk, IOMFB_ENDPOINT);
+	if (ret)
+		return dev_err_probe(dcp->dev, ret,
+				     "Failed to start IOMFB transport endpoint\n");
+
+	init_completion(&dcp->dpdev_ready);
+	dcp->dpdev_service = NULL;
+
+	for (i = 0; i < ARRAY_SIZE(dcp_panel_graph_eps); i++) {
+		u32 ep = dcp_panel_graph_eps[i].endpoint;
+		const char *name = dcp_panel_graph_eps[i].name;
+
+		if (dcp_panel_graph_eps[i].extra && !panel_graph) {
+			dcp_graph_skip(dcp, ep, name, "panel_graph=0", 0);
+			continue;
+		}
+		if (!apple_rtkit_has_endpoint(dcp->rtk, ep)) {
+			dcp_graph_skip(dcp, ep, name, "not-advertised", 0);
+			continue;
+		}
+
+		if (ep == DPAVCTRL_ENDPOINT)
+			ret = dcp_start_dpavctrl(dcp);
+#if IS_ENABLED(CONFIG_DRM_APPLE_AUDIO)
+		else if (ep == AV_ENDPOINT && hdmi_audio)
+			ret = avep_init(dcp);
+#endif
+		else
+			ret = dcp_start_aux_ep(dcp, ep,
+					       dcp_graph_slot(dcp, ep));
+		if (ret) {
+			dcp_graph_skip(dcp, ep, name, "start-failed", ret);
+			continue;
+		}
+
+		dcp->graph_started |= BIT(ep - 0x20);
+		dev_info(dcp->dev, "M4_DCP_GRAPH_START ep=0x%02x name=%s\n",
+			 ep, name);
+	}
+
+	dev_info(dcp->dev,
+		 "M4_DCP_GRAPH_DONE started=0x%08x skipped=0x%08x panel_graph=%u\n",
+		 dcp->graph_started, dcp->graph_skipped, panel_graph);
+	return 0;
+}
+
 int dcp_start(struct platform_device *pdev)
 {
 	struct apple_dcp *dcp = platform_get_drvdata(pdev);
@@ -1052,6 +1267,8 @@ int dcp_start(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(dcp->dev, ret,
 				     "Failed to acquire RTKit: %d\n", ret);
+	dev_info(dcp->dev, "M4_DCP_RTKIT_RUNNING\n");
+	dcp_log_endpoints(dcp);
 
 	/* start RTKit endpoints */
 	ret = systemep_init(dcp);
@@ -1060,7 +1277,11 @@ int dcp_start(struct platform_device *pdev)
 
 	/* 26.6 starts the IOMFB transport before constructing its HDMI controller
 	 * graph, but does not bind shared memory until the graph is complete. */
-	if (v26_6) {
+	if (v26_6 && dcp_panel_only(dcp)) {
+		ret = dcp_start_panel_graph(dcp);
+		if (ret)
+			return ret;
+	} else if (v26_6) {
 		ret = apple_rtkit_start_ep(dcp->rtk, IOMFB_ENDPOINT);
 		if (ret)
 			return dev_err_probe(dcp->dev, ret,
@@ -1314,6 +1535,13 @@ void dcp_poweron(struct platform_device *pdev)
 {
 	struct apple_dcp *dcp = platform_get_drvdata(pdev);
 
+	if (dcp->trial_powered) {
+		dcp->trial_powered = false;
+		dev_info(dcp->dev,
+			 "M4_DCP_TRIAL_REUSE poweron (done before the framebuffer eviction)\n");
+		return;
+	}
+
 	if (dcp->hotplug_keepalive) {
 		dev_info(dcp->dev,
 			 "reusing live IOMFB state after external hotplug\n");
@@ -1439,8 +1667,9 @@ static int dcp_create_piodma_iommu_dev(struct apple_dcp *dcp)
 	}
 
 	dcp->iommu_dom = iommu_get_domain_for_dev(&dcp->piodma->dev);
-	if (IS_ERR(dcp->iommu_dom)) {
-		ret = dev_err_probe(dcp->dev, PTR_ERR(dcp->iommu_dom),
+	if (IS_ERR_OR_NULL(dcp->iommu_dom)) {
+		ret = dev_err_probe(dcp->dev,
+				    dcp->iommu_dom ? PTR_ERR(dcp->iommu_dom) : -ENODEV,
 				    "Failed to get default iommu domain for "
 				    "piodma device\n");
 		dcp->iommu_dom = NULL;
@@ -1450,6 +1679,7 @@ static int dcp_create_piodma_iommu_dev(struct apple_dcp *dcp)
 	return 0;
 err_destroy_pdev:
 	of_platform_device_destroy(&dcp->piodma->dev, NULL);
+	dcp->piodma = NULL;
 	return ret;
 }
 
@@ -1634,9 +1864,15 @@ static enum dcp_firmware_version dcp_check_firmware_version(struct device *dev)
 
 	ret = dcp_read_fw_version(dev, "apple,firmware-version", fw_str);
 
-	/* T8132 is qualified only with this exact OS firmware release. */
+	/*
+	 * T8132 is qualified only with this exact OS firmware release. T6040
+	 * boots the same 26.6.2 release (mBoot-18000.161.10) and is held to
+	 * the same exact match until its IOMFB tags are confirmed.
+	 */
 	if (of_device_is_compatible(dev->of_node, "apple,t8132-dcp") ||
-	    of_device_is_compatible(dev->of_node, "apple,t8132-dcpext")) {
+	    of_device_is_compatible(dev->of_node, "apple,t8132-dcpext") ||
+	    of_device_is_compatible(dev->of_node, "apple,t6040-dcp") ||
+	    of_device_is_compatible(dev->of_node, "apple,t6040-dcpext")) {
 		if (ret >= 0 && !strcmp(fw_str, "26.6.2"))
 			return DCP_FIRMWARE_V_26_6;
 
@@ -1671,6 +1907,72 @@ static enum dcp_firmware_version dcp_check_firmware_version(struct device *dev)
 		compat_str, fw_str);
 
 	return DCP_FIRMWARE_UNKNOWN;
+}
+
+/*
+ * Exact register map of this machine's DCP, from the macOS ADT capture
+ * (/arm-io/dcp reg[0], /arm-io/disp0 reg[0..3]; the 0x2_0000_0000 ADT-to-CPU
+ * bridge is already applied).  The firmware maps these by index.
+ */
+static const struct {
+	const char *name;
+	u64 start;
+	u64 size;
+} t6040_dcp_regs[] = {
+	{ "coproc", 0x402e00000ULL, 0x4000 },
+	{ "disp-0", 0x400000000ULL, 0x4000000 },
+	{ "disp-1", 0x402240000ULL, 0x10000 },
+	{ "disp-2", 0x4023a8000ULL, 0x4000 },
+	{ "disp-3", 0x402800000ULL, 0x800000 },
+};
+
+/* Fail closed: refuse to touch the coprocessor on any ADT/DT mismatch. */
+static int dcp_validate_t6040_dt(struct device *dev)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	char compat_str[DCP_FW_VERSION_STR_LEN];
+	struct device_node *piodma __free(device_node) =
+		of_get_child_by_name(dev->of_node, "piodma");
+	int i;
+
+	if (!of_device_is_compatible(dev->of_node, "apple,t6040-dcp"))
+		return 0;
+
+	if (dcp_read_fw_version(dev, "apple,firmware-compat", compat_str) < 0 ||
+	    strcmp(compat_str, "26.6.2")) {
+		M4_DCP_FAIL(dev, "firmware-mismatch",
+			    "firmware-compat=%s want=26.6.2\n", compat_str);
+		return -ENODEV;
+	}
+
+	if (pdev->num_resources != ARRAY_SIZE(t6040_dcp_regs)) {
+		M4_DCP_FAIL(dev, "adt-mismatch", "regs=%u want=%zu\n",
+			    pdev->num_resources, ARRAY_SIZE(t6040_dcp_regs));
+		return -ENODEV;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(t6040_dcp_regs); i++) {
+		struct resource *r = platform_get_resource(pdev, IORESOURCE_MEM, i);
+
+		if (!r || r->start != t6040_dcp_regs[i].start ||
+		    resource_size(r) != t6040_dcp_regs[i].size ||
+		    of_property_match_string(dev->of_node, "reg-names",
+					     t6040_dcp_regs[i].name) != i) {
+			M4_DCP_FAIL(dev, "adt-mismatch",
+				    "reg[%d] (%s) differs from the captured ADT\n",
+				    i, t6040_dcp_regs[i].name);
+			return -ENODEV;
+		}
+	}
+
+	if (!of_property_present(dev->of_node, "iommus") ||
+	    !of_property_present(dev->of_node, "mboxes") ||
+	    !piodma) {
+		M4_DCP_FAIL(dev, "adt-mismatch", "missing iommus/mboxes/piodma\n");
+		return -ENODEV;
+	}
+
+	return 0;
 }
 
 static int dcp_comp_bind(struct device *dev, struct device *main, void *data)
@@ -1725,6 +2027,11 @@ static int dcp_comp_bind(struct device *dev, struct device *main, void *data)
 			if (ret)
 				dev_err(dev, "Missing property 'apple,max-brightness'\n");
 		}
+		if (!dcp->brightness.maximum && backlight_max_nits) {
+			dcp->brightness.maximum = backlight_max_nits;
+			dev_info(dev, "M4_DCP_BACKLIGHT_DEFAULT max=%u nits (no apple,max-brightness in the device tree)\n",
+				 dcp->brightness.maximum);
+		}
 
 		of_property_read_u32(panel_np, "width-mm", &dcp->panel.width_mm);
 		/* use adjusted height as long as the notch is hidden */
@@ -1746,20 +2053,30 @@ static int dcp_comp_bind(struct device *dev, struct device *main, void *data)
 		dcp->connector_type = DRM_MODE_CONNECTOR_Unknown;
 
 	ret = dcp_create_piodma_iommu_dev(dcp);
-	if (ret || !dcp->iommu_dom)
+	if (ret)
 		return dev_err_probe(dev, ret,
 				"Failed to created PIODMA iommu child device");
 
 	ret = dcp_get_disp_regs(dcp);
 	if (ret) {
 		dev_err(dev, "failed to find display registers\n");
-		return ret;
+		goto err_destroy_piodma;
 	}
 
-	dcp->clk = devm_clk_get(dev, NULL);
-	if (IS_ERR(dcp->clk))
-		return dev_err_probe(dev, PTR_ERR(dcp->clk),
-				     "Unable to find clock\n");
+	/*
+	 * T6040: the DT carries no DCP clock (its slot is full) and iBoot has
+	 * already clocked and started the coprocessor, so the clock is optional
+	 * there. Every other SoC keeps the mandatory clock.
+	 */
+	if (of_device_is_compatible(dev->of_node, "apple,t6040-dcp"))
+		dcp->clk = devm_clk_get_optional(dev, NULL);
+	else
+		dcp->clk = devm_clk_get(dev, NULL);
+	if (IS_ERR(dcp->clk)) {
+		ret = dev_err_probe(dev, PTR_ERR(dcp->clk),
+				    "Unable to find clock\n");
+		goto err_destroy_piodma;
+	}
 
 	bitmap_zero(dcp->memdesc_map, DCP_MAX_MAPPINGS);
 	// TDOD: mem_desc IDs start at 1, for simplicity just skip '0' entry
@@ -1776,13 +2093,22 @@ static int dcp_comp_bind(struct device *dev, struct device *main, void *data)
 	readl_relaxed(dcp->coproc_reg + APPLE_DCP_COPROC_CPU_CONTROL);
 
 	dcp->rtk = devm_apple_rtkit_init(dev, dcp, "mbox", 0, &rtkit_ops);
-	if (IS_ERR(dcp->rtk))
-		return dev_err_probe(dev, PTR_ERR(dcp->rtk),
-				     "Failed to initialize RTKit\n");
+	if (IS_ERR(dcp->rtk)) {
+		ret = dev_err_probe(dev, PTR_ERR(dcp->rtk),
+				    "Failed to initialize RTKit\n");
+		dcp->rtk = NULL;
+		goto err_destroy_piodma;
+	}
 	/* The crash callback can run before dcp_start() initializes IOMFB. */
 	init_completion(&dcp->start_done);
 
 	return 0;
+
+err_destroy_piodma:
+	dcp->iommu_dom = NULL;
+	of_platform_device_destroy(&dcp->piodma->dev, NULL);
+	dcp->piodma = NULL;
+	return ret;
 }
 
 /*
@@ -1798,6 +2124,13 @@ static void dcp_comp_unbind(struct device *dev, struct device *main, void *data)
 
 	if (dcp->hdmi_hpd_irq)
 		disable_irq(dcp->hdmi_hpd_irq);
+
+	/* Drain while dependencies live; refuse racing firmware re-enqueues. */
+	if (dcp->connector_type == DRM_MODE_CONNECTOR_eDP) {
+		disable_work_sync(&dcp->bl_register_wq);
+		disable_work_sync(&dcp->bl_update_wq);
+	}
+	disable_work_sync(&dcp->vblank_wq);
 
 	if (dcp->dpdevep)
 		afk_cancel_commands(dcp->dpdevep);
@@ -1885,13 +2218,8 @@ static void dcp_comp_unbind(struct device *dev, struct device *main, void *data)
 		dcp->piodma = NULL;
 	}
 
-	if (dcp->connector_type == DRM_MODE_CONNECTOR_eDP) {
-		cancel_work_sync(&dcp->bl_register_wq);
-		cancel_work_sync(&dcp->bl_update_wq);
-	}
-	cancel_work_sync(&dcp->vblank_wq);
-
-	devm_clk_put(dev, dcp->clk);
+	if (dcp->clk)
+		devm_clk_put(dev, dcp->clk);
 	dcp->clk = NULL;
 }
 
@@ -1908,6 +2236,53 @@ static void dcp_phy_power_off(void *data)
 	phy_exit(phy);
 }
 
+/*
+ * takeover=0: run the RTKit boot and IOMFB start handshake from the platform
+ * probe and stop.  No component, no DRM device, no CRTC, no modeset or swap.
+ */
+static int dcp_handshake_only(struct platform_device *pdev)
+{
+	struct apple_dcp *dcp = platform_get_drvdata(pdev);
+	struct device *dev = &pdev->dev;
+	int ret;
+
+	ret = dcp_comp_bind(dev, NULL, NULL);
+	if (ret) {
+		/* Nothing was started yet, so unwinding is safe. */
+		if (ret != -EPROBE_DEFER)
+			M4_DCP_FAIL(dev, "bind", "rc=%d\n", ret);
+		return ret;
+	}
+
+	/*
+	 * From here on the coprocessor is driven: RTKit buffers, the IOMFB
+	 * shared memory and the firmware's DART mappings are live and there is
+	 * no safe teardown (the display power-off sequence crashes DCP).  Pin
+	 * the module so rmmod is refused (CONFIG_MODULE_FORCE_UNLOAD is off),
+	 * and report failures without unbinding so devm keeps every buffer
+	 * alive.  A reboot resets the DCP.
+	 */
+	__module_get(THIS_MODULE);
+
+	ret = dcp_start(pdev);
+	if (ret)
+		M4_DCP_FAIL(dev, "start", "rc=%d\n", ret);
+	else if (!wait_for_completion_timeout(&dcp->start_done,
+				msecs_to_jiffies(M4_DCP_HANDSHAKE_TIMEOUT_MS)))
+		M4_DCP_FAIL(dev, "iomfb-start-timeout",
+			    "ms=%d graph_started=0x%08x graph_skipped=0x%08x\n",
+			    M4_DCP_HANDSHAKE_TIMEOUT_MS, dcp->graph_started,
+			    dcp->graph_skipped);
+	else if (dcp->crashed)
+		M4_DCP_FAIL(dev, "dcp-crashed", "\n");
+	else
+		dev_info(dev,
+			 "M4_DCP_HANDSHAKE_DONE (module pinned, reboot resets DCP) graph_started=0x%08x graph_skipped=0x%08x\n",
+			 dcp->graph_started, dcp->graph_skipped);
+
+	return 0;
+}
+
 static int dcp_platform_probe(struct platform_device *pdev)
 {
 	enum dcp_firmware_version fw_compat;
@@ -1916,23 +2291,36 @@ static int dcp_platform_probe(struct platform_device *pdev)
 	int surf, num_surfs;
 	u32 surf_en;
 	u32 mux_index;
+	int err;
+
+	if (!dcp_takeover)
+		dev_info(dev, "M4_DCP_HANDSHAKE_BEGIN takeover=0\n");
 
 	fw_compat = dcp_check_firmware_version(dev);
-	if (fw_compat == DCP_FIRMWARE_UNKNOWN)
+	if (fw_compat == DCP_FIRMWARE_UNKNOWN) {
+		M4_DCP_FAIL(dev, "firmware-mismatch", "\n");
 		return -ENODEV;
+	}
+
+	err = dcp_validate_t6040_dt(dev);
+	if (err)
+		return err;
 
 	/* Check for "apple,bw-scratch" to avoid probing appledrm with outdated
 	 * device trees. This prevents replacing simpledrm and ending up without
 	 * display.
 	 */
-	if (!of_property_present(dev->of_node, "apple,bw-scratch"))
+	if (!of_property_present(dev->of_node, "apple,bw-scratch")) {
+		M4_DCP_FAIL(dev, "dt-incompatible", "no apple,bw-scratch\n");
 		return dev_err_probe(dev, -ENODEV, "Incompatible devicetree! "
 			"Use devicetree matching this kernel.\n");
+	}
 
 	dcp = devm_kzalloc(dev, sizeof(*dcp), GFP_KERNEL);
 	if (!dcp)
 		return -ENOMEM;
 
+	mutex_init(&dcp->modes_lock);
 	dcp->fw_compat = fw_compat;
 	dcp->dev = dev;
 	dcp->hw = *(struct apple_dcp_hw_data *)of_device_get_match_data(dev);
@@ -2068,6 +2456,9 @@ static int dcp_platform_probe(struct platform_device *pdev)
 		}
 	}
 
+	if (!dcp_takeover)
+		return dcp_handshake_only(pdev);
+
 	return component_add(&pdev->dev, &dcp_comp_ops);
 }
 
@@ -2132,6 +2523,10 @@ static const struct apple_dcp_hw_data apple_dcp_hw_t8132 = {
 	.num_dptx_ports = 2,
 };
 
+static const struct apple_dcp_hw_data apple_dcp_hw_t6040 = {
+	.num_dptx_ports = 2,
+};
+
 static const struct apple_dcp_hw_data apple_dcp_hw_dcp = {
 	.num_dptx_ports = 0,
 };
@@ -2144,6 +2539,7 @@ static const struct of_device_id of_match[] = {
 	{ .compatible = "apple,t6020-dcp", .data = &apple_dcp_hw_t6020,  },
 	{ .compatible = "apple,t8112-dcp", .data = &apple_dcp_hw_t8112,  },
 	{ .compatible = "apple,t8132-dcp", .data = &apple_dcp_hw_t8132,  },
+	{ .compatible = "apple,t6040-dcp", .data = &apple_dcp_hw_t6040,  },
 	{ .compatible = "apple,dcp",       .data = &apple_dcp_hw_dcp,    },
 	{ .compatible = "apple,dcpext",    .data = &apple_dcp_hw_dcpext, },
 	{}
@@ -2163,6 +2559,9 @@ static struct platform_driver apple_platform_driver = {
 
 void __init dcp_register(void)
 {
+	/* A running, never-stopped DCP must not be unbound from sysfs. */
+	if (!dcp_takeover)
+		apple_platform_driver.driver.suppress_bind_attrs = true;
 	platform_driver_register(&apple_platform_driver);
 }
 
