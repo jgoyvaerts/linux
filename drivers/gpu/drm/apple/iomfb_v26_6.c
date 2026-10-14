@@ -21,6 +21,7 @@ static const struct dcp_method_entry dcp_methods[dcpep_num_methods] = {
 	IOMFB_METHOD("A411", dcpep_set_display_device),
 	IOMFB_METHOD("A412", dcpep_is_main_display),
 	IOMFB_METHOD("A413", dcpep_set_digital_out_mode),
+	IOMFB_METHOD("A420", iomfbep_get_gamma_table),
 	IOMFB_METHOD("A423", iomfbep_set_matrix),
 	IOMFB_METHOD("A427", iomfbep_get_color_remap_mode),
 	IOMFB_METHOD("A442", dcpep_set_parameter_dcp),
