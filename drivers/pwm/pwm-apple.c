@@ -127,7 +127,7 @@ static int apple_pwm_probe(struct platform_device *pdev)
 	 * This check is done to prevent an overflow in .apply
 	 */
 	fpwm->clkrate = clk_get_rate(clk);
-	if (fpwm->clkrate > NSEC_PER_SEC)
+	if (!fpwm->clkrate || fpwm->clkrate > NSEC_PER_SEC)
 		return dev_err_probe(&pdev->dev, -EINVAL, "pwm clock out of range");
 
 	chip->ops = &apple_pwm_ops;
