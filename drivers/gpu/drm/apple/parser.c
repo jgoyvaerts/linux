@@ -496,6 +496,11 @@ static int parse_mode(struct dcp_parse_ctx *handle,
 	s64 best_color_mode = -1;
 	bool is_virtual = false;
 	struct drm_display_mode *mode = &out->mode;
+	/* M4 (R48): names of the timing element's keys, to find where this firmware keeps the VRR range */
+	static char m4_last_keys[192];
+	static unsigned int m4_keys_logged;
+	char m4_keys[192] = "";
+	size_t m4_klen = 0;
 
 	*out = (struct dcp_display_mode) {};
 	out->sdr_rgb.score = out->sdr_444.score = out->sdr.score = -1;
@@ -507,6 +512,10 @@ static int parse_mode(struct dcp_parse_ctx *handle,
 		return ret;
 	for (; it.idx < it.len; ++it.idx) {
 		char *key = parse_string(it.handle);
+
+		if (!IS_ERR_OR_NULL(key) && m4_klen < sizeof(m4_keys) - 1)
+			m4_klen += scnprintf(m4_keys + m4_klen, sizeof(m4_keys) - m4_klen,
+					     "%s%s", m4_klen ? "," : "", key);
 
 		if (IS_ERR(key))
 			ret = PTR_ERR(key);
@@ -539,6 +548,12 @@ static int parse_mode(struct dcp_parse_ctx *handle,
 			return ret;
 		}
 	}
+	if (m4_keys_logged < 4 && strcmp(m4_keys, m4_last_keys)) {
+		m4_keys_logged++;
+		strscpy(m4_last_keys, m4_keys, sizeof(m4_last_keys));
+		pr_info("M4_DCP_MODE_KEYS id=%lld keys=%s\n", id, m4_keys);
+	}
+
 	if (out->sdr_rgb.score >= 0)
 		best_color_mode = out->sdr_rgb.id;
 	else if (out->sdr_444.score >= 0)
