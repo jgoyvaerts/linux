@@ -1,0 +1,768 @@
+// SPDX-License-Identifier: GPL-2.0+ OR MIT
+/*
+ * Apple T6040 (M4 Pro) SoC. Unit addresses are the ADT /arm-io addresses plus the 0x2_00000000 arm-io base.
+ */
+
+/ {
+	#address-cells = <2>;
+	#size-cells = <2>;
+
+	spmi_atc2: spmi@509198000 {
+		compatible = "apple,t6040-spmi", "apple,spmi";
+		reg = <5 0x9198000 0 0x100>;
+		#address-cells = <2>;
+		#size-cells = <0>;
+		interrupt-controller;
+		#interrupt-cells = <2>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x364 4>;
+		power-domains = <&ps_nub_spmi_a1>;
+		status = "disabled";
+
+		usb-pd@c {
+			compatible = "apple,sn201202x";
+			reg = <0xc 0>;
+			interrupts = <0xb 1 0xd 1 0x11 1 0x13 1>;
+			interrupt-names = "irq", "select", "sleep", "wake";
+			status = "disabled";
+
+			connector {
+				compatible = "usb-c-connector";
+				label = "USB-C Right";
+				power-role = "dual";
+				data-role = "dual";
+			};
+		};
+	};
+
+	usb@392280000 {
+		compatible = "apple,t6040-dwc3", "apple,t8103-dwc3";
+		reg = <3 0x92280000 0 0xcd00 3 0x9228cd00 0 0x3200>;
+		reg-names = "dwc3-core", "dwc3-apple";
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x693 4>;
+		dr_mode = "host";
+		iommus = <&atc2_dart0 0 &atc2_dart1 1>;
+		power-domains = <&ps_atc2_usb>;
+		resets = <&atcphy2>;
+		phys = <&atcphy2 3>;
+		phy-names = "usb2-phy";
+		status = "disabled";
+	};
+
+	atcphy2: phy@392a90000 {
+		compatible = "apple,t6040-atcphy";
+		reg = <3 0x92a90000 0 0x4000 3 0x92800000 0 0x4000 3 0x92a84000 0 0x4000>;
+		reg-names = "bank0", "bank1", "pipehandler";
+		#phy-cells = <1>;
+		#reset-cells = <0>;
+		power-domains = <&ps_atc2_common_dp>;
+		status = "disabled";
+	};
+
+	atc2_dart1: iommu@392f80000 {
+		compatible = "apple,t6040-dart", "apple,t8110-dart";
+		reg = <3 0x92f80000 0 0x4000>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x697 4>;
+		power-domains = <&ps_atc2_usb>;
+		#iommu-cells = <1>;
+		status = "disabled";
+	};
+
+	atc2_dart0: iommu@392f00000 {
+		compatible = "apple,t6040-dart", "apple,t8110-dart";
+		reg = <3 0x92f00000 0 0x4000>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x697 4>;
+		power-domains = <&ps_atc2_usb>;
+		#iommu-cells = <1>;
+		status = "disabled";
+	};
+
+	power-management@508300000 {
+		compatible = "apple,t6041-pmgr", "apple,t8103-pmgr", "syscon", "simple-mfd";
+		reg = <5 0x8300000 0 0x4000>;
+		#address-cells = <1>;
+		#size-cells = <1>;
+		status = "disabled";
+
+		ps_atc2_common_dp: power-controller@b0 {
+			compatible = "apple,t8103-pmgr-pwrstate";
+			reg = <0xb0 4>;
+			label = "atc2_common_dp";
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			power-domains = <&ps_atc2_phymxwrap>;
+			status = "disabled";
+		};
+
+		ps_atc2_phymxwrap: power-controller@160 {
+			compatible = "apple,t8103-pmgr-pwrstate";
+			reg = <0x160 4>;
+			label = "atc2_phymxwrap";
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			power-domains = <&ps_atc2_common &ps_atc2_usb_aon>;
+			status = "disabled";
+		};
+
+		ps_atc2_usb: power-controller@140 {
+			compatible = "apple,t8103-pmgr-pwrstate";
+			reg = <0x140 4>;
+			label = "atc2_usb";
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			power-domains = <&ps_atc2_common &ps_atc2_usb_aon>;
+			status = "disabled";
+		};
+
+		ps_atc2_usb_aon: power-controller@d8 {
+			compatible = "apple,t8103-pmgr-pwrstate";
+			reg = <0xd8 4>;
+			label = "atc2_usb_aon";
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			apple,always-on;
+			status = "disabled";
+		};
+
+		ps_nub_spmi_a1: power-controller@70 {
+			compatible = "apple,t8103-pmgr-pwrstate";
+			reg = <0x70 4>;
+			label = "nub_spmi_a1";
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			apple,always-on;
+			status = "disabled";
+		};
+	};
+
+	avd@280000000 {
+		compatible = "apple,t6040-avd";
+		reg = <2 0x81080000 0 0x14000 2 0x810a8000 0 0x4000 2 0x81100000 0 0x10000>;
+		reg-names = "code", "mbox", "ctrl";
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x5a2 4 0 0x5a3 4>;
+		power-domains = <&ps_avd_sys>;
+		resets = <&ps_avd_sys>;
+		iommus = <&avd_dart 0>;
+		apple,m4-avd-geometry = "inferred-v1";
+		status = "disabled";
+	};
+
+	avd_dart: iommu@281020000 {
+		compatible = "apple,t6040-dart";
+		reg = <2 0x81020000 0 0xc000>;
+		#iommu-cells = <1>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x5a9 4>;
+		power-domains = <&ps_avd_sys>;
+		status = "disabled";
+	};
+
+	aop@510600000 {
+		compatible = "apple,t6040-aop";
+		reg = <5 0x10c10000 0 0x2e0000 5 0x10600000 0 0x88000 5 0x10050000 0 0x4000 5 0x8328000 0 0x24>;
+		reg-names = "firmware", "asc", "asc-aux", "config";
+		mboxes = <&aop_mbox>;
+		mbox-names = "mbox";
+		iommus = <&aop_dart 0>;
+		#address-cells = <2>;
+		#size-cells = <2>;
+		status = "disabled";
+
+		audio {
+			compatible = "apple,t6040-aop-audio", "apple,t6030-aop-audio";
+			apple,chassis-name = "J616";
+			apple,machine-kind = "MacBook Pro";
+			dmas = <&admac0 1>;
+			dma-names = "dma";
+		};
+	};
+
+	admac1: dma-controller@513800000 {
+		compatible = "apple,t6040-admac";
+		reg = <5 0x13800000 0 0x34000>;
+		#dma-cells = <1>;
+		dma-channels = <0xd>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x2f2 4>;
+		iommus = <&aop_dart 8>;
+		status = "disabled";
+	};
+
+	admac0: dma-controller@513300000 {
+		compatible = "apple,t6040-admac";
+		reg = <5 0x13300000 0 0x34000>;
+		#dma-cells = <1>;
+		dma-channels = <0x12>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x2f5 4>;
+		iommus = <&aop_dart 0xa>;
+		status = "disabled";
+	};
+
+	aop_mbox: mailbox@510608000 {
+		compatible = "apple,t6040-asc-mailbox";
+		reg = <5 0x10608000 0 0x4000>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x2c6 4 0 0x2c7 4 0 0x2c8 4 0 0x2c9 4>;
+		interrupt-names = "send-empty", "send-not-empty", "recv-empty", "recv-not-empty";
+		#mbox-cells = <0>;
+		status = "disabled";
+	};
+
+	aop_dart: iommu@510f00000 {
+		compatible = "apple,t6040-dart";
+		reg = <5 0x10f00000 0 0xc000>;
+		#iommu-cells = <1>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x2de 4>;
+		status = "disabled";
+	};
+
+	display: display-subsystem {
+		compatible = "apple,display-subsystem";
+		iommus = <&disp0_dart 0>;
+		dma-noncoherent;
+		status = "disabled";
+	};
+
+	dcp: dcp@402e00000 {
+		compatible = "apple,t6040-dcp", "apple,dcp";
+		reg = <4 0x2e00000 0 0x4000 4 0 0 0x4000000 4 0x2240000 0 0x10000 4 0x23a8000 0 0x4000 4 0x2800000 0 0x800000>;
+		reg-names = "coproc", "disp-0", "disp-1", "disp-2", "disp-3";
+		mboxes = <&dcp_mbox>;
+		mbox-names = "mbox";
+		iommus = <&dcp_dart 0x17>;
+		apple,bw-scratch = <&dcp_pmgr 0 4 0x20000>;
+		apple,iomfb-surfaces = <1 1 0 0>;
+		apple,iomfb-surface-order = <0 1>;
+		apple,iomfb-primary-surface = <0>;
+		apple,iomfb-max-layers = <2>;
+		apple,firmware-version = <0x1a 6 2>;
+		apple,firmware-compat = <0x1a 6 2>;
+		#address-cells = <2>;
+		#size-cells = <2>;
+		status = "disabled";
+
+		panel {
+			compatible = "apple,panel-mini-led", "apple,panel";
+			width-mm = <0x159>;
+			height-mm = <0xdf>;
+			status = "disabled";
+		};
+
+		piodma: piodma {
+			iommus = <&disp0_dart 0x10>;
+		};
+	};
+
+	dcp_mbox: mailbox@402e08000 {
+		compatible = "apple,t6040-asc-mailbox", "apple,asc-mailbox-v4";
+		reg = <4 0x2e08000 0 0x4000>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x477 4 0 0x478 4 0 0x479 4 0 0x47a 4>;
+		interrupt-names = "send-empty", "send-not-empty", "recv-empty", "recv-not-empty";
+		#mbox-cells = <0>;
+		status = "disabled";
+	};
+
+	dcp_dart: iommu@402340000 {
+		compatible = "apple,t6040-dart", "apple,t8110-dart";
+		reg = <4 0x2340000 0 0x20000>;
+		#iommu-cells = <1>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x442 4>;
+		status = "disabled";
+	};
+
+	disp0_dart: iommu@402300000 {
+		compatible = "apple,t6040-dart", "apple,t8110-dart";
+		reg = <4 0x2300000 0 0xc000>;
+		#iommu-cells = <1>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x442 4>;
+		status = "disabled";
+	};
+
+	dcp_pmgr: power-management@504800000 {
+		reg = <5 0x4800000 0 0xbc000>;
+		reg-names = "dcp-fw-pmgr";
+		#apple,bw-scratch-cells = <3>;
+	};
+
+	l2_cache_p1: l2-cache-cluster2 {
+		compatible = "cache";
+		cache-level = <2>;
+		cache-size = <0x1000000>;
+		cache-unified;
+	};
+
+	l2_cache_p0: l2-cache-cluster1 {
+		compatible = "cache";
+		cache-level = <2>;
+		cache-size = <0x1000000>;
+		cache-unified;
+	};
+
+	l2_cache_e: l2-cache-cluster0 {
+		compatible = "cache";
+		cache-level = <2>;
+		cache-size = <0x400000>;
+		cache-unified;
+	};
+
+	kbd_pwm: pwm@429040000 {
+		compatible = "apple,t6041-fpwm", "apple,s5l-fpwm";
+		reg = <4 0x29040000 0 0x4000>;
+		clocks = <&clk_kbd_pwm>;
+		power-domains = <&ps_kbd_fpwm0>;
+		#pwm-cells = <2>;
+		status = "okay";
+	};
+
+	cpus {
+		#size-cells = <0>;
+		#address-cells = <2>;
+
+		cpu@3 {
+			compatible = "arm,armv8";
+			reg = <0 3>;
+			device_type = "cpu";
+			enable-method = "spin-table";
+			next-level-cache = <&l2_cache_e>;
+			status = "okay";
+		};
+
+		cpu@2 {
+			compatible = "arm,armv8";
+			reg = <0 2>;
+			device_type = "cpu";
+			enable-method = "spin-table";
+			next-level-cache = <&l2_cache_e>;
+			status = "okay";
+		};
+
+		cpu@1 {
+			compatible = "arm,armv8";
+			reg = <0 1>;
+			device_type = "cpu";
+			enable-method = "spin-table";
+			next-level-cache = <&l2_cache_e>;
+			status = "okay";
+		};
+
+		cpu@0 {
+			compatible = "arm,armv8";
+			reg = <0 0>;
+			device_type = "cpu";
+			enable-method = "spin-table";
+			next-level-cache = <&l2_cache_e>;
+			status = "okay";
+		};
+
+		cpu@10204 {
+			compatible = "arm,armv8";
+			reg = <0 0x10204>;
+			device_type = "cpu";
+			enable-method = "spin-table";
+			next-level-cache = <&l2_cache_p1>;
+			status = "okay";
+		};
+
+		cpu@10203 {
+			compatible = "arm,armv8";
+			reg = <0 0x10203>;
+			device_type = "cpu";
+			enable-method = "spin-table";
+			next-level-cache = <&l2_cache_p1>;
+			status = "okay";
+		};
+
+		cpu@10202 {
+			compatible = "arm,armv8";
+			reg = <0 0x10202>;
+			device_type = "cpu";
+			enable-method = "spin-table";
+			next-level-cache = <&l2_cache_p1>;
+			status = "okay";
+		};
+
+		cpu@10201 {
+			compatible = "arm,armv8";
+			reg = <0 0x10201>;
+			device_type = "cpu";
+			enable-method = "spin-table";
+			next-level-cache = <&l2_cache_p1>;
+			status = "okay";
+		};
+
+		cpu@10200 {
+			compatible = "arm,armv8";
+			reg = <0 0x10200>;
+			device_type = "cpu";
+			enable-method = "spin-table";
+			next-level-cache = <&l2_cache_p1>;
+			status = "okay";
+		};
+
+		cpu@10104 {
+			compatible = "arm,armv8";
+			reg = <0 0x10104>;
+			device_type = "cpu";
+			enable-method = "spin-table";
+			next-level-cache = <&l2_cache_p0>;
+			status = "okay";
+		};
+
+		cpu@10103 {
+			compatible = "arm,armv8";
+			reg = <0 0x10103>;
+			device_type = "cpu";
+			enable-method = "spin-table";
+			next-level-cache = <&l2_cache_p0>;
+			status = "okay";
+		};
+
+		cpu@10102 {
+			compatible = "arm,armv8";
+			reg = <0 0x10102>;
+			device_type = "cpu";
+			enable-method = "spin-table";
+			next-level-cache = <&l2_cache_p0>;
+			status = "okay";
+		};
+
+		cpu@10101 {
+			compatible = "arm,armv8";
+			reg = <0 0x10101>;
+			device_type = "cpu";
+			enable-method = "spin-table";
+			next-level-cache = <&l2_cache_p0>;
+			status = "okay";
+		};
+
+		cpu@10100 {
+			compatible = "arm,armv8";
+			reg = <0 0x10100>;
+			device_type = "cpu";
+			next-level-cache = <&l2_cache_p0>;
+			status = "okay";
+		};
+	};
+
+	aic: interrupt-controller@502400000 {
+		compatible = "apple,t6040-aic3", "apple,t8122-aic3";
+		reg = <5 0x2400000 0 0x184000 5 0x2440000 0 4>;
+		reg-names = "core", "event";
+		#address-cells = <0>;
+		interrupt-controller;
+		#interrupt-cells = <3>;
+	};
+
+	timer {
+		compatible = "arm,armv8-timer";
+		interrupts = <1 2 4 1 3 4 1 0 4 1 1 4>;
+		interrupt-names = "phys", "virt", "hyp-phys", "hyp-virt";
+		interrupt-parent = <&aic>;
+	};
+
+	aliases {
+		wifi0 = "/pcie@1cb0000000/pci@0,0/wifi@0,0";
+		bluetooth0 = "/pcie@1cb0000000/pci@0,0/bluetooth@0,1";
+		dcp = "/dcp@402e00000";
+		disp0 = "/display-subsystem";
+		disp0_piodma = "/dcp@402e00000/piodma";
+	};
+
+	smc_mbox: mailbox@50c608000 {
+		compatible = "apple,t6040-asc-mailbox", "apple,asc-mailbox-v4";
+		reg = <5 0xc608000 0 0x4000>;
+		#mbox-cells = <0>;
+		interrupt-names = "send-empty", "send-not-empty", "recv-empty", "recv-not-empty";
+		interrupts = <0 0x3e4 4 0 0x3e5 4 0 0x3e6 4 0 0x3e7 4>;
+		interrupt-parent = <&aic>;
+	};
+
+	smc: smc@50c600000 {
+		compatible = "apple,t6040-smc", "apple,t8103-smc", "apple,smc";
+		reg = <5 0xc600000 0 0x4000 5 0xde70000 0 0x100000>;
+		reg-names = "smc", "sram";
+		mboxes = <&smc_mbox>;
+
+		smc_gpio: gpio {
+			compatible = "apple,smc-gpio";
+			#gpio-cells = <2>;
+			gpio-controller;
+		};
+
+		reboot {
+			compatible = "apple,smc-reboot";
+			nvmem-cell-names = "shutdown_flag", "boot_stage", "boot_error_count", "panic_count";
+			nvmem-cells = <&shutdown_flag_f80f_3 &boot_stage_f801 &boot_error_count_f802_0 &panic_count_f802_4>;
+		};
+	};
+
+	spmi@509014000 {
+		compatible = "apple,t6040-spmi", "apple,spmi";
+		reg = <5 0x9014000 0 0x100>;
+		#size-cells = <0>;
+		#address-cells = <2>;
+
+		pmic@e {
+			compatible = "apple,abbey-pmic", "apple,spmi-nvmem";
+			reg = <0xe 0>;
+
+			nvmem-layout {
+				compatible = "fixed-layout";
+				#size-cells = <1>;
+				#address-cells = <1>;
+
+				boot_stage_f801: boot-stage@f801 {
+					reg = <0xf801 1>;
+				};
+
+				boot_error_count_f802_0: boot-error-count@f802,0 {
+					reg = <0xf802 1>;
+					bits = <0 4>;
+				};
+
+				panic_count_f802_4: panic-count@f802,4 {
+					reg = <0xf802 1>;
+					bits = <4 4>;
+				};
+
+				shutdown_flag_f80f_3: shutdown-flag@f80f,3 {
+					reg = <0xf80f 1>;
+					bits = <3 1>;
+				};
+			};
+		};
+	};
+
+	pcie_dart: iommu@410000000 {
+		compatible = "apple,t6041-dart", "apple,t8110-dart";
+		reg = <4 0x10000000 0 0x4000>;
+		interrupts = <0 0x6bc 4>;
+		interrupt-parent = <&aic>;
+		#iommu-cells = <1>;
+	};
+
+	pinctrl: pinctrl@51c000000 {
+		compatible = "apple,t6041-pinctrl", "apple,t8103-pinctrl";
+		reg = <5 0x1c000000 0 0x4000>;
+		interrupts = <0 0x1de 4 0 0x1df 4 0 0x1e0 4 0 0x1e1 4 0 0x1e2 4 0 0x1e3 4 0 0x1e4 4>;
+		interrupt-parent = <&aic>;
+		#interrupt-cells = <2>;
+		interrupt-controller;
+		apple,npins = <0xc8>;
+		gpio-ranges = <&pinctrl 0 0 200>;
+		#gpio-cells = <2>;
+		gpio-controller;
+
+		wifi_clkreq: wifi-clkreq {
+			pinmux = <0x10000>;
+		};
+	};
+
+	pcie0: pcie@1cb0000000 {
+		compatible = "apple,t6041-pcie", "apple,t6020-pcie";
+		reg = <0x1c 0xb0000000 0 0x1000000 4 0x14000000 0 0x4000 4 0x10028000 0 0x4000 4 0x17020000 0 0x4000>;
+		reg-names = "config", "rc", "port0", "phy0";
+		ranges = <0x43000000 0xb 0xc0000000 0xb 0xc0000000 0 0x20000000 0x2000000 0 0x80000000 0xb 0x80000000 0 0x40000000>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&wifi_clkreq>;
+		#size-cells = <2>;
+		#address-cells = <3>;
+		bus-range = <0 1>;
+		iommu-map-mask = <0xffff>;
+		iommu-map = <0x100 &pcie_dart 1 2>;
+		msi-ranges = <1 0 0x817 1 0x20>;
+		msi-parent = <&pcie0>;
+		msi-controller;
+		interrupts = <0 0x6bb 4>;
+		interrupt-parent = <&aic>;
+		device_type = "pci";
+
+		port00: pci@0,0 {
+			compatible = "pciclass,0604";
+			reg = <0 0 0 0 0>;
+			ranges;
+			interrupt-map = <0 0 0 1 &port00 0 0 0 0 0 0 0 2 &port00 0 0 0 1 0 0 0 3 &port00 0 0 0 2 0 0 0 4 &port00 0 0 0 3>;
+			interrupt-map-mask = <0 0 0 7>;
+			#interrupt-cells = <1>;
+			interrupt-controller;
+			#size-cells = <2>;
+			#address-cells = <3>;
+			pwren-gpios = <&smc_gpio 0x13 0>;
+			reset-gpios = <&pinctrl 4 1>;
+			device_type = "pci";
+
+			bluetooth@0,1 {
+				compatible = "pci14e4,5f72";
+				reg = <0x100 0 0 0 0>;
+				apple,m4-bt-otp-probe;
+				brcm,board-type = "apple,hostomel";
+				apple,m4-bt-admission-policy = "runtime-after-cold-reset-v1";
+				status = "okay";
+			};
+
+			wifi@0,0 {
+				compatible = "brcm,bcm4329-fmac";
+				reg = <0 0 0 0 0>;
+				brcm,ccode-map-trivial;
+				brcm,board-type = "apple,hostomel";
+			};
+		};
+	};
+
+	power-management@502280000 {
+		compatible = "apple,t6041-pmgr", "apple,t8103-pmgr", "syscon", "simple-mfd";
+		reg = <5 0x2280000 0 0x4000>;
+		#size-cells = <1>;
+		#address-cells = <1>;
+
+		ps_kbd_fpwm0: power-controller@138 {
+			compatible = "apple,t6041-pmgr-pwrstate", "apple,t8103-pmgr-pwrstate";
+			reg = <0x138 4>;
+			label = "kbd_fpwm0";
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			power-domains = <&ps_kbd_sio>;
+		};
+
+		ps_kbd_sio: power-controller@120 {
+			compatible = "apple,t6041-pmgr-pwrstate", "apple,t8103-pmgr-pwrstate";
+			reg = <0x120 4>;
+			label = "kbd_sio";
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			power-domains = <&ps_ssd_fab3>;
+			apple,always-on;
+		};
+
+		ps_ssd_apcie_st0: power-controller@108 {
+			compatible = "apple,t8103-pmgr-pwrstate";
+			reg = <0x108 4>;
+			apple,always-on;
+			#reset-cells = <0>;
+			#power-domain-cells = <0>;
+			label = "ssd_apcie_st0";
+		};
+
+		ps_ssd_apcie_st1: power-controller@110 {
+			compatible = "apple,t8103-pmgr-pwrstate";
+			reg = <0x110 4>;
+			apple,always-on;
+			#reset-cells = <0>;
+			#power-domain-cells = <0>;
+			label = "ssd_apcie_st1";
+		};
+
+		ps_ssd_fab3: power-controller@118 {
+			compatible = "apple,t8103-pmgr-pwrstate";
+			reg = <0x118 4>;
+			power-domains = <&ps_ssd_afc>;
+			apple,always-on;
+			#reset-cells = <0>;
+			#power-domain-cells = <0>;
+			label = "ssd_fab3";
+		};
+
+		ps_ssd_ans: power-controller@370 {
+			compatible = "apple,t8103-pmgr-pwrstate";
+			reg = <0x370 4>;
+			power-domains = <&ps_ssd_fab3>;
+			apple,always-on;
+			#reset-cells = <0>;
+			#power-domain-cells = <0>;
+			label = "ssd_ans";
+		};
+
+		ps_ssd_apcie_sys_st0: power-controller@380 {
+			compatible = "apple,t8103-pmgr-pwrstate";
+			reg = <0x380 4>;
+			power-domains = <&ps_ssd_ans &ps_ssd_apcie_st0>;
+			apple,always-on;
+			#reset-cells = <0>;
+			#power-domain-cells = <0>;
+			label = "ssd_apcie_sys_st0";
+		};
+
+		ps_ssd_apcie_sys_st1: power-controller@388 {
+			compatible = "apple,t8103-pmgr-pwrstate";
+			reg = <0x388 4>;
+			power-domains = <&ps_ssd_ans &ps_ssd_apcie_st1>;
+			apple,always-on;
+			#reset-cells = <0>;
+			#power-domain-cells = <0>;
+			label = "ssd_apcie_sys_st1";
+		};
+	};
+
+	power-management@502800000 {
+		compatible = "apple,t6041-pmgr", "apple,t8103-pmgr", "syscon", "simple-mfd";
+		reg = <5 0x2800000 0 0x4000>;
+		#size-cells = <1>;
+		#address-cells = <1>;
+
+		ps_atc2_common: power-controller@3e0 {
+			compatible = "apple,t8103-pmgr-pwrstate";
+			reg = <0x3e0 4>;
+			label = "atc2_common";
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			status = "disabled";
+		};
+
+		ps_avd_sys: power-controller@170 {
+			compatible = "apple,t6040-pmgr-pwrstate";
+			reg = <0x170 4>;
+			label = "avd_sys";
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			status = "disabled";
+		};
+
+		ps_ssd_afc: power-controller@178 {
+			compatible = "apple,t8103-pmgr-pwrstate";
+			reg = <0x178 4>;
+			apple,always-on;
+			#reset-cells = <0>;
+			#power-domain-cells = <0>;
+			label = "ssd_afc";
+		};
+	};
+
+	ans_mbox: mailbox@409608000 {
+		compatible = "apple,t6041-asc-mailbox", "apple,asc-mailbox-v4";
+		reg = <4 0x9608000 0 0x4000>;
+		power-domains = <&ps_ssd_ans>;
+		interrupt-names = "send-empty", "send-not-empty", "recv-empty", "recv-not-empty";
+		interrupts = <0 0x5fa 4 0 0x5fb 4 0 0x5fc 4 0 0x5fd 4>;
+		interrupt-parent = <&aic>;
+		#mbox-cells = <0>;
+	};
+
+	ans_sart: sart@40dc50000 {
+		compatible = "apple,t6041-sart", "apple,t6000-sart";
+		reg = <4 0xdc50000 0 0xc000>;
+		power-domains = <&ps_ssd_ans>;
+	};
+
+	nvme@44dcc0000 {
+		compatible = "lab,j616-nvme-partition-25g83";
+		reg = <4 0x4dcc0000 0 0x10000 4 0x9600000 0 0x4000 4 0xdcc0000 0 0x60000>;
+		reg-names = "nvme", "ans", "nvmmu";
+		resets = <&ps_ssd_ans>;
+		power-domain-names = "ans", "apcie0", "apcie1";
+		power-domains = <&ps_ssd_ans &ps_ssd_apcie_sys_st0 &ps_ssd_apcie_sys_st1>;
+		apple,sart = <&ans_sart>;
+		mboxes = <&ans_mbox>;
+		interrupts = <0 0xa17 4>;
+		interrupt-parent = <&aic>;
+		lab,write-lba-range = <0 0xd9bd800 0 0xe7b5c00>;
+	};
+};
