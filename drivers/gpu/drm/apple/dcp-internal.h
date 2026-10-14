@@ -239,6 +239,12 @@ struct apple_dcp {
 	ktime_t m4_commit_time;
 	u32 m4_stats_commit_max_us, m4_stats_mask[4];
 	u64 m4_stats_commit_sum_us, m4_flip_seq;
+	/* M4 (R51): vblank clock for flip_event_mode bit2: frame period of the current mode, first event, last sequence,
+	 * time of the last swap_complete_intent_gated callback and of the last swap_complete, intent statistics */
+	u64 m4_frame_ns, m4_vbl_seq;
+	ktime_t m4_vbl_epoch, m4_intent_time, m4_complete_time;
+	u32 m4_stats_intent_n, m4_stats_intent_max_us;
+	u64 m4_stats_intent_sum_us;
 	bool use_timestamps;
 	struct dcp_set_digital_out_mode_req mode;
 
