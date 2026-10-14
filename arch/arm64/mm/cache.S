@@ -7,6 +7,7 @@
  */
 
 #include <linux/errno.h>
+#include <linux/export.h>
 #include <linux/linkage.h>
 #include <linux/init.h>
 #include <asm/assembler.h>
@@ -230,3 +231,6 @@ SYM_FUNC_START(__pi_dcache_clean_pop)
 	ret
 SYM_FUNC_END(__pi_dcache_clean_pop)
 SYM_FUNC_ALIAS(dcache_clean_pop, __pi_dcache_clean_pop)
+
+/* The display driver can be kept outside the early public module path. */
+EXPORT_SYMBOL_FOR_MODULES(dcache_clean_inval_poc, "appledrm")

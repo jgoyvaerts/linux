@@ -423,3 +423,8 @@ bool kernel_page_present(struct page *page)
 	ptep = pte_offset_kernel(pmdp, addr);
 	return pte_valid(__ptep_get(ptep));
 }
+
+/* The display driver can be kept outside the early public module path. */
+EXPORT_SYMBOL_FOR_MODULES(can_set_direct_map, "appledrm");
+EXPORT_SYMBOL_FOR_MODULES(set_direct_map_invalid_noflush, "appledrm");
+EXPORT_SYMBOL_FOR_MODULES(set_direct_map_default_noflush, "appledrm");
