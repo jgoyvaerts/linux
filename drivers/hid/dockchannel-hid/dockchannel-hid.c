@@ -12,6 +12,7 @@
 #include <linux/firmware.h>
 #include <linux/gpio/consumer.h>
 #include <linux/hid.h>
+#include <linux/mfd/macsmc.h>
 #include <linux/mutex.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
@@ -163,6 +164,7 @@ struct dchid_iface {
 	uint8_t tx_seq;
 	bool deferred;
 	bool starting;
+	u8 afe_power_next; /* 0: off, 2: on, 3: consumed or failed */
 	bool open;
 	struct completion ready;
 
@@ -191,6 +193,7 @@ struct dockchannel_hid {
 	struct device *dev;
 	struct dockchannel *dc;
 	struct device_link *helper_link;
+	struct apple_smc *afe_smc;
 	bool stopping;
 
 	/* Held from probe on when the multi-touch interface uses power method 2 */
@@ -443,11 +446,19 @@ static int dchid_reset_interface(struct dchid_iface *iface, int state)
 {
 	u8 msg[DCHID_PM1_CMD_SIZE];
 	u8 msg2[] = { CMD_RESET_INTERFACE, 2, iface->index, state, 0, 0, 0, 0, 0 };
+	bool afe = iface->dchid->afe_smc && iface->index == 1;
 	int ret;
 
 	if (!iface->dchid->use_ring) {
 		dchid_pm1_command(iface->index, state, msg);
 		return dchid_comm_cmd(iface->dchid, msg, sizeof(msg));
+	}
+
+	if (afe) {
+		/* Claim before the first message: uncertain transitions are not retried. */
+		if ((state != 0 && state != 2) || state != iface->afe_power_next)
+			return -EALREADY;
+		iface->afe_power_next = 3;
 	}
 
 	/*
@@ -458,8 +469,32 @@ static int dchid_reset_interface(struct dchid_iface *iface, int state)
 	ret = dchid_comm_cmd(iface->dchid, msg2, sizeof(msg2));
 	if (ret < 0)
 		return ret;
+
+#if IS_REACHABLE(CONFIG_MFD_MACSMC)
+	if (afe) {
+		/*
+		 * J616s macOS power sequence: gp1c high + 50 ms when turning
+		 * off, low with no added delay when turning on. These are
+		 * pKW4 function payloads, not gpio-macsmc CMD_OUTPUT values.
+		 * The host operation sits between WillChange and HasChanged.
+		 */
+		__le32 value = cpu_to_le32(0x00010000 | (state == 0));
+
+		ret = apple_smc_write(iface->dchid->afe_smc, SMC_KEY(gp1c),
+				      &value, sizeof(value));
+		if (ret < 0) {
+			dev_err(iface->dchid->dev, "AFE power sequence failed: %d; reboot required\n", ret);
+			return ret;
+		}
+		if (state == 0)
+			msleep(50);
+	}
+#endif
 	msg2[4] = 1;
-	return dchid_comm_cmd(iface->dchid, msg2, sizeof(msg2));
+	ret = dchid_comm_cmd(iface->dchid, msg2, sizeof(msg2));
+	if (afe && ret >= 0 && state == 0)
+		iface->afe_power_next = 2;
+	return ret;
 }
 
 static int dchid_register_ring(struct dockchannel_hid *dchid)
@@ -1414,6 +1449,55 @@ done:
 				  sizeof(struct dchid_hdr));
 }
 
+/* AFE power through SMC key gp1c, for boards whose device tree links the SMC. */
+static int dchid_bind_afe_smc(struct dockchannel_hid *dchid)
+{
+	struct device *dev = dchid->dev;
+#if IS_REACHABLE(CONFIG_MFD_MACSMC)
+	struct device_node *node;
+	struct platform_device *pdev;
+	struct device_link *link;
+	struct apple_smc_key_info info;
+	int ret;
+#endif
+
+	if (!of_find_property(dev->of_node, "apple,afe-smc", NULL))
+		return 0;
+	if (!of_device_is_compatible(dev->of_node, "apple,t6041-dockchannel-hid"))
+		return -EINVAL;
+#if !IS_REACHABLE(CONFIG_MFD_MACSMC)
+	return -EOPNOTSUPP;
+#else
+	node = of_parse_phandle(dev->of_node, "apple,afe-smc", 0);
+	if (!node)
+		return -EINVAL;
+	if (!of_device_is_compatible(node, "apple,smc")) {
+		of_node_put(node);
+		return -EINVAL;
+	}
+	pdev = of_find_device_by_node(node);
+	of_node_put(node);
+	if (!pdev)
+		return -EPROBE_DEFER;
+	link = device_link_add(dev, &pdev->dev, DL_FLAG_AUTOREMOVE_CONSUMER);
+	put_device(&pdev->dev);
+	if (!link)
+		return -EINVAL;
+	if (link->supplier->links.status != DL_DEV_DRIVER_BOUND)
+		return -EPROBE_DEFER;
+	dchid->afe_smc = dev_get_drvdata(link->supplier);
+	if (!dchid->afe_smc)
+		return -EPROBE_DEFER;
+	ret = apple_smc_get_key_info(dchid->afe_smc, SMC_KEY(gp1c), &info);
+	if (ret < 0)
+		return ret;
+	if (info.size != 4 || !(info.flags & APPLE_SMC_WRITABLE))
+		return -EINVAL;
+	dev_info(dev, "AFE power sequence via SMC gp1c\n");
+	return 0;
+#endif
+}
+
 static int dockchannel_hid_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -1434,7 +1518,13 @@ static int dockchannel_hid_probe(struct platform_device *pdev)
 
 	dchid->dev = dev;
 	mutex_init(&dchid->ring_mutex);
-	dchid->use_ring = of_device_is_compatible(dev->of_node, "apple,t8132-dockchannel-hid");
+	/* The M4 Pro (J616s) MTP uses the same 26.6.2 firmware transport as T8132. */
+	dchid->use_ring = of_device_is_compatible(dev->of_node, "apple,t8132-dockchannel-hid") ||
+			  of_device_is_compatible(dev->of_node, "apple,t6041-dockchannel-hid");
+
+	ret = dchid_bind_afe_smc(dchid);
+	if (ret)
+		return dev_err_probe(dev, ret, "AFE power sequence preflight failed\n");
 
 	/*
 	 * The STM interface reports the machine's vendor and product IDs,
