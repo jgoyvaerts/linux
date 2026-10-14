@@ -166,6 +166,7 @@ enum dcpep_method {
 	iomfbep_last_client_close,
 	iomfbep_abort_swaps_dcp,
 	iomfbep_set_matrix,
+	iomfbep_get_gamma_table,
 	dcpep_num_methods
 };
 
@@ -452,6 +453,28 @@ struct iomfb_set_matrix_req {
 struct iomfb_set_matrix_resp {
 	u32 ret;
 } __packed;
+
+/*
+ * M4 (R52): A420 get_gamma_table (A421 set_gamma_table has the same shape). macOS IOMFBGammaTable: three channels
+ * (red, green, blue) of 257 u32 entries at +0, +0x404, +0x808 (3084 bytes); the wire buffer is 3088 bytes in and out
+ * (table + null flag + padding). Values print as "0x%03x" in IOMobileFramebufferLegacy::print_gamma_table (10 bit?).
+ */
+#define IOMFB_GAMMA_ENTRIES 257
+struct iomfb_gamma_table_req {
+	__le32 table[3][IOMFB_GAMMA_ENTRIES];
+	u8 table_null;
+	u8 padding[3];
+} __packed;
+
+struct iomfb_gamma_table_resp {
+	__le32 table[3][IOMFB_GAMMA_ENTRIES];
+	u8 table_null;
+	u8 padding[3];
+} __packed;
+static_assert(sizeof(struct iomfb_gamma_table_req) == 3088, "A420/A421 wire size (macOS stub: in 3088, out 3088)");
+static_assert(sizeof(struct iomfb_gamma_table_resp) == 3088, "A420/A421 wire size");
+#define iomfb_get_gamma_table_req iomfb_gamma_table_req
+#define iomfb_get_gamma_table_resp iomfb_gamma_table_resp
 
 struct dcpep_get_tiling_state_req {
 	u32 event;
