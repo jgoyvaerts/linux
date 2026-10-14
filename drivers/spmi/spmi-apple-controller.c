@@ -210,6 +210,12 @@ static int spmi_raw_cmd(struct spmi_controller *ctrl, u8 opc, u8 sid, u16 param,
 		return ret;
 
 	reply = readl(spmi->regs + spmi->hw->reply);
+	if (FIELD_GET(SPMI_REPLY_CMD, reply) != opc ||
+	    FIELD_GET(SPMI_REPLY_SLAVE_ID, reply) != sid) {
+		spmi->prev_fail = true;
+		dev_err(&ctrl->dev, "unexpected SPMI response 0x%x\n", reply);
+		return -EIO;
+	}
 
 	/* Read SPMI data reply */
 	i = 0;
