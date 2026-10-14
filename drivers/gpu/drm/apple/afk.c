@@ -1388,6 +1388,13 @@ int afk_receive_message(struct apple_dcp_afkep *ep, u64 message)
 {
 	struct afk_receive_message_work *work;
 
+	/* A panel DCP may leave a graph endpoint unstarted; drop late messages. */
+	if (!ep) {
+		pr_warn_ratelimited("appledrm: AFK message 0x%016llx for an unstarted endpoint dropped\n",
+				    message);
+		return -ENODEV;
+	}
+
 	// TODO: comment why decoupling from rtkit thread is required here
 	work = kzalloc(sizeof(*work), GFP_KERNEL);
 	if (!work)
