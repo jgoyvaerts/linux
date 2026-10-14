@@ -1285,6 +1285,20 @@ static void dcp_on_set_parameter(struct apple_dcp *dcp, void *out, void *cookie)
 	param.param = IOMFBPARAM_ADAPTIVE_SYNC;
 	memset(param.value, 0, count * sizeof(param.value[0]));
 	param.count = count;
+#if DCP_FW_VER >= DCP_FW_VERSION(26, 6, 0)
+	if (dcp_adaptive_sync_min_hz) {
+		if (dcp_adaptive_sync_min_hz == 24 && dcp->main_display && dcp_has_panel(dcp)) {
+			/* value[0] minRR (16.16 Hz), value[1] mediaTargetRate = 0 (no media mode), value[2] fractional = 0 */
+			param.value[0] = (u64)dcp_adaptive_sync_min_hz << 16;
+			dev_info(dcp->dev, "M4_DCP_ADAPTIVE_SYNC min_rr=0x%llx media_rate=0 fractional=0\n",
+				 param.value[0]);
+		} else {
+			dev_warn(dcp->dev,
+				 "M4_DCP_ADAPTIVE_SYNC_IGNORED value=%u main_display=%d panel=%d (accepted: 0, 24 on the internal panel)\n",
+				 dcp_adaptive_sync_min_hz, dcp->main_display, dcp_has_panel(dcp));
+		}
+	}
+#endif
 
 	if (!dcp_set_parameter_dcp(dcp, false, &param,
 #if DCP_FW_VER >= DCP_FW_VERSION(26, 6, 0)
