@@ -227,6 +227,32 @@ static int led_pwm_probe(struct platform_device *pdev)
 	return 0;
 }
 
+/*
+ * The LED class turns an LED off only when it is unregistered, which never
+ * happens at power-off. Drain the work queue, block further sysfs writes and
+ * apply zero duty once, so the keyboard light does not stay lit after
+ * poweroff or reboot. systemd-backlight has already saved the level by then.
+ */
+static void led_pwm_shutdown(struct platform_device *pdev)
+{
+	struct led_pwm_priv *priv = platform_get_drvdata(pdev);
+	int i;
+
+	if (!priv)
+		return;
+
+	for (i = 0; i < priv->num_leds; i++) {
+		struct led_classdev *cdev = &priv->leds[i].cdev;
+
+		mutex_lock(&cdev->led_access);
+		led_sysfs_disable(cdev);
+		mutex_unlock(&cdev->led_access);
+		flush_work(&cdev->set_brightness_work);
+		cdev->brightness = LED_OFF;
+		led_pwm_set(cdev, LED_OFF);
+	}
+}
+
 static const struct of_device_id of_pwm_leds_match[] = {
 	{ .compatible = "pwm-leds", },
 	{},
@@ -235,6 +261,7 @@ MODULE_DEVICE_TABLE(of, of_pwm_leds_match);
 
 static struct platform_driver led_pwm_driver = {
 	.probe		= led_pwm_probe,
+	.shutdown	= led_pwm_shutdown,
 	.driver		= {
 		.name	= "leds_pwm",
 		.of_match_table = of_pwm_leds_match,
