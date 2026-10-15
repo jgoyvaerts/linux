@@ -1,26 +1,31 @@
 // SPDX-License-Identifier: GPL-2.0+ OR MIT
 /*
- * T6040 cluster cpufreq + OPP tables. Cluster DVFS bases are m1n1-proven; OPP freqs/levels decoded
- * from the live J614s ADT /arm-io/pmgr/voltage-states{1,5,13}-sram (word0 = kHz): E 7 pstates
- * 1020-2592 MHz, P 19 pstates 1260-4512 MHz.
+ * T6040 cluster cpufreq: the three cluster DVFS blocks and their OPP tables, after CJ Damsleth's J614s
+ * t6040-cpufreq.dtsi. Values from the J616s ADT: DVFS blocks /arm-io/pmgr reg[6] (E), reg[15] (P0) and reg[26]
+ * (P1); frequencies voltage-states1/5/13-sram, word 0 = kHz; opp-level = the one-based p-state the driver writes.
+ * Cluster n is MPIDR Aff1 = n; one table per cluster, as opp-shared means one clock domain per table.
+ * nonposted-mmio on each block: the root has none, and SoC MMIO needs non-posted writes.
  */
 
 / {
 	cpufreq_e: cpufreq@210e20000 {
 		compatible = "apple,t8112-cluster-cpufreq";
 		reg = <0x2 0x10e20000 0 0x1000>;
+		nonposted-mmio;
 		#performance-domain-cells = <0>;
 	};
 
 	cpufreq_p0: cpufreq@211e20000 {
 		compatible = "apple,t8112-cluster-cpufreq";
 		reg = <0x2 0x11e20000 0 0x1000>;
+		nonposted-mmio;
 		#performance-domain-cells = <0>;
 	};
 
 	cpufreq_p1: cpufreq@212e20000 {
 		compatible = "apple,t8112-cluster-cpufreq";
 		reg = <0x2 0x12e20000 0 0x1000>;
+		nonposted-mmio;
 		#performance-domain-cells = <0>;
 	};
 
@@ -88,17 +93,18 @@
 	};
 };
 
-&cpu_e0 { operating-points-v2 = <&opp_e>; performance-domains = <&cpufreq_e>; };
-&cpu_e1 { operating-points-v2 = <&opp_e>; performance-domains = <&cpufreq_e>; };
-&cpu_e2 { operating-points-v2 = <&opp_e>; performance-domains = <&cpufreq_e>; };
-&cpu_e3 { operating-points-v2 = <&opp_e>; performance-domains = <&cpufreq_e>; };
-&cpu_p00 { operating-points-v2 = <&opp_p0>; performance-domains = <&cpufreq_p0>; };
-&cpu_p01 { operating-points-v2 = <&opp_p0>; performance-domains = <&cpufreq_p0>; };
-&cpu_p02 { operating-points-v2 = <&opp_p0>; performance-domains = <&cpufreq_p0>; };
-&cpu_p03 { operating-points-v2 = <&opp_p0>; performance-domains = <&cpufreq_p0>; };
-&cpu_p04 { operating-points-v2 = <&opp_p0>; performance-domains = <&cpufreq_p0>; };
-&cpu_p10 { operating-points-v2 = <&opp_p1>; performance-domains = <&cpufreq_p1>; };
-&cpu_p11 { operating-points-v2 = <&opp_p1>; performance-domains = <&cpufreq_p1>; };
-&cpu_p12 { operating-points-v2 = <&opp_p1>; performance-domains = <&cpufreq_p1>; };
-&cpu_p13 { operating-points-v2 = <&opp_p1>; performance-domains = <&cpufreq_p1>; };
-&cpu_p14 { operating-points-v2 = <&opp_p1>; performance-domains = <&cpufreq_p1>; };
+/* #cooling-cells on every CPU: the cpufreq cooling device of a cluster belongs to its policy CPU. */
+&cpu_e0 { operating-points-v2 = <&opp_e>; performance-domains = <&cpufreq_e>; #cooling-cells = <2>; };
+&cpu_e1 { operating-points-v2 = <&opp_e>; performance-domains = <&cpufreq_e>; #cooling-cells = <2>; };
+&cpu_e2 { operating-points-v2 = <&opp_e>; performance-domains = <&cpufreq_e>; #cooling-cells = <2>; };
+&cpu_e3 { operating-points-v2 = <&opp_e>; performance-domains = <&cpufreq_e>; #cooling-cells = <2>; };
+&cpu_p00 { operating-points-v2 = <&opp_p0>; performance-domains = <&cpufreq_p0>; #cooling-cells = <2>; };
+&cpu_p01 { operating-points-v2 = <&opp_p0>; performance-domains = <&cpufreq_p0>; #cooling-cells = <2>; };
+&cpu_p02 { operating-points-v2 = <&opp_p0>; performance-domains = <&cpufreq_p0>; #cooling-cells = <2>; };
+&cpu_p03 { operating-points-v2 = <&opp_p0>; performance-domains = <&cpufreq_p0>; #cooling-cells = <2>; };
+&cpu_p04 { operating-points-v2 = <&opp_p0>; performance-domains = <&cpufreq_p0>; #cooling-cells = <2>; };
+&cpu_p10 { operating-points-v2 = <&opp_p1>; performance-domains = <&cpufreq_p1>; #cooling-cells = <2>; };
+&cpu_p11 { operating-points-v2 = <&opp_p1>; performance-domains = <&cpufreq_p1>; #cooling-cells = <2>; };
+&cpu_p12 { operating-points-v2 = <&opp_p1>; performance-domains = <&cpufreq_p1>; #cooling-cells = <2>; };
+&cpu_p13 { operating-points-v2 = <&opp_p1>; performance-domains = <&cpufreq_p1>; #cooling-cells = <2>; };
+&cpu_p14 { operating-points-v2 = <&opp_p1>; performance-domains = <&cpufreq_p1>; #cooling-cells = <2>; };
