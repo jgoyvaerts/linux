@@ -327,12 +327,69 @@
 		#size-cells = <0>;
 		#address-cells = <2>;
 
+		/*
+		 * Clusters = MPIDR Aff1 = the L2 groups. capacity-dmips-mhz from pinned single-core throughput at p-state 1
+		 * (E 1018 MHz, P 1257 MHz; Kb2uka's benchmark method): E/P 0.652 per MHz, so E 668 and P 1024. The kernel
+		 * reads capacity-dmips-mhz only through cpu-map.
+		 */
+		cpu-map {
+			cluster0 {
+				core0 {
+					cpu = <&cpu_e0>;
+				};
+				core1 {
+					cpu = <&cpu_e1>;
+				};
+				core2 {
+					cpu = <&cpu_e2>;
+				};
+				core3 {
+					cpu = <&cpu_e3>;
+				};
+			};
+			cluster1 {
+				core0 {
+					cpu = <&cpu_p00>;
+				};
+				core1 {
+					cpu = <&cpu_p01>;
+				};
+				core2 {
+					cpu = <&cpu_p02>;
+				};
+				core3 {
+					cpu = <&cpu_p03>;
+				};
+				core4 {
+					cpu = <&cpu_p04>;
+				};
+			};
+			cluster2 {
+				core0 {
+					cpu = <&cpu_p10>;
+				};
+				core1 {
+					cpu = <&cpu_p11>;
+				};
+				core2 {
+					cpu = <&cpu_p12>;
+				};
+				core3 {
+					cpu = <&cpu_p13>;
+				};
+				core4 {
+					cpu = <&cpu_p14>;
+				};
+			};
+		};
+
 		cpu_e3: cpu@3 {
 			compatible = "arm,armv8";
 			reg = <0 3>;
 			device_type = "cpu";
 			enable-method = "spin-table";
 			next-level-cache = <&l2_cache_e>;
+			capacity-dmips-mhz = <668>;
 			status = "okay";
 		};
 
@@ -342,6 +399,7 @@
 			device_type = "cpu";
 			enable-method = "spin-table";
 			next-level-cache = <&l2_cache_e>;
+			capacity-dmips-mhz = <668>;
 			status = "okay";
 		};
 
@@ -351,6 +409,7 @@
 			device_type = "cpu";
 			enable-method = "spin-table";
 			next-level-cache = <&l2_cache_e>;
+			capacity-dmips-mhz = <668>;
 			status = "okay";
 		};
 
@@ -360,6 +419,7 @@
 			device_type = "cpu";
 			enable-method = "spin-table";
 			next-level-cache = <&l2_cache_e>;
+			capacity-dmips-mhz = <668>;
 			status = "okay";
 		};
 
@@ -369,6 +429,7 @@
 			device_type = "cpu";
 			enable-method = "spin-table";
 			next-level-cache = <&l2_cache_p1>;
+			capacity-dmips-mhz = <1024>;
 			status = "okay";
 		};
 
@@ -378,6 +439,7 @@
 			device_type = "cpu";
 			enable-method = "spin-table";
 			next-level-cache = <&l2_cache_p1>;
+			capacity-dmips-mhz = <1024>;
 			status = "okay";
 		};
 
@@ -387,6 +449,7 @@
 			device_type = "cpu";
 			enable-method = "spin-table";
 			next-level-cache = <&l2_cache_p1>;
+			capacity-dmips-mhz = <1024>;
 			status = "okay";
 		};
 
@@ -396,6 +459,7 @@
 			device_type = "cpu";
 			enable-method = "spin-table";
 			next-level-cache = <&l2_cache_p1>;
+			capacity-dmips-mhz = <1024>;
 			status = "okay";
 		};
 
@@ -405,6 +469,7 @@
 			device_type = "cpu";
 			enable-method = "spin-table";
 			next-level-cache = <&l2_cache_p1>;
+			capacity-dmips-mhz = <1024>;
 			status = "okay";
 		};
 
@@ -414,6 +479,7 @@
 			device_type = "cpu";
 			enable-method = "spin-table";
 			next-level-cache = <&l2_cache_p0>;
+			capacity-dmips-mhz = <1024>;
 			status = "okay";
 		};
 
@@ -423,6 +489,7 @@
 			device_type = "cpu";
 			enable-method = "spin-table";
 			next-level-cache = <&l2_cache_p0>;
+			capacity-dmips-mhz = <1024>;
 			status = "okay";
 		};
 
@@ -432,6 +499,7 @@
 			device_type = "cpu";
 			enable-method = "spin-table";
 			next-level-cache = <&l2_cache_p0>;
+			capacity-dmips-mhz = <1024>;
 			status = "okay";
 		};
 
@@ -441,6 +509,7 @@
 			device_type = "cpu";
 			enable-method = "spin-table";
 			next-level-cache = <&l2_cache_p0>;
+			capacity-dmips-mhz = <1024>;
 			status = "okay";
 		};
 
@@ -449,6 +518,7 @@
 			reg = <0 0x10100>;
 			device_type = "cpu";
 			next-level-cache = <&l2_cache_p0>;
+			capacity-dmips-mhz = <1024>;
 			status = "okay";
 		};
 	};
