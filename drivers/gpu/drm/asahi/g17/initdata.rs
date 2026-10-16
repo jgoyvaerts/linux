@@ -155,6 +155,10 @@ pub(super) struct InitData {
     boot_control: usize,
     boot_state: usize,
     metrics_fw_va: u64,
+    /// Client VA of the parameter-buffer metrics object (`Config::pm_metrics`).
+    pm_metrics_va: u64,
+    /// `Config::recovery_slot_keys`.
+    recovery_slot_keys: Option<u64>,
     compute_shared: Option<ComputeShared>,
     compute_scheduler: Option<ComputeScheduler>,
     compute_active: core::cell::Cell<bool>,
@@ -235,6 +239,8 @@ impl InitData {
             boot_control: 0,
             boot_state: 0,
             metrics_fw_va: 0,
+            pm_metrics_va: 0,
+            recovery_slot_keys: None,
             compute_shared: None,
             compute_scheduler: None,
             compute_active: core::cell::Cell::new(false),
@@ -245,6 +251,10 @@ impl InitData {
             render_runs: 0,
             render_blocks: 0..0,
         }
+    }
+
+    pub(super) fn pm_metrics_va(&self) -> u64 {
+        self.pm_metrics_va
     }
 
     pub(super) fn metrics_fw_va(&self) -> Result<u64> {
@@ -695,6 +705,8 @@ impl InitData {
         render: &mmu::Vm,
         metrics: &KernelObject,
     ) -> Result {
+        self.pm_metrics_va = cfg.pm_metrics.va;
+        self.recovery_slot_keys = cfg.recovery_slot_keys;
         let range = uat.geometry().kernel_range();
         let env = BuildEnv {
             dev,
@@ -1150,7 +1162,7 @@ impl InitData {
             )?;
         }
         mappings.push(
-            metrics.map_alias(vm, t8140::CONFIG.pm_metrics.va, mmu::PROT_GPU_FW_SHARED_RW)?,
+            metrics.map_alias(vm, self.pm_metrics_va, mmu::PROT_GPU_FW_SHARED_RW)?,
             GFP_KERNEL,
         )?;
         Ok(mappings)
@@ -1376,7 +1388,7 @@ impl super::recovery::Memory for InitData {
             .dword(abi::private::STATUS_B + abi::PrimaryStatusB::RECOVERY_SLOT_MASK)?
             .load(Ordering::Relaxed);
         let mut sources = super::recovery::Sources::sample(mask as u32, |slot| {
-            let key = super::recovery::slot_key(slot)?;
+            let key = super::recovery::slot_key(slot, self.recovery_slot_keys)?;
             let monitor = self.recovery_view_words::<6>(abi::recovery::PROGRESS_VIEW,
                 abi::recovery::PROGRESS_START + slot * abi::recovery::PROGRESS_STRIDE)
                 .ok().map(|words| words[0])?;
