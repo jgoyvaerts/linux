@@ -635,9 +635,21 @@ module_param(trial_modeset, bool, 0444);
 MODULE_PARM_DESC(trial_modeset,
 		 "Takeover: power on the DCP and set a mode before the boot framebuffer is evicted; on failure simpledrm keeps the screen (default 1)");
 
+/*
+ * M4 (P2, 2026-10-16): try the highest refresh rate at the panel's full resolution first. With the boot-like 60 Hz
+ * trial the panel goes 60 -> 120 (greeter highrr) -> 60 (console restore at login) -> 120 (session), each a full
+ * DCP power cycle of 0.2-0.25 s. With the 120 Hz timing as the trial, and so the console, mode, the later commits
+ * find the mode already set: dcp_crtc_atomic_modeset() runs no firmware modeset unless DRM flags one. The
+ * boot-like mode stays the next candidate. Default off (attended first).
+ */
+static bool trial_highrr;
+module_param(trial_highrr, bool, 0444);
+MODULE_PARM_DESC(trial_highrr,
+		 "Takeover trial: try the highest refresh rate at full resolution first, the boot-like mode next (default 0)");
+
 /* iBoot's panel mode: the pixel clock the firmware falls back to (O10). */
 #define M4_BOOT_PIXEL_CLOCK_KHZ	521065
-#define M4_TRIAL_MAX_CAND	2
+#define M4_TRIAL_MAX_CAND	3
 
 /*
  * M4 takeover gate, called after the DCP started and before the boot
@@ -652,9 +664,9 @@ int dcp_takeover_trial(struct platform_device *pdev, const char **reason)
 	struct apple_dcp *dcp = platform_get_drvdata(pdev);
 	struct drm_display_mode cand[M4_TRIAL_MAX_CAND];
 	struct drm_crtc_state *st;
-	unsigned int i, k, n = 0, pref = UINT_MAX, boot = UINT_MAX;
-	int win = -1, ret = -EIO;
-	u32 best = U32_MAX;
+	unsigned int i, k, n = 0, pref = UINT_MAX, boot = UINT_MAX, hr = UINT_MAX;
+	int win = -1, ret = -EIO, hr_rate = 0;
+	u32 best = U32_MAX, hr_area = 0;
 
 	*reason = "none";
 	if (!dcp) {
@@ -688,8 +700,16 @@ int dcp_takeover_trial(struct platform_device *pdev, const char **reason)
 	for (i = 0; i < dcp->nr_modes; i++) {
 		const struct dcp_display_mode *m = &dcp->modes[i];
 
+		u32 area = (u32)m->mode.hdisplay * m->mode.vdisplay;
+		int rate = drm_mode_vrefresh(&m->mode);
+
 		if ((m->mode.type & DRM_MODE_TYPE_PREFERRED) && pref == UINT_MAX)
 			pref = i;
+		if (area > hr_area || (area == hr_area && rate > hr_rate)) {
+			hr = i;
+			hr_area = area;
+			hr_rate = rate;
+		}
 		if (!m->vrr) {
 			u32 d = abs((int)m->mode.clock - M4_BOOT_PIXEL_CLOCK_KHZ);
 
@@ -701,12 +721,18 @@ int dcp_takeover_trial(struct platform_device *pdev, const char **reason)
 	}
 	if (pref == UINT_MAX)
 		pref = 0;
+	if (!trial_highrr)
+		hr = UINT_MAX;
+	if (hr != UINT_MAX)
+		cand[n++] = dcp->modes[hr].mode;
 	/* Only a mode within 1% of the firmware's default video clock counts as boot-like. */
-	if (boot != UINT_MAX && best <= M4_BOOT_PIXEL_CLOCK_KHZ / 100)
-		cand[n++] = dcp->modes[boot].mode;
-	else
+	if (boot != UINT_MAX && best <= M4_BOOT_PIXEL_CLOCK_KHZ / 100) {
+		if (boot != hr)
+			cand[n++] = dcp->modes[boot].mode;
+	} else {
 		boot = UINT_MAX;
-	if (pref != boot)
+	}
+	if (pref != boot && pref != hr)
 		cand[n++] = dcp->modes[pref].mode;
 	mutex_unlock(&dcp->modes_lock);
 
