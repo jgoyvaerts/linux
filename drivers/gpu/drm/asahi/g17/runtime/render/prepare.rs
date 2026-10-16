@@ -36,7 +36,7 @@ impl BuildResources {
             metrics_ids: firmware.queues.metrics.clone(),
             metrics_bases: crate::g17::fw::buffer::MetricsAddresses {
                 firmware: firmware.init.metrics_fw_va()?,
-                client: crate::hw::t8140::CONFIG.pm_metrics.va,
+                client: firmware.init.pm_metrics_va(),
             },
             config: firmware.queues.render.config,
         })

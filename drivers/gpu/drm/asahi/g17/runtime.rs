@@ -1466,7 +1466,9 @@ impl super::Shared {
         {
             let mut state = self.state.lock();
             if let Some(firmware) = state.as_deref_mut() {
-                firmware.secondary.stop();
+                if let Some(secondary) = firmware.secondary.as_mut() {
+                    secondary.stop();
+                }
                 firmware.primary.stop();
             }
         }
@@ -1490,7 +1492,9 @@ impl super::Shared {
         let firmware = {
             let mut state = self.state.lock();
             if let Some(firmware) = (*state).as_deref_mut() {
-                firmware.secondary.stop();
+                if let Some(secondary) = firmware.secondary.as_mut() {
+                    secondary.stop();
+                }
                 firmware.primary.stop();
             }
             state.take()
