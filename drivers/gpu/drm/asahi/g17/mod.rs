@@ -148,8 +148,9 @@ pub(crate) struct Config {
     pub(crate) uat_ias: u32,
     /// Output (physical) address bits of the UAT.
     pub(crate) uat_oas: u32,
-    /// Offset of the secondary coprocessor's kernel root in the `pagetables` region.
-    pub(crate) secondary_root_offset: u64,
+    /// Offset of the secondary coprocessor's kernel root in the `pagetables` region; `None` for
+    /// a single-instance firmware.
+    pub(crate) secondary_root_offset: Option<u64>,
     /// Crash log buffer of each [`Role`].
     pub(crate) crash_buffers: [FixedBuffer; 2],
     /// Parameter buffer page metrics shared with the firmware.
