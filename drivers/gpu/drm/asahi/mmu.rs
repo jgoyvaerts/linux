@@ -161,6 +161,9 @@ pub(crate) struct UatQuirks {
     pub(crate) handoff_lock: bool,
     /// Handoff "current slot" written at initialization (A18 Pro: 0, M4 Pro: 0xffff_ffff).
     pub(crate) handoff_slot: u32,
+    /// Store GPU-only mappings of client and kernel-lower tables in the G16X native form, AP 0
+    /// with the access in PXN/UXN, instead of AP 2.
+    pub(crate) native_gpu_permissions: bool,
 }
 
 impl UatQuirks {
@@ -171,6 +174,7 @@ impl UatQuirks {
         page_tlbi: false,
         handoff_lock: true,
         handoff_slot: 0,
+        native_gpu_permissions: false,
     };
 }
 
@@ -1612,6 +1616,7 @@ impl Vm {
             )?
         } else {
             UatPageTable::new(geometry.ias, geometry.oas, uat_inner.quirks.clean_tables)?
+                .with_native_gpu(uat_inner.quirks.native_gpu_permissions)
         };
 
         let (va_range, gpuvm_range) = if is_kernel {

@@ -36,6 +36,9 @@ mod layout {
     pub(super) const STATUS_A: usize = 0x1_f180;
     /// The role configuration (root +0xc0) in the cluster; its status follows at +0x80.
     pub(super) const CONFIG: usize = 0xd_3440;
+    /// The zeroed page named by main configuration 0x18 (the G16 driver names the word after
+    /// its control producer; 26A428 takes 0 there).
+    pub(super) const MAIN_HEADER: usize = 0x8000;
     /// The power-state object (root +0xb8), 0x6a8 bytes.
     pub(super) const POWER_STATE: u64 = 0x17_0000;
     /// The views named by the main configuration, with their 25G83 sizes.
@@ -253,6 +256,7 @@ impl InitData {
                 main.init_primary(&args, &views);
                 main.view_va = view_va;
                 main.firmware_area_va = [firmware_area_va; 2];
+                main.unk_18 = (cluster_va + layout::MAIN_HEADER as u64).to_le_bytes();
                 // The secondary role's words, on the single instance.
                 main.unk_300 = 4;
                 main.power_config_va = bundle_va + layout::POWER_CONFIG as u64;

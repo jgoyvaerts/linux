@@ -1260,9 +1260,13 @@ impl Gpu {
         if let Some(secondary) = session.secondary.as_mut() {
             secondary.init(session.init.root_va(Role::Secondary)?)?;
         }
-        session.primary.notify(MSG_POWER_ON_DONE)?;
-        if let Some(secondary) = session.secondary.as_mut() {
-            secondary.notify(MSG_POWER_ON_DONE)?;
+        // The 25G83 firmware has retired its opening record when it accepts the graph, and the
+        // proven M4 Pro sequence never sends POWER_ON_DONE.
+        if let Start::AscWrapV6 { .. } = cfg.start {
+            session.primary.notify(MSG_POWER_ON_DONE)?;
+            if let Some(secondary) = session.secondary.as_mut() {
+                secondary.notify(MSG_POWER_ON_DONE)?;
+            }
         }
         Self::wait_for_opening(dev, &session.init, &session.primary, session.secondary.as_ref())?;
         session

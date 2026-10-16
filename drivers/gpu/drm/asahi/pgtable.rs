@@ -387,6 +387,22 @@ impl Prot {
         (!need_read || readable) && (!need_write || writable)
     }
 
+    /// The G16X native form of a GPU-only permission: AP 0 with the access in PXN (read) and UXN
+    /// (write), as [`Self::allows_gpu`] reads AP 0. The logical selectors RO, WO, RW, NA map to
+    /// the native RO, WO, RW, NA. Firmware permissions are returned unchanged.
+    const fn native_gpu(self) -> Self {
+        if self.ap != AP_GPU {
+            return self;
+        }
+        let selector = (self.high_bits >> 1) & 3;
+        Self {
+            ap: AP_FW_GPU,
+            high_bits: (self.high_bits & !(HIGH_BITS_PXN | HIGH_BITS_UXN))
+                | (((selector + 1) & 3) << 1),
+            ..self
+        }
+    }
+
     pub(crate) const fn is_cached_noncoherent(&self) -> bool {
         self.ap != AP_GPU && self.memattr == MEMATTR_CACHED
     }
@@ -417,6 +433,8 @@ pub(crate) struct UatPageTable {
     /// Write back every table change for a GPU table walker that does not snoop the CPU caches
     /// (the M4 Pro policy, as the G16 driver does).
     clean: bool,
+    /// Store GPU-only permissions in the native AP 0 form ([`Prot::native_gpu`]).
+    native_gpu: bool,
     /// Tables below a root the driver did not allocate may belong to the bootloader or the
     /// firmware, so only the tables recorded here are ever freed. `None` if the driver owns the
     /// tables below the root, as with the handoff firmware interface.
@@ -443,11 +461,19 @@ impl UatPageTable {
             ttb_owned: true,
             reserved: None,
             clean,
+            native_gpu: false,
             driver_tables: None,
             va_range: 0..(1u64 << ias),
             ias_mask: (1u64 << ias) - 1,
             oas_mask: (1u64 << oas) - 1,
         })
+    }
+
+    /// Stores GPU-only permissions of this (client or kernel-lower) table in the native AP 0 form
+    /// (M4 Pro, as the G16 driver does). Firmware roots never hold GPU-only mappings.
+    pub(crate) fn with_native_gpu(mut self, native_gpu: bool) -> Self {
+        self.native_gpu = native_gpu;
+        self
     }
 
     /// Borrow a root; track individual child ownership only when other agents
@@ -490,6 +516,7 @@ impl UatPageTable {
             ttb_owned: false,
             reserved,
             clean,
+            native_gpu: false,
             driver_tables: shared_tables.then(KVec::new),
             va_range,
             ias_mask: (1u64 << ias) - 1,
@@ -843,6 +870,15 @@ impl UatPageTable {
         }
     }
 
+    /// The permission bits as this table stores them.
+    fn stored(&self, prot: Prot) -> Prot {
+        if self.native_gpu {
+            prot.native_gpu()
+        } else {
+            prot
+        }
+    }
+
     pub(crate) fn map_pages(
         &mut self,
         iova_range: Range<u64>,
@@ -862,6 +898,7 @@ impl UatPageTable {
         }
 
         let pte_bits = self.pte_bits();
+        let prot = self.stored(prot);
 
         self.with_pages(iova_range, true, false, |iova, ptes| {
             for (idx, pte) in ptes.iter().enumerate() {
@@ -888,6 +925,7 @@ impl UatPageTable {
             iova_range,
             prot
         );
+        let prot = self.stored(prot);
         self.with_pages(iova_range, true, false, |iova, ptes| {
             for (idx, pte) in ptes.iter().enumerate() {
                 let ptev = pte.load(Ordering::Relaxed);
