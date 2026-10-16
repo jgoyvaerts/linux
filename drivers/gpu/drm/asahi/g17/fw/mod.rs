@@ -9,6 +9,7 @@
 //! This module also holds the few rules shared by the render and compute
 //! work descriptors.
 
+use core::sync::atomic::{AtomicBool, Ordering};
 use kernel::prelude::*;
 
 pub(crate) mod buffer;
@@ -23,6 +24,21 @@ pub(crate) mod queue;
 pub(crate) mod render;
 pub(crate) mod render_rt;
 pub(crate) mod qos;
+
+/// The firmware is the M4 Pro's 25G83 build (`mBoot-18000.161.10`), whose shared structures
+/// differ from the A18 Pro's 26A428 build where [`is_25g83`] is consulted. Set once at probe,
+/// before any queue exists.
+static FIRMWARE_25G83: AtomicBool = AtomicBool::new(false);
+
+/// Selects the 25G83 layouts and rules.
+pub(crate) fn set_25g83(enabled: bool) {
+    FIRMWARE_25G83.store(enabled, Ordering::Relaxed);
+}
+
+/// Whether the 25G83 layouts and rules apply.
+pub(crate) fn is_25g83() -> bool {
+    FIRMWARE_25G83.load(Ordering::Relaxed)
+}
 
 /// Clears a firmware structure in place.
 ///

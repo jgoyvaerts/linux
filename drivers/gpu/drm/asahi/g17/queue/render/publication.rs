@@ -86,7 +86,9 @@ impl<'a> Lane<'a> {
         };
         Ok(Self {
             items,
-            producer: graph.queues.word(memory::POINTERS[stage] + 0x40)?,
+            producer: graph
+                .queues
+                .word(memory::POINTERS[stage] + crate::g17::fw::queue::PointerBlock::producer_offset())?,
             values,
             config,
             config_destination,

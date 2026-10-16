@@ -25,8 +25,13 @@ const COMPUTE_RENDER_RESERVE: usize = 2 * crate::mmu::MAX_EXECUTION_CONTEXTS as 
 pub(super) const COMPUTE_CHANNELS: usize = QID_COUNT - COMPUTE_RENDER_RESERVE;
 const _: () = {
     assert!(COMPUTE_CHANNELS >= 4);
+    assert!(COMPUTE_RENDER_RESERVE > QID_FLOOR_25G83);
     assert!(crate::hw::t8140::queues::RENDER_PAIRS_PER_OWNER == 1);
 };
+
+/// The 25G83 firmware keeps QIDs below 32 for its bootstrap protocol (the G16 driver's rings
+/// refuse them); the namespace starts there and preferred indices are relative to it.
+const QID_FLOOR_25G83: usize = 32;
 
 /// Stable physical-channel identity. The owner must not be reused within a
 /// device lifetime, including after an unpublished allocation is cancelled.
@@ -58,6 +63,8 @@ pub(crate) struct QueueIds {
     initial_render: [Option<Id>; 2],
     compute_publication: u64,
     leased: usize,
+    /// First QID the host may use.
+    floor: usize,
 }
 
 impl QueueIds {
@@ -67,6 +74,7 @@ impl QueueIds {
             initial_render: [None; 2],
             compute_publication: 0,
             leased: 0,
+            floor: if super::fw::is_25g83() { QID_FLOOR_25G83 } else { 0 },
         })
     }
 
@@ -110,7 +118,11 @@ impl QueueIds {
                 Err(EINVAL)
             };
         }
-        let initial = if engine == DataMaster::Compute && self.leased == QID_COUNT {
+        // The QIDs below the floor are never the host's (25G83); the reserve
+        // shrinks with them, so the compute channel count stays the same.
+        let total = QID_COUNT - self.floor;
+        let reserve = COMPUTE_RENDER_RESERVE - self.floor;
+        let initial = if engine == DataMaster::Compute && self.leased == total {
             self.initial_render
                 .iter()
                 .copied()
@@ -138,16 +150,22 @@ impl QueueIds {
             // Include that transition when protecting render's minimum, and
             // count the replacement as available compute capacity.
             let replacement = usize::from(initial.is_some());
-            if QID_COUNT - self.leased + replacement
-                <= COMPUTE_RENDER_RESERVE.saturating_sub(render - replacement)
+            if total - self.leased + replacement
+                <= reserve.saturating_sub(render - replacement)
             {
                 return Err(crate::g17::capacity::refused(crate::g17::capacity::Site::ComputeReserve));
             }
         }
         let index = preferred
-            .map(usize::from)
+            .map(|index| usize::from(index) + self.floor)
             .filter(|index| self.entries.get(*index).is_some_and(Option::is_none))
-            .or_else(|| self.entries.iter().position(Option::is_none))
+            .or_else(|| {
+                self.entries
+                    .iter()
+                    .skip(self.floor)
+                    .position(Option::is_none)
+                    .map(|index| index + self.floor)
+            })
             .or_else(|| initial.map(|(_, id)| usize::from(id.qid)))
             .ok_or_else(|| crate::g17::capacity::refused(crate::g17::capacity::Site::PhysicalQids))?;
         let id = Id {
