@@ -24,6 +24,9 @@ struct Service<'a> {
 }
 
 impl event::Transport for Service<'_> {
+    fn roles(&self) -> &'static [Role] {
+        self.firmware.roles()
+    }
     fn trace(&mut self, role: Role) {
         let firmware = &mut *self.firmware;
         firmware
@@ -445,7 +448,8 @@ impl crate::g17::Shared {
         } else if !recover
             && !polling
             && (channel::Events::pending(&firmware.init, Role::Primary)?
-                || channel::Events::pending(&firmware.init, Role::Secondary)?)
+                || (firmware.secondary.is_some()
+                    && channel::Events::pending(&firmware.init, Role::Secondary)?))
         {
             // A full bounded pass must not depend on a fresh notification for
             // records that arrived while it was consuming the same ring.
