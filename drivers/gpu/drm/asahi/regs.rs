@@ -518,6 +518,33 @@ impl Resources {
         })
     }
 
+    /// Reads the GPU ID register and takes the core layout from the device tree instead of the
+    /// count and mask registers (M4 Pro: `apple,m4-core-mask`, `cores` bits per cluster).
+    pub(crate) fn get_g17_id_layout(&self, clusters: u32, cores: u32, mask: u32) -> Result<G17Id> {
+        let id_version = self.sgx_read32::<ID_VERSION>();
+        dev_info!(self.dev.as_ref(), "GPU ID register: {:#x}\n", id_version);
+        if id_version == 0 || id_version == !0 || cores == 0 || cores >= 32 {
+            return Err(ENODEV);
+        }
+        let mut core_masks = KVec::with_capacity(clusters as usize, GFP_KERNEL)?;
+        for cluster in 0..clusters {
+            let bits = mask.checked_shr(cluster * cores).unwrap_or(0) & ((1 << cores) - 1);
+            core_masks.push(bits, GFP_KERNEL)?;
+        }
+        let (gpu_rev, _) = self.gpu_revision(id_version)?;
+        Ok(G17Id {
+            family: ((id_version >> 24) & 0xff) as u8,
+            variant: ((id_version >> 16) & 0xff) as u8,
+            gpu_rev,
+            num_dies: 1,
+            num_clusters: clusters,
+            num_cores: cores,
+            core_masks,
+            perf_control: 0,
+            perf_map: [0, 0],
+        })
+    }
+
     /// Enable the G17 GPU-to-fabric bridge and check that it took effect.
     ///
     /// The GPU power domain must be on. The coprocessors cannot reach memory until this is done.

@@ -34,6 +34,7 @@ pub(crate) mod hazard;
 mod initdata;
 mod job;
 mod kick;
+pub(crate) mod native;
 mod object;
 mod power;
 mod preparation;
@@ -146,8 +147,13 @@ pub(crate) struct Config {
     /// Offset of the secondary coprocessor's kernel root in the `pagetables` region; `None` for
     /// a single-instance firmware.
     pub(crate) secondary_root_offset: Option<u64>,
-    /// Crash log buffer of each [`Role`].
-    pub(crate) crash_buffers: [FixedBuffer; 2],
+    /// How the coprocessors are started and reached.
+    pub(crate) start: Start,
+    /// Where the GPU core layout comes from.
+    pub(crate) cores: Cores,
+    /// Whether the GPU-to-fabric bridge and dynamic power gating are set up before the firmware
+    /// starts (A18 Pro). The M4 Pro firmware runs with neither (the G16 driver never writes them).
+    pub(crate) fabric_bridge: bool,
     /// Parameter buffer page metrics shared with the firmware.
     pub(crate) pm_metrics: FixedBuffer,
     /// Physical address of the firmware's per-slot recovery keys, read while the firmware is
@@ -156,6 +162,34 @@ pub(crate) struct Config {
     pub(crate) recovery_slot_keys: Option<u64>,
     /// GPU generation reported to userspace.
     pub(crate) gpu_generation: hw::GpuGen,
+}
+
+/// How a G17 target's firmware coprocessors are started and reached.
+pub(crate) enum Start {
+    /// CPU control through the ASCWrap v6 mailbox provider, RTKit on the device-tree mailboxes, and
+    /// a crash-log buffer per [`Role`] that the driver maps at a fixed address before the start
+    /// (A18 Pro).
+    AscWrapV6 {
+        /// Crash log buffer of each [`Role`].
+        crash_buffers: [FixedBuffer; 2],
+    },
+    /// Native power and CPU control, RTKit on the device-tree mailbox, the crash log inside the
+    /// firmware region, and initialization acknowledged in status A instead of by a message
+    /// (M4 Pro).
+    Native(native::NativeStart),
+}
+
+/// Where a G17 target's core layout comes from.
+pub(crate) enum Cores {
+    /// The GPU ID registers.
+    Registers,
+    /// `clusters` clusters of `cores` cores, enabled per the `apple,m4-core-mask` property.
+    DeviceTree {
+        /// Number of clusters.
+        clusters: u32,
+        /// Cores per cluster.
+        cores: u32,
+    },
 }
 
 /// A firmware coprocessor instance.
@@ -223,11 +257,12 @@ impl rtkit::Buffer for CrashLog {
 
 /// Callback state; initialization ACKs can arrive in hard interrupt context.
 #[pin_data]
-struct RoleState {
+pub(crate) struct RoleState {
     role: Role,
     shared: Arc<Shared>,
     crash_log: FixedBuffer,
-    crash_map: shmem::VMap<AsahiObject, u8>,
+    /// Mapping of the fixed crash-log buffer; `None` when the firmware places its own.
+    crash_map: Option<shmem::VMap<AsahiObject, u8>>,
     crashed: AtomicBool,
     #[pin]
     ack: Opaque<kernel::bindings::completion>,
@@ -266,7 +301,7 @@ impl RoleState {
     }
 }
 
-fn is_events_message(endpoint: u8, message: u64) -> bool {
+pub(crate) fn is_events_message(endpoint: u8, message: u64) -> bool {
     endpoint == EP_FIRMWARE && message == MSG_EVENTS
 }
 
@@ -312,24 +347,65 @@ impl rtkit::Operations for RoleOps {
         }
         Ok(CrashLog {
             iova,
-            map: data.crash_map.clone(),
+            map: data.crash_map.as_ref().ok_or(EINVAL)?.clone(),
         })
+    }
+}
+
+/// How a coprocessor CPU is started and stopped.
+enum Cpu {
+    /// Through the ASCWrap v6 mailbox provider.
+    AscWrapV6(regs::CpuControl),
+    /// Directly; also owns the GPU power.
+    Native(native::Native),
+}
+
+/// The RTKit instance of a coprocessor.
+enum Receiver {
+    /// On a device-tree mailbox, with fixed crash-log buffers.
+    Mailbox(rtkit::RtKit<RoleOps>),
+    /// With firmware-placed buffers, on a natively started coprocessor.
+    Native(rtkit::RtKit<native::NativeOps>),
+}
+
+impl Receiver {
+    fn boot(&mut self) -> Result {
+        match self {
+            Receiver::Mailbox(rtkit) => Pin::new(rtkit).boot(),
+            Receiver::Native(rtkit) => Pin::new(rtkit).boot(),
+        }
+    }
+
+    fn start_endpoint(&mut self, endpoint: u8) -> Result {
+        match self {
+            Receiver::Mailbox(rtkit) => Pin::new(rtkit).start_endpoint(endpoint),
+            Receiver::Native(rtkit) => Pin::new(rtkit).start_endpoint(endpoint),
+        }
+    }
+
+    fn send_message(&mut self, endpoint: u8, message: u64) -> Result {
+        match self {
+            Receiver::Mailbox(rtkit) => Pin::new(rtkit).send_message(endpoint, message),
+            Receiver::Native(rtkit) => Pin::new(rtkit).send_message(endpoint, message),
+        }
     }
 }
 
 /// A running firmware coprocessor.
 ///
-/// Dropping it stops the CPU before RTKit and the crash log buffer go away.
+/// Dropping it stops the CPU before RTKit and the crash log buffer go away. Field order is drop
+/// order: RTKit stops its mailbox before a natively started GPU loses its power.
 struct Coprocessor {
-    cpu: regs::CpuControl,
+    rtkit: Receiver,
+    cpu: Cpu,
     running: bool,
-    rtkit: rtkit::RtKit<RoleOps>,
     state: Arc<RoleState>,
-    _crash_buffer: KernelObject,
+    _crash_buffer: Option<KernelObject>,
 }
 
 impl Coprocessor {
-    /// Sets up a coprocessor's RTKit and crash log buffer, without starting it.
+    /// Sets up a coprocessor's RTKit and crash log buffer, without starting it. A natively
+    /// started target passes the powered GPU it owns.
     fn new(
         pdev: &platform::Device<Core>,
         dev: &AsahiDevice,
@@ -337,9 +413,70 @@ impl Coprocessor {
         uat: &mmu::Uat,
         shared: &Arc<Shared>,
         role: Role,
+        native: Option<native::Native>,
+    ) -> Result<Coprocessor> {
+        match &cfg.start {
+            Start::AscWrapV6 { crash_buffers } => {
+                Self::new_ascwrap(pdev, dev, &crash_buffers[role as usize], uat, shared, role)
+            }
+            Start::Native(_) => Self::new_native(dev, shared, role, native.ok_or(EINVAL)?),
+        }
+    }
+
+    fn new_native(
+        dev: &AsahiDevice,
+        shared: &Arc<Shared>,
+        role: Role,
+        native: native::Native,
+    ) -> Result<Coprocessor> {
+        native.check_cold()?;
+        let state = Self::state(shared, role, FixedBuffer { va: 0, size: 0 }, None)?;
+        let mut rtkit =
+            rtkit::RtKit::<native::NativeOps>::new(dev.as_ref(), None, 0, state.clone())?;
+        // The firmware asks for its crash buffer before the endpoint map is acknowledged and
+        // waits for that request to be echoed.
+        Pin::new(&mut rtkit).set_early_crashlog();
+        Ok(Coprocessor {
+            rtkit: Receiver::Native(rtkit),
+            cpu: Cpu::Native(native),
+            running: false,
+            state,
+            _crash_buffer: None,
+        })
+    }
+
+    fn state(
+        shared: &Arc<Shared>,
+        role: Role,
+        crash_log: FixedBuffer,
+        crash_map: Option<shmem::VMap<AsahiObject, u8>>,
+    ) -> Result<Arc<RoleState>> {
+        Arc::pin_init(
+            pin_init!(RoleState {
+                role,
+                shared: shared.clone(),
+                crash_log,
+                crash_map,
+                crashed: AtomicBool::new(false),
+                ack <- Opaque::ffi_init(|ptr| {
+                    // SAFETY: ptr is valid uninitialized completion storage that is pinned
+                    // before any RTKit callback can use it.
+                    unsafe { kernel::bindings::init_completion(ptr) };
+                }),
+            }),
+            GFP_KERNEL,
+        )
+    }
+
+    fn new_ascwrap(
+        pdev: &platform::Device<Core>,
+        dev: &AsahiDevice,
+        buffer: &FixedBuffer,
+        uat: &mmu::Uat,
+        shared: &Arc<Shared>,
+        role: Role,
     ) -> Result<Coprocessor> {
         let index = role as usize;
-        let buffer = &cfg.crash_buffers[index];
         let mut crash_buffer = KernelObject::new(
             dev,
             uat.kernel_lower_vm(),
@@ -351,31 +488,22 @@ impl Coprocessor {
         crash_buffer.bytes_mut().fill(CRASH_BUFFER_FILL[index]);
 
         let crash_map = crash_buffer.kernel_map()?;
-        let state = Arc::pin_init(
-            pin_init!(RoleState {
-                role,
-                shared: shared.clone(),
-                crash_log: FixedBuffer {
-                    va: buffer.va,
-                    size: buffer.size,
-                },
-                crash_map,
-                crashed: AtomicBool::new(false),
-                ack <- Opaque::ffi_init(|ptr| {
-                    // SAFETY: ptr is valid uninitialized completion storage that is pinned
-                    // before any RTKit callback can use it.
-                    unsafe { kernel::bindings::init_completion(ptr) };
-                }),
-            }),
-            GFP_KERNEL,
+        let state = Self::state(
+            shared,
+            role,
+            FixedBuffer {
+                va: buffer.va,
+                size: buffer.size,
+            },
+            Some(crash_map),
         )?;
 
         Ok(Coprocessor {
-            cpu: regs::CpuControl::new(pdev, index)?,
+            cpu: Cpu::AscWrapV6(regs::CpuControl::new(pdev, index)?),
             running: false,
-            rtkit: Self::receiver(dev, index, &state)?,
+            rtkit: Receiver::Mailbox(Self::receiver(dev, index, &state)?),
             state,
-            _crash_buffer: crash_buffer,
+            _crash_buffer: Some(crash_buffer),
         })
     }
 
@@ -400,32 +528,50 @@ impl Coprocessor {
 
     /// Starts the CPU and waits for RTKit to come up.
     fn boot(&mut self) -> Result {
-        self.cpu.start()?;
+        match &mut self.cpu {
+            Cpu::AscWrapV6(cpu) => cpu.start()?,
+            Cpu::Native(native) => native.start(),
+        }
         self.running = true;
-        Pin::new(&mut self.rtkit).boot()
+        self.rtkit.boot()
     }
 
-    /// Starts the firmware endpoints and hands the firmware its initialization root.
+    /// Starts the firmware endpoints and hands the firmware its initialization root. A natively
+    /// started firmware acknowledges in status A, which the caller polls; the others with a
+    /// message, awaited here.
     fn init(&mut self, root_va: u64) -> Result {
-        let mut rtkit = Pin::new(&mut self.rtkit);
-        rtkit.as_mut().start_endpoint(EP_FIRMWARE)?;
-        rtkit.as_mut().start_endpoint(EP_DOORBELL)?;
-        rtkit.send_message(
+        self.rtkit.start_endpoint(EP_FIRMWARE)?;
+        self.rtkit.start_endpoint(EP_DOORBELL)?;
+        self.rtkit.send_message(
             EP_FIRMWARE,
             MSG_INITDATA | (root_va & MSG_INITDATA_ADDR_MASK),
         )?;
-        self.state.wait_for_ack()
+        match self.cpu {
+            Cpu::AscWrapV6(_) => self.state.wait_for_ack(),
+            Cpu::Native(_) => Ok(()),
+        }
     }
 
     /// Sends a host notification to the firmware.
     fn notify(&mut self, msg: u64) -> Result {
-        Pin::new(&mut self.rtkit).send_message(EP_DOORBELL, msg)
+        self.rtkit.send_message(EP_DOORBELL, msg)
     }
 
     /// Stops the CPU. The firmware keeps its state, but no longer runs.
     fn stop(&mut self) {
         if self.running {
-            self.cpu.stop();
+            match &mut self.cpu {
+                Cpu::AscWrapV6(cpu) => cpu.stop(),
+                Cpu::Native(native) => {
+                    if let Err(error) = native.stop() {
+                        dev_err!(
+                            self.state.shared.dev.as_ref(),
+                            "GPU coprocessor did not stop: {:?}\n",
+                            error
+                        );
+                    }
+                }
+            }
             self.running = false;
         }
     }
@@ -451,6 +597,14 @@ impl Bridge {
         };
         bridge.regs.enable_g17_bridge()?;
         Ok(bridge)
+    }
+
+    /// Keeps the register block for a target that runs without the bridge.
+    fn unused(regs: regs::Resources) -> Bridge {
+        Bridge {
+            regs,
+            enabled: false,
+        }
     }
 
     fn disable(&mut self) {
@@ -878,7 +1032,19 @@ impl Gpu {
         cfg: &'static Config,
         regs: regs::Resources,
     ) -> Result<Arc<Gpu>> {
-        let id = regs.get_g17_id()?;
+        // A natively started GPU is powered here, before its ID registers are read.
+        let native = match &cfg.start {
+            Start::Native(start) => Some(native::Native::power_on(pdev.as_ref(), start)?),
+            Start::AscWrapV6 { .. } => None,
+        };
+        let id = match cfg.cores {
+            Cores::Registers => regs.get_g17_id()?,
+            Cores::DeviceTree { clusters, cores } => {
+                let node = dev.as_ref().of_node().ok_or(EINVAL)?;
+                let mask: u32 = node.get_property(c_str!("apple,m4-core-mask"))?;
+                regs.get_g17_id_layout(clusters, cores, mask)?
+            }
+        };
         if id.family != cfg.identity.family
             || id.variant != cfg.identity.variant
             || id.num_dies != cfg.identity.num_dies
@@ -897,7 +1063,10 @@ impl Gpu {
             ias: cfg.uat_ias,
             oas: cfg.uat_oas,
         };
-        let max_frequency_khz = Self::max_frequency_khz(dev)?;
+        let max_frequency_khz = match cfg.start {
+            Start::Native(_) => Self::max_frequency_khz_m4(dev)?,
+            Start::AscWrapV6 { .. } => Self::max_frequency_khz(dev)?,
+        };
         let preparations = preparation::Gate::new()?;
         let reclaim = runtime::teardown::ReclaimBatch::new()?;
         let feed = feed::Feed::new()?;
@@ -937,10 +1106,19 @@ impl Gpu {
             },
             GFP_KERNEL,
         )?;
-        let firmware = Self::boot(pdev, dev, cfg, regs, geometry, &gpu.shared)?;
+        let firmware = Self::boot(pdev, dev, cfg, regs, geometry, &gpu.shared, native)?;
         *gpu.shared.state.lock() = Some(firmware);
         gpu.shared.queue_events();
         Ok(gpu)
+    }
+
+    /// Returns the highest frequency of the `apple,m4-freq-a` ladder (MHz), on targets whose device
+    /// tree carries the ADT performance ladders instead of an operating-point table.
+    fn max_frequency_khz_m4(dev: &AsahiDevice) -> Result<u32> {
+        let node = dev.as_ref().of_node().ok_or(EIO)?;
+        let ladder: KVec<u32> = node.get_property(c_str!("apple,m4-freq-a"))?;
+        let mhz = ladder.iter().copied().max().ok_or(EINVAL)?;
+        mhz.checked_mul(1000).ok_or(EINVAL)
     }
 
     /// Returns the highest advertised operating-point frequency without changing table order.
@@ -965,6 +1143,7 @@ impl Gpu {
         regs: regs::Resources,
         geometry: mmu::UatGeometry,
         shared: &Arc<Shared>,
+        native: Option<native::Native>,
     ) -> Result<KBox<Firmware>> {
         let uat = Arc::new(
             mmu::Uat::new(
@@ -988,11 +1167,11 @@ impl Gpu {
             mmu::PROT_GPU_FW_SHARED_RW,
             CpuMap::WriteCombined,
         )?;
-        let primary = Coprocessor::new(pdev, dev, cfg, &uat, shared, Role::Primary)
+        let primary = Coprocessor::new(pdev, dev, cfg, &uat, shared, Role::Primary, native)
             .inspect_err(|e| dev_err!(dev.as_ref(), "Primary coprocessor setup failed: {:?}\n", e))?;
         let secondary = match cfg.secondary_root_offset {
             Some(_) => Some(
-                Coprocessor::new(pdev, dev, cfg, &uat, shared, Role::Secondary).inspect_err(|e| {
+                Coprocessor::new(pdev, dev, cfg, &uat, shared, Role::Secondary, None).inspect_err(|e| {
                     dev_err!(dev.as_ref(), "Secondary coprocessor setup failed: {:?}\n", e)
                 })?,
             ),
@@ -1000,7 +1179,11 @@ impl Gpu {
         };
         let render_global = uat.new_vm(0, geometry.user_range())?;
 
-        let bridge = Bridge::enable(regs)?;
+        let bridge = if cfg.fabric_bridge {
+            Bridge::enable(regs)?
+        } else {
+            Bridge::unused(regs)
+        };
 
         // Install all session ownership before either CPU starts. Error unwinding then runs
         // Firmware::drop, stopping both CPUs before releasing shared objects or translations.
@@ -1038,7 +1221,9 @@ impl Gpu {
         )?;
         session.uat.confirm_firmware_root_entries(root_entries)?;
         session.uat.mirror_secondary_root()?;
-        session.bridge.regs.enable_g17_gating()?;
+        if cfg.fabric_bridge {
+            session.bridge.regs.enable_g17_gating()?;
+        }
         session.primary.init(session.init.root_va(Role::Primary)?)?;
         if let Some(secondary) = session.secondary.as_mut() {
             secondary.init(session.init.root_va(Role::Secondary)?)?;
