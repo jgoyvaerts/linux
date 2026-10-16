@@ -58,16 +58,43 @@ impl Platform {
     /// Entire source-built bundle, including the firmware's power controllers.
     pub(crate) fn bundle(&self, entropy: u32) -> Result<KVec<u8>> {
         let mut out = zeroed(crate::g16_fw::BUNDLE_SIZE)?;
-        let hwdata = self.hwdata()?;
-        out[..hwdata.len()].copy_from_slice(&hwdata);
-        let main = crate::g16_fw::MainConfig::bootstrap(crate::g16_fw::BUNDLE_ADDRESS).encode();
+        let layout = crate::g16_fw::MainConfig::bootstrap(crate::g16_fw::BUNDLE_ADDRESS);
+        let main = if self.t6040 { layout.encode_t6040() } else { layout.encode() };
         out[crate::g16_fw::MAIN_OFFSET..crate::g16_fw::MAIN_OFFSET + main.len()]
             .copy_from_slice(&main);
-        put64(&mut out, 0x8ed0, 0xffff_fc20_000f_3440 + 0x80);
-        put64(&mut out, 0xb698, 0xffff_fc20_c050_0000);
-        self.power_data(&mut out)?;
-        put32(&mut out, 0xb754, entropy);
+        self.power_bundle(&mut out, 0xffff_fc20_000f_3440, 0xffff_fc20_c050_0000, entropy)?;
         Ok(out)
+    }
+
+    /// The hardware data and the power configuration of a bundle at `out`, with the role
+    /// configuration object at `config_va` (its status follows at +0x80) and the AON table at
+    /// `aon_va`. Everything but the main configuration and the rings.
+    pub(crate) fn power_bundle(
+        &self,
+        out: &mut [u8],
+        config_va: u64,
+        aon_va: u64,
+        entropy: u32,
+    ) -> Result {
+        let hwdata = self.hwdata()?;
+        out.get_mut(..hwdata.len()).ok_or(EINVAL)?.copy_from_slice(&hwdata);
+        put64(out, 0x8ed0, config_va + 0x80);
+        put64(out, 0xb698, aon_va);
+        self.power_data(out)?;
+        if self.t6040 {
+            let leakage: KVec<u32> = self.node.get_property(c_str!("apple,m4-leakage"))?;
+            if leakage.len() != 56 { return Err(EINVAL); }
+            for (i, value) in leakage.iter().enumerate() {
+                // Three 16-cluster arrays followed by four 2-die arrays.
+                // The matching G16X decoder leaves unused domains zero.
+                if value & 0x8000_0000 != 0 || value & 0x7f80_0000 == 0x7f80_0000 {
+                    return Err(EINVAL);
+                }
+                put32(out, 0x5380 + 0x642c + i * 4, *value);
+            }
+        }
+        put32(out, 0xb754, entropy);
+        Ok(())
     }
 
     pub(crate) fn power_data(&self, out: &mut [u8]) -> Result {
@@ -98,6 +125,12 @@ impl Platform {
                 F32::from_bits(uint!($name, f32!($default).to_bits()))
             };
         }
+        macro_rules! chip_gain {
+            ($name:literal, $base:literal, $pro:literal) => {
+                F32::from_bits(uint!($name,
+                    if self.t6040 { f32!($pro).to_bits() } else { f32!($base).to_bits() }))
+            };
+        }
         macro_rules! ints {
             ($($offset:expr => $value:expr),* $(,)?) => {
                 $(put32(out, $offset, $value);)*
@@ -110,7 +143,8 @@ impl Platform {
         }
         let max_scaled = 100 * (self.freq_a.len() as u32 - 1);
         let maximum = F32::from(self.maximum_power);
-        let duty = uint!("gpu-pwr-min-duty-cycle", 40);
+        // The T6040 profile runs at a 100% minimum duty cycle, not the ADT value.
+        let duty = if self.t6040 { 100 } else { uint!("gpu-pwr-min-duty-cycle", 40) };
         let minimum = uint!("gpu-pwr-integral-min-clamp", 0);
         if duty > max_scaled || minimum > self.maximum_power {
             return Err(EINVAL);
@@ -147,16 +181,16 @@ impl Platform {
         let ppm_ms = uint!("gpu-ppm-filter-time-constant-ms", 16);
         let ppm = filter(ppm_ms / self.period_ms, self.period_ms, Some(ppm_ms))?;
         floats!(0x5dfc => ppm.alpha, 0x5e04 => ppm.inverse,
-            0x5e0c => dt * gain!("gpu-ppm-ki", 150.0),
-            0x5e14 => minimum, 0x5e18 => f32!(65536.0), 0x5e1c => gain!("gpu-ppm-kp", 0.25));
+            0x5e0c => dt * chip_gain!("gpu-ppm-ki", 150.0, 22.93),
+            0x5e14 => minimum, 0x5e18 => f32!(65536.0), 0x5e1c => chip_gain!("gpu-ppm-kp", 0.25, 0.40465));
         ints!(0x5df0 => ppm.count_x4, 0x5e28 => duty, 0x5e2c => max_scaled,
             0x5e3c => self.maximum_power, 0x5e48 => ppm.duration);
         put64(out, 0x5e50, ppm.clocks);
 
         let base = uint!("gpu-perf-base-pstate", 1);
-        let utilization = uint!("gpu-perf-tgt-utilization", 85);
+        let utilization = uint!("gpu-perf-tgt-utilization", if self.t6040 { 80 } else { 85 });
         let dead_zone = uint!("gpu-perf-dz", 0);
-        let boost = uint!("gpu-perf-boost-min-util", 95);
+        let boost = uint!("gpu-perf-boost-min-util", if self.t6040 { 85 } else { 95 });
         let integral_minimum = uint!("gpu-perf-integral-min-clamp", 0);
         if base == 0
             || base >= 11
@@ -187,11 +221,11 @@ impl Platform {
         let first = coefficients(uint!("gpu-perf-filter-time-constant", 5))?;
         let second = coefficients(uint!("gpu-perf-filter-time-constant2", 200))?;
         floats!(0x5ecc => first.0, 0x5ed0 => second.0, 0x5ed4 => first.1, 0x5ed8 => second.1,
-            0x5edc => gain!("gpu-perf-integral-gain", 0.7975),
-            0x5ee0 => gain!("gpu-perf-integral-gain2", 0.7975),
+            0x5edc => chip_gain!("gpu-perf-integral-gain", 0.7975, 0.8937),
+            0x5ee0 => chip_gain!("gpu-perf-integral-gain2", 0.7975, 0.8937),
             0x5ee4 => F32::from(integral_minimum), 0x5ee8 => f32!(95.0),
-            0x5eec => gain!("gpu-perf-proportional-gain", 5.4),
-            0x5ef0 => gain!("gpu-perf-proportional-gain2", 5.4),
+            0x5eec => chip_gain!("gpu-perf-proportional-gain", 5.4, 2.979),
+            0x5ef0 => chip_gain!("gpu-perf-proportional-gain2", 5.4, 2.979),
             0x5ef4 => F32::from(max_scaled-base_scaled) / f32!(95.0));
         ints!(0x5ea8 => target, 0x5eb0 => boost,
             0x5eb4 => uint!("gpu-perf-boost-ce-step", 50),
@@ -213,7 +247,7 @@ impl Platform {
         floats!(0x7ed8 => first.alpha, 0x7edc => second.alpha,
             0x7ee0 => first.inverse, 0x7ee4 => second.inverse,
             0x7ee8 => gain!("gpu-se-ki", -50.0) * dt,
-            0x7eec => gain!("gpu-se-ki-1", -100.0) * dt,
+            0x7eec => chip_gain!("gpu-se-ki-1", -100.0, -50.0) * dt,
             0x7ef0 => f32!(0.0), 0x7ef4 => f32!(65536.0),
             0x7ef8 => gain!("gpu-se-kp", -5.0), 0x7efc => gain!("gpu-se-kp-1", -5.0),
             0x7f40 => f32!(65536.0), 0x7f14 => F32::from(micros));
@@ -239,7 +273,8 @@ impl Platform {
         put64(out, 0x7c6c, average_target.clocks);
         let ki_only = optional!("gpu-avg-power-ki-only");
         let direct_ki = optional!("gpu-avg-power-ki");
-        let mut avg_ki = F32::from_bits(ki_only.or(direct_ki).unwrap_or(f32!(16.875).to_bits()));
+        let default_avg_ki = if self.t6040 { f32!(5.058125) } else { f32!(16.875) };
+        let mut avg_ki = F32::from_bits(ki_only.or(direct_ki).unwrap_or(default_avg_ki.to_bits()));
         if ki_only.is_some() || direct_ki.is_none() {
             avg_ki = avg_ki * dt;
         }
@@ -248,7 +283,7 @@ impl Platform {
             return Err(EINVAL);
         }
         floats!(0x7d58 => avg_ki, 0x7d60 => f32!(0.0), 0x7d64 => f32!(65536.0),
-            0x7d68 => gain!("gpu-avg-power-kp", 2.42), 0x7d70 => f32!(0.0), 0x7d84 => maximum);
+            0x7d68 => chip_gain!("gpu-avg-power-kp", 2.42, 0.8093), 0x7d70 => f32!(0.0), 0x7d84 => maximum);
         ints!(0x7d74 => avg_duty, 0x7d78 => max_scaled, 0x7d7c => max_scaled,
             0x7d88 => self.maximum_power, 0x7dbc => max_scaled);
         let request = optional!("gpu-avg-power-filter-tc-ms");
@@ -271,20 +306,24 @@ impl Platform {
         put64(
             out,
             0x75e8,
-            (1 << 3) | (1 << 4) | (1 << 6) | (1 << 8) | (1 << 11) | (1 << 13) | (1 << 14),
+            if self.t6040 { 0x2a22_2aa2 } else {
+                (1 << 3) | (1 << 4) | (1 << 6) | (1 << 8) | (1 << 11) | (1 << 13) | (1 << 14)
+            },
         );
         ints!(0x75f0 => (F32::from(release)*f32!(100.0)).to_u32_checked().ok_or(EINVAL)?,
             0x75f8 => 4, 0x7630 => duty, 0x7634 => max_scaled, 0x7638 => max_scaled,
             0x763c => (F32::from(delta)*f32!(100.0)).to_u32_checked().ok_or(EINVAL)?,
             0x7644 => 11000, 0x7678 => max_scaled);
         floats!(0x7604 => f32!(0.0), 0x760c => f32!(1.0),
-            0x7614 => gain!("gpu-fast-die0-integral-gain", 200.0)*fast_dt,
+            0x7614 => chip_gain!("gpu-fast-die0-integral-gain", 200.0, 1552.0)*fast_dt,
             0x761c => f32!(0.0), 0x7620 => f32!(65536.0),
-            0x7624 => gain!("gpu-fast-die0-proportional-gain", 120.0), 0x762c => f32!(0.0));
+            0x7624 => chip_gain!("gpu-fast-die0-proportional-gain", 120.0, 37.0), 0x762c => f32!(0.0));
 
         let turbo_input = optional!("gpu-turbo-controller-input");
         let mode = turbo_input.unwrap_or(2);
-        let (kp, ki, target, delta, threshold) = if mode == 0 {
+        let (kp, ki, target, delta, threshold) = if self.t6040 && turbo_input.is_none() {
+            (f32!(100.0), f32!(400.0), 9900, 0, 0)
+        } else if mode == 0 {
             (f32!(300.0), f32!(1.3), 9600, 300, 0)
         } else {
             (
@@ -303,6 +342,16 @@ impl Platform {
             0x7ae6 => f32!(3000.0), 0x7b56 => f32!(64.0), 0x7b5a => f32!(65536.0));
         ints!(0x7ad6 => 900, 0x7ada => 1000, 0x7ade => 1000, 0x7aea => target,
             0x7af2 => delta, 0x7b1e => 1000, 0x7b3a => 200, 0x7b52 => threshold);
+        if self.t6040 {
+            let mask = self.mtr_mask()?;
+            put64(out, 0x8ed8, mask);
+            put32(out, 0x8ee0, 1);
+            putf(out, 0xaee4, f32!(5.0))?;
+            put32(out, 0x7b56, 0);
+            put32(out, 0x7b5a, 0);
+            ints!(0x7c40 => 1, 0x826c => 100, 0x8290 => 125, 0x8294 => 1, 0xb7a0 => 1);
+            put64(out, 0x8288, 0x2a22_2aa2);
+        }
 
         let (alpha, inverse) = coefficients(32)?;
         floats!(0x81b8 => alpha, 0x81c0 => inverse, 0x81c8 => f32!(5.0),
@@ -319,6 +368,16 @@ impl Platform {
             (0xb714, *b"g0EL"),
         ] {
             put32(out, off, u32::from_be_bytes(key));
+        }
+        if self.t6040 {
+            // Validate the matching data before advertising these sources.
+            let _aon = self.aon_table()?;
+            put32(out, 0xb6a4, u32::from_be_bytes(*b"g1TR"));
+            put32(out, 0xb6e8, u32::from_be_bytes(*b"r0TR"));
+            put64(out, 0xb6e0, 3);
+            put64(out, 0xb6f0, 1);
+            // AON table keys are supplied only when that source is available.
+            for off in [0xb708, 0xb70c, 0xb710, 0xb714] { put32(out, off, 0); }
         }
         Ok(())
     }

@@ -14,11 +14,54 @@ pub(crate) const BUNDLE_ADDRESS: u64 = 0xffff_fc20_c04d_8000;
 pub(crate) const BUNDLE_SIZE: usize = 0x20000;
 pub(crate) const MAIN_OFFSET: usize = 0x1da40;
 pub(crate) const MAIN_SIZE: usize = 0x500;
+pub(crate) const QOS_ADDRESS: u64 = 0xffff_fc20_0016_0000;
+pub(crate) const T6040_EXTRA0_ADDRESS: u64 = 0xffff_fc20_0017_0000;
+// Matching 25G83 allocates these independently; the older packed bundle
+// overlaps the larger T6040 hardware data, counters and first TA ring.
+// (Main pointer offset, firmware VA, actual firmware object size).
+pub(crate) const T6040_MAIN_OBJECTS: [(usize, u64, usize); 6] = [
+    (0x25c, 0xffff_fc20_0040_0000, 0x1048),
+    (0x264, 0xffff_fc20_0040_4000, 0xe10),
+    (0x26c, 0xffff_fc20_0040_8000, 0x68),
+    (0x274, 0xffff_fc20_0040_c000, 0x800),
+    (0x10,  0xffff_fc20_0041_0000, 0x88),
+    (0x254, 0xffff_fc20_0041_4000, 0xc18),
+];
 pub(crate) const CONTROL_DATA: u64 = 0xffff_fc20_c052_8000;
 pub(crate) const CONTROL_AUX: u64 = 0xffff_fc20_0014_8000;
 pub(crate) const OPERAND_TABLE: u64 = 0x70_0040_8000;
 pub(crate) const TIMESTAMP_BASE: u64 = 0xffff_fc21_8140_0000;
 pub(crate) const TIMESTAMP_SIZE: u64 = 0x400_0000;
+
+/// Mapping-notification pointers in the versioned shared status object.
+/// G16X 25G83 publishes them at +0x48e0/+0x48e8 (AGXArmFirmware::init).
+/// Its initializer does not publish the T8132-only +0x4fd4 flag.
+pub(crate) fn mapping_notification_locations(t6040: bool) -> (u64, u64, Option<u64>) {
+    let base = RootPointers::bootstrap().status_b;
+    if t6040 {
+        (base + 0x48e0, base + 0x48e8, None)
+    } else {
+        (base + 0x4f88, base + 0x4f90, Some(base + 0x4fd4))
+    }
+}
+
+/// Packed host-owned counter read by the T6040 control scheduler. It must
+/// reach firmware before publishing a control batch that requires GPU power.
+pub(crate) const T6040_CONTROL_POWER_ASSERT_OFFSET: u64 = 0xe51;
+
+/// Matching host/FW control-opcode classification. This only accounts power
+/// assertions; it does not grant support for any additional control opcode.
+/// Callers keep the returned wrapping count for the complete firmware session.
+pub(crate) fn next_t6040_control_power_assert_count(current: u32, entries: &[u8]) -> Option<u32> {
+    const REQUIRES_POWER: [u8; 60] = [0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0];
+    if entries.is_empty() || entries.len() % 0x40 != 0 { return None; }
+    let mut next = current;
+    for entry in entries.chunks_exact(0x40) {
+        let opcode = u32::from_le_bytes(entry[..4].try_into().ok()?) as usize;
+        next = next.wrapping_add(u32::from(*REQUIRES_POWER.get(opcode)?));
+    }
+    Some(next)
+}
 
 /// The two publications following firmware's already-consumed slot zero.
 pub(crate) fn opening_control() -> [u8; 0x80] {
@@ -87,6 +130,23 @@ pub(crate) struct MainConfig {
 }
 
 impl MainConfig {
+    pub(crate) fn encode_t6040(&self) -> [u8; MAIN_SIZE] {
+        let mut out = self.encode();
+        // 25G83 adds eight bytes after the channel descriptors. The matching
+        // serializer places shared pointers at 0x254 and power at 0x471.
+        // The control-ring payload at 0x4c0 is our chosen allocation address,
+        // not an ABI field, and stays at the address declared by channel 12.
+        out.copy_within(0x240..0x4b8, 0x248);
+        out[0x240..0x248].fill(0);
+        for (offset, va, _) in T6040_MAIN_OBJECTS {
+            put64(&mut out, offset, va);
+        }
+        // This chip's separate +8 allocation has zero size; retain the
+        // established +8/+10 alias, now outside the channel rings.
+        put64(&mut out, 0x08, T6040_MAIN_OBJECTS[4].1);
+        out
+    }
+
     pub(crate) fn bootstrap(bundle: u64) -> Self {
         let rings = [
             0x10240, 0x16240, 0x1c240, 0xea40, 0x14a40, 0x1aa40, 0xd240, 0x13240, 0x19240, 0xba40,
@@ -211,6 +271,18 @@ pub(crate) struct RootPointers {
 }
 
 impl RootPointers {
+    /// The native 25G83 G16X firmware checks this complete interface identifier
+    /// before reading the graph. It differs from the original T8132 prototype.
+    pub(crate) fn encode_t6040(&self) -> [u8; ROOT_SIZE] {
+        let mut out = self.encode();
+        out[..8].copy_from_slice(&0x0c8a_a322_0396_04c0u64.to_le_bytes());
+        // 25G83 allocates 0x6a8 bytes for this shared object. The older
+        // 0x3eb00 placement overlaps status_a at 0x3f180: firmware's
+        // +0x680 counter and +0x684 power array corrupt that status object.
+        put64(&mut out, 0xb8, T6040_EXTRA0_ADDRESS);
+        out
+    }
+
     /// Initial firmware namespace. Client addresses are allocated separately.
     pub(crate) const fn bootstrap() -> Self {
         Self {
