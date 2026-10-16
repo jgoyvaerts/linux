@@ -138,8 +138,12 @@
 		};
 	};
 
+	/*
+	 * The video decoder: the MCU firmware programs the t8122/t8132 register family, so apple-avd binds through
+	 * its t8132 entry; the DART and the AVD_SYS power state bind through the generic drivers.
+	 */
 	avd@280000000 {
-		compatible = "apple,t6040-avd";
+		compatible = "apple,t6040-avd", "apple,t8132-avd";
 		reg = <2 0x81080000 0 0x14000 2 0x810a8000 0 0x4000 2 0x81100000 0 0x10000>;
 		reg-names = "code", "mbox", "ctrl";
 		interrupt-parent = <&aic>;
@@ -147,18 +151,15 @@
 		power-domains = <&ps_avd_sys>;
 		resets = <&ps_avd_sys>;
 		iommus = <&avd_dart 0>;
-		apple,m4-avd-geometry = "inferred-v1";
-		status = "disabled";
 	};
 
 	avd_dart: iommu@281020000 {
-		compatible = "apple,t6040-dart";
+		compatible = "apple,t6040-dart", "apple,t8110-dart";
 		reg = <2 0x81020000 0 0xc000>;
 		#iommu-cells = <1>;
 		interrupt-parent = <&aic>;
 		interrupts = <0 0x5a9 4>;
 		power-domains = <&ps_avd_sys>;
-		status = "disabled";
 	};
 
 	aop@510600000 {
@@ -863,12 +864,11 @@
 		};
 
 		ps_avd_sys: power-controller@170 {
-			compatible = "apple,t6040-pmgr-pwrstate";
+			compatible = "apple,t6040-pmgr-pwrstate", "apple,t8103-pmgr-pwrstate";
 			reg = <0x170 4>;
 			label = "avd_sys";
 			#power-domain-cells = <0>;
 			#reset-cells = <0>;
-			status = "disabled";
 		};
 
 		ps_ssd_afc: power-controller@178 {
