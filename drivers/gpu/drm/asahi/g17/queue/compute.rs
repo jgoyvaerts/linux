@@ -123,7 +123,7 @@ impl Graph {
         let ring = DescriptorRing::new(alloc)?;
         let preempt = alloc.kernel(0x4000, page, prot, cpu)?;
         let usage = alloc.kernel(mmu::UAT_PGSZ, page, prot, cpu)?;
-        let operand = alloc.lower(0x14000, page, prot, cpu)?;
+        let operand = alloc.lower(crate::g17::fw::compute::operand_state_size(), page, prot, cpu)?;
         let mut support = alloc.kernel(0xc000, page, prot, cpu)?;
         let support_va = support.gpu_va();
         support.write(0, support_va + page)?;
