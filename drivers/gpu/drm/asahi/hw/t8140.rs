@@ -23,7 +23,7 @@ pub(crate) const CONFIG: Config = Config {
     uat_ias: 42,
     uat_oas: 42,
     // The secondary coprocessor's kernel root follows the primary one's 256 KiB of page tables.
-    secondary_root_offset: 0x40000,
+    secondary_root_offset: Some(0x40000),
     // The coprocessors request their crash log buffers at these addresses, in this order, and
     // expect them to be mapped before they start.
     crash_buffers: [
