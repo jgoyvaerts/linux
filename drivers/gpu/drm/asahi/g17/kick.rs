@@ -20,6 +20,10 @@ pub(super) const QID_COUNT: usize = QID_MAX as usize + 1;
 /// QIDs kept free for render pairs when compute queues fill the table.
 const COMPUTE_RENDER_RESERVE: usize = 16;
 
+/// The 25G83 firmware keeps QIDs below 32 for its bootstrap protocol (the G16 driver's rings
+/// refuse them); the namespace starts there and preferred indices are relative to it.
+const QID_FLOOR_25G83: usize = 32;
+
 /// Stable physical-channel identity. The owner must not be reused within a
 /// device lifetime, including after an unpublished allocation is cancelled.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -49,6 +53,8 @@ pub(crate) struct QueueIds {
     entries: [Option<Identity>; QID_COUNT],
     compute_publication: u64,
     leased: usize,
+    /// First QID the host may use.
+    floor: usize,
 }
 
 impl QueueIds {
@@ -57,6 +63,7 @@ impl QueueIds {
             entries <- pin_init::init_array_from_fn(|_| None),
             compute_publication: 0,
             leased: 0,
+            floor: if super::fw::is_25g83() { QID_FLOOR_25G83 } else { 0 },
         })
     }
 
@@ -85,13 +92,21 @@ impl QueueIds {
         }
         // Healthy existing channels keep their QID. Never recycle a published
         // identity to recover capacity after a fault; leave eight render pairs.
-        if engine == DataMaster::Compute && QID_COUNT - self.leased <= COMPUTE_RENDER_RESERVE {
+        if engine == DataMaster::Compute
+            && QID_COUNT - self.floor - self.leased <= COMPUTE_RENDER_RESERVE
+        {
             return Err(ENOSPC);
         }
         let index = preferred
-            .map(usize::from)
+            .map(|index| usize::from(index) + self.floor)
             .filter(|index| self.entries.get(*index).is_some_and(Option::is_none))
-            .or_else(|| self.entries.iter().position(Option::is_none))
+            .or_else(|| {
+                self.entries
+                    .iter()
+                    .skip(self.floor)
+                    .position(Option::is_none)
+                    .map(|index| index + self.floor)
+            })
             .ok_or(ENOSPC)?;
         let id = Id {
             qid: index as u8,

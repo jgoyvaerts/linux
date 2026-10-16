@@ -130,11 +130,12 @@ pub(crate) struct PointerBlock {
     /// this cursor, `done` and `producer` are equal.
     pub(crate) unk_30: AtomicU32,
     pub(crate) unk_34: [u32; 3],
-    /// Item-ring position after the last work pointer the host published.
-    pub(crate) producer: AtomicU32,
+    /// 26A428: item-ring position after the last work pointer the host published.
+    word_40: AtomicU32,
     pub(crate) unk_44: [u32; 3],
-    /// On recovery, the host copies producer here before acknowledging resume.
-    pub(crate) recovery_target: u32,
+    /// 26A428: on recovery, the host copies the producer here before acknowledging resume.
+    /// 25G83: the producer.
+    word_50: AtomicU32,
     pub(crate) unk_54: [u32; 3],
     /// Number of entries in the item ring.
     pub(crate) entries: u32,
@@ -143,26 +144,56 @@ pub(crate) struct PointerBlock {
 
 static_assert!(size_of::<PointerBlock>() == 0x80);
 static_assert!(core::mem::offset_of!(PointerBlock, unk_30) == 0x30);
-static_assert!(core::mem::offset_of!(PointerBlock, producer) == 0x40);
+static_assert!(core::mem::offset_of!(PointerBlock, word_40) == 0x40);
+static_assert!(core::mem::offset_of!(PointerBlock, word_50) == 0x50);
 static_assert!(core::mem::offset_of!(PointerBlock, entries) == 0x60);
 
 // SAFETY: PointerBlock contains only integers and integer atomics.
 unsafe impl Zeroable for PointerBlock {}
 
 impl PointerBlock {
-    pub(crate) const PRODUCER: usize = core::mem::offset_of!(Self, producer);
-    pub(crate) const RECOVERY_TARGET: usize = core::mem::offset_of!(Self, recovery_target);
+    /// Offset of the item-ring producer. The 25G83 firmware reads it at +0x50 (the G16 driver
+    /// found its reads at 1a58c..1a624) and has no recovery-target word.
+    pub(crate) fn producer_offset() -> usize {
+        if super::is_25g83() {
+            core::mem::offset_of!(Self, word_50)
+        } else {
+            core::mem::offset_of!(Self, word_40)
+        }
+    }
+
+    /// Offset of the recovery target, if the firmware has one.
+    pub(crate) fn recovery_target_offset() -> Option<usize> {
+        if super::is_25g83() {
+            None
+        } else {
+            Some(core::mem::offset_of!(Self, word_50))
+        }
+    }
+
+    /// The item-ring producer.
+    pub(crate) fn producer(&self) -> &AtomicU32 {
+        if super::is_25g83() {
+            &self.word_50
+        } else {
+            &self.word_40
+        }
+    }
 
     /// Returns the cursors of an empty item ring.
-    pub(crate) const fn new() -> Self {
+    pub(crate) fn new() -> Self {
+        let recovery_target = match Self::recovery_target_offset() {
+            Some(_) => u32::MAX,
+            None => 0,
+        };
         Self {
             done: AtomicU32::new(0),
             unk_04: [0; 11],
             unk_30: AtomicU32::new(0),
             unk_34: [0; 3],
-            producer: AtomicU32::new(0),
+            word_40: AtomicU32::new(0),
             unk_44: [0; 3],
-            recovery_target: u32::MAX,
+            word_50: AtomicU32::new(recovery_target),
             unk_54: [0; 3],
             entries: ITEM_RING_ENTRIES,
             unk_64: [0; 7],
@@ -179,7 +210,7 @@ impl PointerBlock {
     pub(crate) fn rebase(&self, base: u32) {
         self.done.store(base, Ordering::Relaxed);
         self.unk_30.store(base, Ordering::Relaxed);
-        self.producer.store(base, Ordering::Relaxed);
+        self.producer().store(base, Ordering::Relaxed);
     }
 }
 

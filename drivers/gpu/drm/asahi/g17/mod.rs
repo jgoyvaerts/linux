@@ -1052,6 +1052,7 @@ impl Gpu {
         cfg: &'static Config,
         regs: regs::Resources,
     ) -> Result<Arc<Gpu>> {
+        fw::set_25g83(cfg.init == InitLayout::T6040);
         // A natively started GPU is powered here, before its ID registers are read.
         let native = match &cfg.start {
             Start::Native(start) => Some(native::Native::power_on(pdev.as_ref(), start)?),

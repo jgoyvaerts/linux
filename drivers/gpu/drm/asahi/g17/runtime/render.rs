@@ -400,6 +400,12 @@ impl crate::g17::queue::render::Host for Host<'_> {
     /// check let the firmware gate the cores between the host's configuration
     /// writes while several clients installed their first pairs at once.
     fn install_pair(&mut self, registration: &crate::g17::fw::kick::RenderRegistration) -> Result {
+        // The 25G83 firmware runs renders without the MMIO registration (the G16 driver never
+        // writes those ports, whose meaning on the M4 Pro is unknown); its queue configuration
+        // installs the pair.
+        if crate::g17::fw::is_25g83() {
+            return Ok(());
+        }
         if !self.registration_powered {
             self.firmware.acquire_registration_power()?;
             self.registration_powered = true;

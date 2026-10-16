@@ -188,11 +188,13 @@ impl Graph {
         self.aliases[stage].client.iova() + (ordinal as usize % RECORDS * stride) as u64
     }
     pub(super) fn publish_recovery_targets(&self) -> Result {
+        let Some(target) = queue::PointerBlock::recovery_target_offset() else {
+            return Ok(());
+        };
         for at in POINTERS {
-            let producer = self.queues.word(at + queue::PointerBlock::PRODUCER)?
+            let producer = self.queues.word(at + queue::PointerBlock::producer_offset())?
                 .load(Ordering::Relaxed);
-            self.queues.word(at + queue::PointerBlock::RECOVERY_TARGET)?
-                .store(producer, Ordering::Relaxed);
+            self.queues.word(at + target)?.store(producer, Ordering::Relaxed);
         }
         Ok(())
     }
@@ -208,7 +210,10 @@ impl Graph {
             values[stage] = Cursors {
                 done: self.queues.word(at)?.load(Ordering::Relaxed),
                 read: self.queues.word(at + 0x30)?.load(Ordering::Relaxed),
-                write: self.queues.word(at + 0x40)?.load(Ordering::Relaxed),
+                write: self
+                    .queues
+                    .word(at + queue::PointerBlock::producer_offset())?
+                    .load(Ordering::Relaxed),
             };
         }
         Ok(values)

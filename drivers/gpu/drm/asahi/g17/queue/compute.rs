@@ -221,7 +221,7 @@ impl Graph {
 
     fn cursors(&self) -> Result<Cursors> {
         Ok(Cursors {
-            producer: self.graph.word(POINTERS + 0x40)?.load(Ordering::Relaxed),
+            producer: self.graph.word(POINTERS + PointerBlock::producer_offset())?.load(Ordering::Relaxed),
             consumer: self.graph.word(POINTERS)?.load(Ordering::Relaxed),
             count: self.graph.word(POINTERS + 0x60)?.load(Ordering::Relaxed),
         })
@@ -276,7 +276,7 @@ impl Graph {
             self.graph.dword(ITEMS + index * 8)?.store(0, Ordering::Relaxed);
         }
         fence(Ordering::SeqCst);
-        self.graph.word(POINTERS + 0x40)?.store(cursors.consumer, Ordering::Relaxed);
+        self.graph.word(POINTERS + PointerBlock::producer_offset())?.store(cursors.consumer, Ordering::Relaxed);
         self.reclaimed = cursors.consumer;
         fence(Ordering::SeqCst);
         Ok(())
@@ -1436,14 +1436,17 @@ impl Queue {
     }
     /// Firmware is halted and publication is closed while its target is copied.
     pub(crate) fn publish_recovery_target(&self) -> Result {
+        let Some(target) = PointerBlock::recovery_target_offset() else {
+            return Ok(());
+        };
         let producer = self
             .graph
             .graph
-            .word(POINTERS + PointerBlock::PRODUCER)?
+            .word(POINTERS + PointerBlock::producer_offset())?
             .load(Ordering::Relaxed);
         self.graph
             .graph
-            .word(POINTERS + PointerBlock::RECOVERY_TARGET)?
+            .word(POINTERS + target)?
             .store(producer, Ordering::Relaxed);
         Ok(())
     }
@@ -1535,7 +1538,7 @@ impl Graph {
             return Err(EBUSY);
         }
         let slot = self.graph.dword(ITEMS + expected as usize * 8)?;
-        let producer = self.graph.word(POINTERS + 0x40)?;
+        let producer = self.graph.word(POINTERS + PointerBlock::producer_offset())?;
         if slot.load(Ordering::Relaxed) != 0 {
             return Err(EBUSY);
         }
@@ -1969,7 +1972,7 @@ impl Graph {
         let first = self.graph.dword(ITEMS)?;
         let second = self.graph.dword(ITEMS + 8)?;
         let third = self.graph.dword(ITEMS + 16)?;
-        let producer = self.graph.word(POINTERS + 0x40)?;
+        let producer = self.graph.word(POINTERS + PointerBlock::producer_offset())?;
         first.store(address, Ordering::Relaxed);
         second.store(0, Ordering::Relaxed);
         third.store(0, Ordering::Relaxed);
