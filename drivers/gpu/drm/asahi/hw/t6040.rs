@@ -7,6 +7,7 @@
 
 use crate::g17::{native::NativeStart, Config, Cores, FixedBuffer, Identity, Start};
 use crate::hw::{GpuGen, GpuVariant};
+use crate::mmu::UatQuirks;
 
 /// Static configuration of the T6040 GPU.
 pub(crate) const CONFIG: Config = Config {
@@ -30,6 +31,18 @@ pub(crate) const CONFIG: Config = Config {
         clusters: 2,
         cores: 10,
     },
+    // The G16 driver's UAT policy: the firmware's tables live in no-map `pagetables`/`l2`
+    // memory, every table change is written back, ranges are invalidated page by page, and the
+    // handoff page carries only the host header (current slot 0xffff_ffff, no lock).
+    uat_quirks: UatQuirks {
+        reserved_tables: true,
+        clean_tables: true,
+        page_tlbi: true,
+        handoff_lock: false,
+        handoff_slot: 0xffff_ffff,
+    },
+    // The root is borrowed as the firmware left it: no snapshot, clearing or confirmation.
+    adopt_root_entries: false,
     fabric_bridge: false,
     pm_metrics: FixedBuffer {
         va: 0x10_0008_0000,

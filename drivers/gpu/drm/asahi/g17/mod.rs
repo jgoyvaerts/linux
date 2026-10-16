@@ -151,6 +151,12 @@ pub(crate) struct Config {
     pub(crate) start: Start,
     /// Where the GPU core layout comes from.
     pub(crate) cores: Cores,
+    /// UAT policy where it differs from the A18 Pro's.
+    pub(crate) uat_quirks: mmu::UatQuirks,
+    /// Snapshot the firmware root's own top-level entries after the firmware booted, clear the
+    /// others, and confirm the snapshot after building (A18 Pro). The M4 Pro root is borrowed
+    /// as the firmware left it.
+    pub(crate) adopt_root_entries: bool,
     /// Whether the GPU-to-fabric bridge and dynamic power gating are set up before the firmware
     /// starts (A18 Pro). The M4 Pro firmware runs with neither (the G16 driver never writes them).
     pub(crate) fabric_bridge: bool,
@@ -1153,6 +1159,7 @@ impl Gpu {
                 mmu::UatFirmware::PublishedRoots {
                     secondary_root_offset: cfg.secondary_root_offset,
                 },
+                cfg.uat_quirks,
             )?,
             GFP_KERNEL,
         )?;
@@ -1211,7 +1218,13 @@ impl Gpu {
         if let Some(secondary) = session.secondary.as_mut() {
             secondary.boot()?;
         }
-        let root_entries = session.uat.adopt_firmware_root_entries()?;
+        // The firmware built its root and kernel-window tables while booting.
+        session.uat.invalidate_reserved_tables();
+        let root_entries = if cfg.adopt_root_entries {
+            Some(session.uat.adopt_firmware_root_entries()?)
+        } else {
+            None
+        };
         session.init.build(
             dev,
             cfg,
@@ -1219,7 +1232,9 @@ impl Gpu {
             &session._render_global,
             &session._pm_metrics,
         )?;
-        session.uat.confirm_firmware_root_entries(root_entries)?;
+        if let Some(root_entries) = root_entries {
+            session.uat.confirm_firmware_root_entries(root_entries)?;
+        }
         session.uat.mirror_secondary_root()?;
         if cfg.fabric_bridge {
             session.bridge.regs.enable_g17_gating()?;

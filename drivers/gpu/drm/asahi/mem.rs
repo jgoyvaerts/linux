@@ -15,8 +15,34 @@ use kernel::page::PAGE_SIZE;
 
 use crate::debug::*;
 use crate::mmu;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 type Asid = u8;
+
+/// Invalidate ranges page by page (`mmu::UatQuirks::page_tlbi`): never range operations.
+static PAGE_TLBI: AtomicBool = AtomicBool::new(false);
+
+/// Ranges above this many pages are invalidated by ASID in page mode.
+const PAGE_TLBI_MAX_PAGES: usize = 2048;
+
+/// Selects page-by-page range invalidation for this GPU.
+pub(crate) fn set_page_tlbi(enabled: bool) {
+    PAGE_TLBI.store(enabled, Ordering::Relaxed);
+}
+
+/// Invalidates `len` bytes at `va` one 16 KiB page at a time, or the whole ASID above
+/// [`PAGE_TLBI_MAX_PAGES`].
+fn tlbi_pages(asid: Asid, va: usize, len: usize) {
+    let start = va >> mmu::UAT_PGBIT;
+    let end = (va + len + mmu::UAT_PGMSK) >> mmu::UAT_PGBIT;
+    if end - start > PAGE_TLBI_MAX_PAGES {
+        tlbi_asid(asid);
+        return;
+    }
+    for page in start..end {
+        tlbi_page(asid, page << mmu::UAT_PGBIT);
+    }
+}
 
 /// Invalidate the entire GPU TLB.
 #[inline(always)]
@@ -76,6 +102,10 @@ pub(crate) fn tlbi_range(asid: Asid, va: usize, len: usize) {
     }
 
     if len == 0 {
+        return;
+    }
+    if PAGE_TLBI.load(Ordering::Relaxed) {
+        tlbi_pages(asid, va, len);
         return;
     }
 
@@ -165,6 +195,10 @@ pub(crate) fn tlbi_range_or_asid(asid: Asid, va: usize, len: usize) {
     }
 
     if len == 0 {
+        return;
+    }
+    if PAGE_TLBI.load(Ordering::Relaxed) {
+        tlbi_pages(asid, va, len);
         return;
     }
 
