@@ -17,6 +17,11 @@ const USC_WINDOW_SIZE: u64 = 1 << 32;
 const MAX_SAMPLERS: u32 = 1024;
 const RENDER_BASE_SIZE: usize = core::mem::offset_of!(uapi::drm_asahi_cmd_render, prior_cdm) + size_of::<u64>();
 const COMPUTE_BASE_SIZE: usize = core::mem::offset_of!(uapi::drm_asahi_cmd_compute, prior_cdm) + size_of::<u64>();
+/// The timestamp-copy arrays of the common command layout, which G17P does not implement.
+const RENDER_TIMESTAMP_COPIES: Range<usize> = core::mem::offset_of!(uapi::drm_asahi_cmd_render, ts_frag_end_copies)
+    ..core::mem::offset_of!(uapi::drm_asahi_cmd_render, prior_vdm);
+const COMPUTE_TIMESTAMP_COPIES: Range<usize> = core::mem::offset_of!(uapi::drm_asahi_cmd_compute, ts_end_copies)
+    ..core::mem::offset_of!(uapi::drm_asahi_cmd_compute, scs_layout);
 const SAMPLER_SIZE: u64 = 8;
 const PAGE_SIZE: u64 = 0x4000;
 const ZLS_METADATA_STRIDE: u64 = 0x80;
@@ -130,6 +135,7 @@ impl<'a> Parser<'a> {
                         == uapi::drm_asahi_cmd_type_DRM_ASAHI_CMD_RENDER
                     {
                         self.counts[0] += 1;
+                        no_timestamp_copies(bytes, RENDER_TIMESTAMP_COPIES)?;
                         Payload::Render(
                             payload(&bytes[..bytes.len().min(RENDER_BASE_SIZE)])?,
                             [self.attachments[0], self.attachments[1]],
@@ -137,6 +143,7 @@ impl<'a> Parser<'a> {
                         )
                     } else {
                         self.counts[1] += 1;
+                        no_timestamp_copies(bytes, COMPUTE_TIMESTAMP_COPIES)?;
                         Payload::Compute(
                             payload(&bytes[..bytes.len().min(COMPUTE_BASE_SIZE)])?,
                             self.attachments[2],
@@ -167,6 +174,16 @@ impl<'a> Parser<'a> {
         }
         Ok(())
     }
+}
+
+/// Reject a command that asks for timestamp copies.
+fn no_timestamp_copies(bytes: &[u8], copies: Range<usize>) -> Result {
+    let end = copies.end.min(bytes.len());
+    let start = copies.start.min(end);
+    if bytes[start..end].iter().any(|&b| b != 0) {
+        return Err(EINVAL);
+    }
+    Ok(())
 }
 
 fn payload<T: AnyBitPattern>(bytes: &[u8]) -> Result<T> {

@@ -447,6 +447,16 @@ impl File {
         data: &mut uapi::drm_asahi_vm_create,
         file: &DrmFile,
     ) -> Result<u32> {
+        if device.gpu.as_any().is::<crate::g17::Gpu>() {
+            // G17P reports HAL200; it accepts the acknowledgement but does not require it.
+            if data.flags & !uapi::drm_asahi_vm_create_flags_DRM_ASAHI_VM_CREATE_HAL200 != 0 {
+                return Err(EINVAL);
+            }
+        } else if data.flags != 0 {
+            // Every other runtime here reports DRM_ASAHI_GPU_HAL_LEGACY.
+            return Err(EINVAL);
+        }
+
         let kernel_range = data.kernel_start..data.kernel_end;
         let user_range = file.inner().user_range.clone();
 
