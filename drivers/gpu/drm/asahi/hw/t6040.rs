@@ -5,7 +5,7 @@
 //! Values come from the G16 driver, which runs this GPU on the macOS 26.6 (25G83) firmware
 //! `mBoot-18000.161.10`, whose firmware interface is the A18 Pro's.
 
-use crate::g17::{native::NativeStart, Config, Cores, FixedBuffer, Identity, Start};
+use crate::g17::{native::NativeStart, Config, Cores, FixedBuffer, Identity, InitLayout, Start};
 use crate::hw::{GpuGen, GpuVariant};
 use crate::mmu::UatQuirks;
 
@@ -26,6 +26,7 @@ pub(crate) const CONFIG: Config = Config {
     // One coprocessor carries both firmware roles; `pagetables` holds only its root.
     secondary_root_offset: None,
     start: Start::Native(NativeStart { pmgr: 0x2_88e8_0000 }),
+    init: InitLayout::T6040,
     // Two clusters of ten cores (`apple,m4-core-mask` = 0xfffff).
     cores: Cores::DeviceTree {
         clusters: 2,
