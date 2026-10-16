@@ -5,8 +5,10 @@
 #include <linux/iopoll.h>
 #include <linux/of_device.h>
 #include <linux/of_irq.h>
+#include <linux/property.h>
 #include <linux/regmap.h>
 #include <linux/spmi.h>
+#include <linux/usb/role.h>
 
 #include "tps6598x.h"
 
@@ -209,6 +211,8 @@ static int sn201202x_probe(struct spmi_device *device)
 {
 	const struct of_device_id *match;
 	const struct tipd_data *data;
+	struct usb_role_switch *sw;
+	struct fwnode_handle *fwnode;
 	struct sn201202x *sn;
 	struct tps6598x *tps;
 	int irq_select, irq_sleep, irq_wake;
@@ -218,6 +222,22 @@ static int sn201202x_probe(struct spmi_device *device)
 	if (!match)
 		return -EINVAL;
 	data = tipd_hw_variants[(enum tipd_hw_variant)match->data];
+
+	/*
+	 * tipd_init() defers until the connector's USB role switch (the dwc3)
+	 * is registered, but only after it has woken the chip, switched it to
+	 * S0 and set its interrupt mask, and the deferral then puts the chip
+	 * back to sleep. With both drivers loaded by udev at boot that cycle
+	 * could repeat several times. Defer here instead, before the chip is
+	 * touched. A connector without a role switch, or one whose remote node
+	 * is disabled, gives NULL, and the probe continues as before.
+	 */
+	fwnode = device_get_named_child_node(&device->dev, "connector");
+	sw = fwnode_usb_role_switch_get(fwnode);
+	fwnode_handle_put(fwnode);
+	if (IS_ERR(sw))
+		return dev_err_probe(&device->dev, PTR_ERR(sw), "waiting for the USB role switch\n");
+	usb_role_switch_put(sw);
 
 	sn = devm_kzalloc(&device->dev, data->tps_struct_size, GFP_KERNEL);
 	if (!sn)
