@@ -154,17 +154,17 @@ pub(crate) enum UatFirmware {
     /// One coprocessor that publishes its magic number in the handoff region, arbitrates the
     /// handoff lock with the driver, and acknowledges cache flush requests (G13/G14).
     Handoff,
-    /// Two coprocessor instances that never touch the handoff region (G17).
+    /// One or two coprocessor instances that never touch the handoff region (G17).
     ///
     /// Each instance has its own kernel root and writes the top-level entries below and including
     /// the driver-managed kernel window into it while it boots: the lower ones are private to the
     /// instance, and the kernel window entry points at a table that the bootloader reserved. The
-    /// primary instance uses the `pagetables` root, the secondary one the root at
-    /// `secondary_root_offset` in the same region. TTBAT context 1 starts as an alias of the kernel
-    /// context.
+    /// primary instance uses the `pagetables` root, a secondary one (A18 Pro) the root at
+    /// `secondary_root_offset` in the same region; a single-instance firmware (M4 Pro) has none.
+    /// TTBAT context 1 starts as an alias of the kernel context.
     PublishedRoots {
         /// Offset of the secondary instance's kernel root in the `pagetables` region.
-        secondary_root_offset: u64,
+        secondary_root_offset: Option<u64>,
     },
 }
 
@@ -3260,7 +3260,10 @@ impl Uat {
     /// secondary firmware instance ([`UatFirmware::PublishedRoots`]), whose lower entries are
     /// private to that instance.
     pub(crate) fn mirror_secondary_root(&self) -> Result {
-        let secondary = self.inner.lock().secondary_ttb1.ok_or(EINVAL)?;
+        let Some(secondary) = self.inner.lock().secondary_ttb1 else {
+            // A single-instance firmware has no secondary root to mirror.
+            return Ok(());
+        };
         let count = UAT_PGSZ / size_of::<u64>();
         let first = IOVA_KERN_TOP_LEVEL_INDEX as usize;
 
@@ -3372,11 +3375,11 @@ impl Uat {
         let (pagetables_size, secondary_ttb1) = match firmware {
             UatFirmware::Handoff => (PAGETABLES_SIZE, None),
             UatFirmware::PublishedRoots {
-                secondary_root_offset,
-            } => (
-                secondary_root_offset as usize + UAT_PGSZ,
-                Some(ttb1 + secondary_root_offset),
-            ),
+                secondary_root_offset: Some(offset),
+            } => (offset as usize + UAT_PGSZ, Some(ttb1 + offset)),
+            UatFirmware::PublishedRoots {
+                secondary_root_offset: None,
+            } => (UAT_PGSZ, None),
         };
         if ttb1size < pagetables_size {
             dev_err!(dev.as_ref(), "MMU: Pagetables region is too small\n");
@@ -3443,7 +3446,7 @@ impl Uat {
             ctx.ttb1.store(0, Ordering::Relaxed);
         }
 
-        if secondary_ttb1.is_some() {
+        if matches!(firmware, UatFirmware::PublishedRoots { .. }) {
             let alias = &ttbs[KERNEL_ALIAS_CTX];
             alias
                 .ttb0
