@@ -7,7 +7,7 @@ use crate::g17::{
     FixedBuffer,
     Identity, //
 };
-use crate::hw::GpuVariant;
+use crate::hw::{GpuGen, GpuVariant};
 
 /// Static configuration of the T8140 GPU.
 pub(crate) const CONFIG: Config = Config {
@@ -42,6 +42,8 @@ pub(crate) const CONFIG: Config = Config {
         va: 0x10_0008_0000,
         size: 0x8000,
     },
+    recovery_slot_keys: Some(recovery::SLOT_KEYS),
+    gpu_generation: GpuGen::G17,
 };
 
 use crate::g17::fw::initdata::{PerfConfig, RegisterWindow, PERF_STATES};
