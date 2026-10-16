@@ -101,6 +101,7 @@
  * @usb3_phy: USB3 PHY, configured after the core is brought up
  * @role_sw: USB role switch
  * @fixed_hub: A fixed hub sits on the controller's USB2 port, the controller stays in host mode
+ * @host_only: The controller must never enter DWC3_APPLE_DEVICE, see dwc3_apple_host_only()
  * @lock: Mutex for synchronizing access
  * @state: Current state of the controller, see enum dwc3_apple_state and the comment above
  * @core_active: Core still owns initialized PHYs
@@ -121,6 +122,7 @@ struct dwc3_apple {
 	struct phy *usb3_phy;
 	struct usb_role_switch *role_sw;
 	bool fixed_hub;
+	bool host_only;
 
 	struct mutex lock;
 
@@ -416,11 +418,34 @@ static void dwc3_apple_set_role(struct dwc3_apple *appledwc, enum dwc3_apple_sta
 		dev_warn(appledwc->dev, "USB3 PHY setup failed, USB2 only, err=%d\n", ret);
 }
 
+/*
+ * No device mode: the T6040 USB2 PHY implements host mode only (phy-apple-t6040-usb2), and a
+ * kernel built without gadget support turns dwc3_gadget_init() into a stub that succeeds. Such a
+ * controller must not follow a USB_ROLE_DEVICE request from the Type-C port controller (a charger
+ * or a host on the other end), or the core would end up in device mode on top of a PHY powered
+ * in host mode.
+ */
+static bool dwc3_apple_host_only(struct device *dev)
+{
+	if (!IS_ENABLED(CONFIG_USB_DWC3_GADGET) && !IS_ENABLED(CONFIG_USB_DWC3_DUAL_ROLE))
+		return true;
+
+	return of_device_is_compatible(dev->of_node, "apple,t6040-dwc3");
+}
+
 static int dwc3_apple_init(struct dwc3_apple *appledwc, enum dwc3_apple_state state)
 {
 	int ret, ret_reset;
 
 	lockdep_assert_held(&appledwc->lock);
+
+	/*
+	 * A host-only controller starts as a host: mark the role before the core comes up so that
+	 * dwc3_core_soft_reset() leaves the unused gadget side alone. A failed first core probe
+	 * zeroes the struct, so this is done on every start.
+	 */
+	if (state == DWC3_APPLE_HOST && appledwc->host_only)
+		appledwc->dwc.current_dr_role = DWC3_GCTL_PRTCAP_HOST;
 
 	ret = dwc3_apple_core_start(appledwc, state);
 	if (ret)
@@ -504,6 +529,15 @@ static int dwc3_usb_role_switch_set(struct usb_role_switch *sw, enum usb_role ro
 	/* A controller behind a fixed hub is a host regardless of the connectors */
 	if (appledwc->fixed_hub)
 		return 0;
+
+	/*
+	 * Stay off instead of starting device mode (see dwc3_apple_host_only()). Reporting success
+	 * keeps the port controller from retrying: get() then reports USB_ROLE_NONE.
+	 */
+	if (role == USB_ROLE_DEVICE && appledwc->host_only) {
+		dev_info_ratelimited(appledwc->dev, "No device mode on this port: staying off\n");
+		role = USB_ROLE_NONE;
+	}
 
 	/*
 	 * Skip role switches if appledwc is already in the desired state. The
@@ -600,6 +634,7 @@ static int dwc3_apple_probe(struct platform_device *pdev)
 
 	appledwc->dev = &pdev->dev;
 	appledwc->fixed_hub = dwc3_apple_has_fixed_hub(dev);
+	appledwc->host_only = dwc3_apple_host_only(dev);
 	mutex_init(&appledwc->lock);
 
 	appledwc->reset = devm_reset_control_get_exclusive(dev, NULL);
@@ -612,7 +647,8 @@ static int dwc3_apple_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, PTR_ERR(appledwc->usb2_phy),
 				     "Failed to get the USB2 PHY\n");
 
-	appledwc->usb3_phy = devm_phy_get(dev, "usb3-phy");
+	/* The T6040 ports have a USB2 PHY only. */
+	appledwc->usb3_phy = devm_phy_optional_get(dev, "usb3-phy");
 	if (IS_ERR(appledwc->usb3_phy))
 		return dev_err_probe(dev, PTR_ERR(appledwc->usb3_phy),
 				     "Failed to get the USB3 PHY\n");
