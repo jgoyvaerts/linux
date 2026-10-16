@@ -13,8 +13,8 @@ mod safety;
 pub(crate) use attribution::Sources;
 use attribution::Attribution;
 
-pub(super) fn slot_key(slot: usize) -> Option<u64> {
-    slot::key(slot).ok()
+pub(super) fn slot_key(slot: usize, slot_keys: Option<u64>) -> Option<u64> {
+    slot::key(slot, slot_keys?).ok()
 }
 
 use super::status::VmStatus;

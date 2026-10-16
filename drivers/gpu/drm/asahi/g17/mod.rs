@@ -155,6 +155,12 @@ pub(crate) struct Config {
     pub(crate) crash_buffers: [FixedBuffer; 2],
     /// Parameter buffer page metrics shared with the firmware.
     pub(crate) pm_metrics: FixedBuffer,
+    /// Physical address of the firmware's per-slot recovery keys, read while the firmware is
+    /// halted to attribute a fault; `None` where it is unknown (recovery then relies on the
+    /// firmware's own blame).
+    pub(crate) recovery_slot_keys: Option<u64>,
+    /// GPU generation reported to userspace.
+    pub(crate) gpu_generation: hw::GpuGen,
 }
 
 /// A firmware coprocessor instance.
@@ -472,7 +478,9 @@ impl Drop for Bridge {
 /// dropped, the bridge is disabled once they are stopped, and the firmware objects and their
 /// mappings go before the UAT. Page tables the firmware or the bootloader own are never freed.
 struct Firmware {
-    secondary: Coprocessor,
+    /// The secondary instance, on GPUs whose firmware runs on two (A18 Pro). A single-instance
+    /// firmware (M4 Pro) carries both roles on the primary.
+    secondary: Option<Coprocessor>,
     primary: Coprocessor,
     bridge: Bridge,
     rings: channel::Rings,
@@ -490,7 +498,9 @@ struct Firmware {
 
 impl Drop for Firmware {
     fn drop(&mut self) {
-        self.secondary.stop();
+        if let Some(secondary) = self.secondary.as_mut() {
+            secondary.stop();
+        }
         self.primary.stop();
         self.pool.stop_after_firmware();
         // RTKit destruction releases the mailbox power references. Clear the bridge while
@@ -500,6 +510,15 @@ impl Drop for Firmware {
 }
 
 impl Firmware {
+    /// The firmware instances this GPU runs.
+    fn roles(&self) -> &'static [Role] {
+        if self.secondary.is_some() {
+            &[Role::Primary, Role::Secondary]
+        } else {
+            &[Role::Primary]
+        }
+    }
+
     /// Publishes controls only while the restart handshake is closed. The device mutex remains
     /// held through publication and the following mailbox notification.
     fn publish_control(&mut self, record: &fw::channels::ControlRecord) -> Result<u32> {
@@ -963,8 +982,14 @@ impl Gpu {
         )?;
         let primary = Coprocessor::new(pdev, dev, cfg, &uat, shared, Role::Primary)
             .inspect_err(|e| dev_err!(dev.as_ref(), "Primary coprocessor setup failed: {:?}\n", e))?;
-        let secondary = Coprocessor::new(pdev, dev, cfg, &uat, shared, Role::Secondary)
-            .inspect_err(|e| dev_err!(dev.as_ref(), "Secondary coprocessor setup failed: {:?}\n", e))?;
+        let secondary = match cfg.secondary_root_offset {
+            Some(_) => Some(
+                Coprocessor::new(pdev, dev, cfg, &uat, shared, Role::Secondary).inspect_err(|e| {
+                    dev_err!(dev.as_ref(), "Secondary coprocessor setup failed: {:?}\n", e)
+                })?,
+            ),
+            None => None,
+        };
         let render_global = uat.new_vm(0, geometry.user_range())?;
 
         let bridge = Bridge::enable(regs)?;
@@ -992,7 +1017,9 @@ impl Gpu {
         )?;
         let session = &mut *firmware;
         session.primary.boot()?;
-        session.secondary.boot()?;
+        if let Some(secondary) = session.secondary.as_mut() {
+            secondary.boot()?;
+        }
         let root_entries = session.uat.adopt_firmware_root_entries()?;
         session.init.build(
             dev,
@@ -1005,12 +1032,14 @@ impl Gpu {
         session.uat.mirror_secondary_root()?;
         session.bridge.regs.enable_g17_gating()?;
         session.primary.init(session.init.root_va(Role::Primary)?)?;
-        session
-            .secondary
-            .init(session.init.root_va(Role::Secondary)?)?;
+        if let Some(secondary) = session.secondary.as_mut() {
+            secondary.init(session.init.root_va(Role::Secondary)?)?;
+        }
         session.primary.notify(MSG_POWER_ON_DONE)?;
-        session.secondary.notify(MSG_POWER_ON_DONE)?;
-        Self::wait_for_opening(dev, &session.init, &session.primary, &session.secondary)?;
+        if let Some(secondary) = session.secondary.as_mut() {
+            secondary.notify(MSG_POWER_ON_DONE)?;
+        }
+        Self::wait_for_opening(dev, &session.init, &session.primary, session.secondary.as_ref())?;
         session
             .uat
             .activate_render_context(&session._render_global)?;
@@ -1022,15 +1051,17 @@ impl Gpu {
         dev: &AsahiDrmDevice,
         init: &initdata::InitData,
         primary: &Coprocessor,
-        secondary: &Coprocessor,
+        secondary: Option<&Coprocessor>,
     ) -> Result {
         for poll in 0..=OPENING_RETIRE_POLLS {
             if primary.state.crashed.load(Ordering::Acquire)
-                || secondary.state.crashed.load(Ordering::Acquire)
+                || secondary.is_some_and(|s| s.state.crashed.load(Ordering::Acquire))
             {
                 return Err(EIO);
             }
-            if init.opening_retired(Role::Primary)? && init.opening_retired(Role::Secondary)? {
+            if init.opening_retired(Role::Primary)?
+                && (secondary.is_none() || init.opening_retired(Role::Secondary)?)
+            {
                 return Ok(());
             }
             if poll < OPENING_RETIRE_POLLS {
@@ -1102,7 +1133,7 @@ impl gpu::Gpu for Gpu {
                 | u64::from(uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_FRAGMENT_BARRIERS)
                 | u64::from(uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_RENDER_RAY_QUERY)
                 | u64::from(uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_BOUNDED_AS_BUILD);
-        params.gpu_generation = hw::GpuGen::G17 as u32;
+        params.gpu_generation = self.cfg.gpu_generation as u32;
         params.gpu_variant = self.cfg.identity.gpu_variant as u32;
         params.gpu_revision = self.id.gpu_rev as u32;
         params.chip_id = self.cfg.chip_id;
