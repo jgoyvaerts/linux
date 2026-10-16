@@ -371,6 +371,7 @@ impl Pair {
             heapmeta_va: target.heap,
             tpc_va: self.memory.target.tpc_va(),
             tpc_size: layout.tpc_size as u64,
+            gtp_va: self.memory.target.gtp_va(&layout)?,
             deflake_va: deflake,
             ta_status_va: ta_status,
             fragment_status_va: fragment_status,
@@ -404,9 +405,14 @@ impl Pair {
             },
         };
         self.memory.graph.claim(ordinal)?;
+        // No MCache table on the 25G83 firmware: the G16 driver never sets kick-entry bit 58.
+        let attachments = match crate::g17::fw::is_25g83() {
+            true => &[][..],
+            false => attachments[1].as_slice(),
+        };
         let result = self.memory.write_descriptors(
             &args,
-            attachments[1].as_slice(),
+            attachments,
             packet.context.id().try_into()?,
         );
         let mcache = match result {
@@ -517,6 +523,13 @@ impl Pair {
         let covered = stamps.map(|stamp| retirement::stamp_covers(stamp, ordinal));
         self.memory
             .completion_links(ordinal, kicks, payload, !covered[1])?;
+        let leads = match crate::g17::fw::is_25g83() {
+            true => {
+                let init_manager = !self.memory.manager.initialized();
+                self.memory.write_leads(ordinal, kicks[0], init_manager)?
+            }
+            false => [false; 2],
+        };
         let context = &packet.context;
         let ring = 1u8 << policy.priority();
         let qos = context.qos_id();
@@ -649,6 +662,7 @@ impl Pair {
                 configs[0],
                 present[0],
                 kicks[0],
+                leads[0],
             )?,
             publication::Lane::new(
                 &memory.graph,
@@ -658,6 +672,7 @@ impl Pair {
                 configs[1],
                 present[1],
                 kicks[1],
+                leads[1],
             )?,
         ];
         let windows = [lanes[0].window, lanes[1].window];
@@ -747,7 +762,12 @@ impl Pair {
             )
         })();
         let outer_next = match result {
-            Ok(next) => next,
+            Ok(next) => {
+                if leads[0] {
+                    self.memory.manager.mark_initialized();
+                }
+                next
+            }
             Err(error) => {
                 self.quarantined = true;
                 if !packet.completion.spared() && self.terminal.is_none() {

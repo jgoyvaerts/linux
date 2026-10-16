@@ -31,6 +31,9 @@ pub(super) const ANNOUNCE: [usize; 2] = [0x17000, 0x1b000];
 pub(super) const JOB_LIST: usize = 0xa000;
 pub(super) const CONFIG: [usize; 2] = [0, 0x4000];
 pub(super) const CONFIG_STRIDE: usize = 0x180;
+/// The 25G83 lead command of a stage (InitBM before tiling, the barrier before fragment),
+/// after the stage's configuration record in its slot.
+pub(super) const LEAD: usize = 0xc0;
 const DEPTH: usize = queues::RENDER_DEPTH as usize;
 /// Offsets of the priority pair and the policy word in a queue record.
 const PRIORITY: usize = core::mem::offset_of!(queue::QueueRecord, priority);
@@ -322,6 +325,13 @@ impl Generation {
         let viewport = storage::Viewport::new(pass.width, pass.height)?;
         self.state.bytes_mut()[storage::AUXILIARY..storage::AUXILIARY + storage::AUXILIARY_SIZE]
             .fill(0);
+        // On the M4 Pro +0x900 lies inside the second deflake sub-buffer (two clusters); the G16
+        // driver leaves the context buffer to the GPU.
+        if crate::g17::fw::is_25g83() {
+            self.fragment.bytes_mut().fill(0);
+            self.ordinal = Some(ordinal);
+            return Ok(());
+        }
         let destination = self
             .state
             .pointer(storage::DEFLAKE + 0x900, size_of::<storage::Viewport>())?
@@ -510,6 +520,9 @@ const _: () = {
     assert!(abi::TA_DESCRIPTOR_SIZE * RECORDS <= TA_BYTES);
     assert!(abi::FRAGMENT_SLOT_SIZE * RECORDS <= FRAGMENT_BYTES);
     assert!(RECORDS * CONFIG_STRIDE <= 0x4000);
+    assert!(size_of::<queue::QueueConfig>() <= LEAD);
+    assert!(LEAD + size_of::<queue::FragmentBarrier>() <= CONFIG_STRIDE);
+    assert!(LEAD + size_of::<queue::InitBufferManager>() <= CONFIG_STRIDE);
 };
 
 impl Memory {
@@ -602,6 +615,52 @@ impl Memory {
             (&mut *fragment).set_completion_link(kicks[1], payload);
         }
         Ok(())
+    }
+
+    /// Writes the 25G83 lead commands of `ordinal` from its linked descriptors: InitBM before
+    /// the tiling descriptor when `init_manager`, and the fragment barrier. Returns which stages
+    /// have one.
+    pub(super) fn write_leads(
+        &mut self,
+        ordinal: u64,
+        tiling_kick: fw::kick::KickTimestamp,
+        init_manager: bool,
+    ) -> Result<[bool; 2]> {
+        if !self.owns(ordinal) {
+            return Err(EIO);
+        }
+        let ta = self
+            .graph
+            .descriptors
+            .pointer(Graph::offset(0, ordinal), size_of::<abi::TaDescriptor>())?
+            .cast::<abi::TaDescriptor>();
+        let fragment = self
+            .graph
+            .descriptors
+            .pointer(Graph::offset(1, ordinal), size_of::<abi::FragmentSlot>())?
+            .cast::<abi::FragmentSlot>();
+        // SAFETY: Both views were checked during preparation and the ordinal still owns them;
+        // only integer fields are read.
+        let (ta, fragment_id) = unsafe { (&*ta, (*fragment).descriptor.current_id) };
+        let slot = ordinal as usize % RECORDS * CONFIG_STRIDE + LEAD;
+        let barrier = queue::FragmentBarrier::new(
+            ta.stamp_va,
+            tiling_kick,
+            ta.qid,
+            ta.stamp_value,
+            fragment_id as u32,
+        );
+        self.graph.config.write(CONFIG[1] + slot, barrier)?;
+        if init_manager {
+            let init = queue::InitBufferManager::new(
+                ta.context_id,
+                ta.pb_slot,
+                ta.pb_va,
+                ta.stamp_value,
+            );
+            self.graph.config.write(CONFIG[0] + slot, init)?;
+        }
+        Ok([init_manager, true])
     }
 }
 
