@@ -10,6 +10,7 @@ use crate::g17::{
     Start, //
 };
 use crate::hw::{GpuGen, GpuVariant};
+use crate::mmu::UatQuirks;
 
 /// Static configuration of the T8140 GPU.
 pub(crate) const CONFIG: Config = Config {
@@ -41,6 +42,8 @@ pub(crate) const CONFIG: Config = Config {
         ],
     },
     cores: Cores::Registers,
+    uat_quirks: UatQuirks::DEFAULT,
+    adopt_root_entries: true,
     fabric_bridge: true,
     // Read by the firmware through the kernel lower root, whose top-level entries it only
     // samples when it starts.
