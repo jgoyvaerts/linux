@@ -41,6 +41,7 @@ pub(crate) const CONFIG: Config = Config {
         page_tlbi: true,
         handoff_lock: false,
         handoff_slot: 0xffff_ffff,
+        native_gpu_permissions: true,
     },
     // The root is borrowed as the firmware left it: no snapshot, clearing or confirmation.
     adopt_root_entries: false,
