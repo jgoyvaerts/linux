@@ -149,6 +149,8 @@ pub(crate) struct Config {
     pub(crate) secondary_root_offset: Option<u64>,
     /// How the coprocessors are started and reached.
     pub(crate) start: Start,
+    /// The initialization graph of the target's firmware build.
+    pub(crate) init: InitLayout,
     /// Where the GPU core layout comes from.
     pub(crate) cores: Cores,
     /// UAT policy where it differs from the A18 Pro's.
@@ -183,6 +185,16 @@ pub(crate) enum Start {
     /// firmware region, and initialization acknowledged in status A instead of by a message
     /// (M4 Pro).
     Native(native::NativeStart),
+}
+
+/// Which firmware build's initialization graph a G17 target needs.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum InitLayout {
+    /// The A18 Pro firmware's graph (26A428), two instances.
+    G17P,
+    /// The M4 Pro firmware's graph (25G83, `mBoot-18000.161.10`), one instance carrying both
+    /// roles (see `initdata::t6040`).
+    T6040,
 }
 
 /// Where a G17 target's core layout comes from.
@@ -231,6 +243,8 @@ const MSG_POWER_ON_DONE: u64 = 0x89 << MSG_TYPE_SHIFT;
 
 /// Time the firmware takes at most to acknowledge its initialization.
 const INITDATA_ACK_TIMEOUT_MS: u32 = 2000;
+/// One-millisecond polls for a natively started firmware's acceptance in status A.
+const INIT_ACCEPT_POLLS: usize = 3000;
 /// Bounded mailbox-provider readiness retries, before either coprocessor starts.
 const RECEIVER_ATTEMPTS: usize = 3;
 const RECEIVER_RETRY_MS: i64 = 20;
@@ -1240,6 +1254,9 @@ impl Gpu {
             session.bridge.regs.enable_g17_gating()?;
         }
         session.primary.init(session.init.root_va(Role::Primary)?)?;
+        if let Start::Native(_) = cfg.start {
+            Self::wait_for_init_accepted(dev, &session.init, &session.primary)?;
+        }
         if let Some(secondary) = session.secondary.as_mut() {
             secondary.init(session.init.root_va(Role::Secondary)?)?;
         }
@@ -1252,6 +1269,33 @@ impl Gpu {
             .uat
             .activate_render_context(&session._render_global)?;
         Ok(firmware)
+    }
+
+    /// Waits for a natively started firmware to accept its graph in status A. The 25G83
+    /// firmware sends no initialization acknowledgement message.
+    fn wait_for_init_accepted(
+        dev: &AsahiDevice,
+        init: &initdata::InitData,
+        primary: &Coprocessor,
+    ) -> Result {
+        for poll in 0..=INIT_ACCEPT_POLLS {
+            if primary.state.crashed.load(Ordering::Acquire) {
+                return Err(EIO);
+            }
+            if init.init_accepted()? {
+                dev_info!(dev.as_ref(), "Firmware accepted the initialization graph\n");
+                return Ok(());
+            }
+            if poll < INIT_ACCEPT_POLLS {
+                fsleep(Delta::from_millis(1));
+            }
+        }
+        dev_err!(
+            dev.as_ref(),
+            "Firmware did not accept the initialization graph: status A {:#x?}\n",
+            init.status_read_words::<4>(Role::Primary, 0x10)?
+        );
+        Err(ETIMEDOUT)
     }
 
     /// Waits for both coprocessors to retire their opening device-control records.

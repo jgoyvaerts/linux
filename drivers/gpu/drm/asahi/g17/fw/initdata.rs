@@ -219,6 +219,21 @@ impl SecondaryRoot {
             config_va,
         }
     }
+
+    /// Returns the root of a single instance that carries both roles (M4 Pro): the primary
+    /// root, with status B, extended by the power-state and configuration pointers.
+    pub(crate) fn merged(
+        args: &RootArgs,
+        status_b_va: u64,
+        power_state_va: u64,
+        config_va: u64,
+    ) -> Self {
+        Self {
+            root: Root::new(Role::Primary, args, status_b_va),
+            power_state_va,
+            config_va,
+        }
+    }
 }
 
 /// Offset of the secondary root from the primary root. Both live in one
@@ -1411,7 +1426,7 @@ impl StatusBlock {
 /// Size of the firmware-control page named by the primary status B.
 pub(crate) const FWCTL_SIZE: usize = 0x4000;
 /// Offset of the firmware-control ring in its page.
-const FWCTL_RING: u64 = 0x40;
+pub(crate) const FWCTL_RING: u64 = 0x40;
 
 /// One firmware-written recovery-info entry. The host reads each word separately after the
 /// recovery handshake reaches state 3; it never copies the live table as a structure.

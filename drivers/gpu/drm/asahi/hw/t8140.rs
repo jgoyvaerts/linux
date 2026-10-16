@@ -7,6 +7,7 @@ use crate::g17::{
     Cores,
     FixedBuffer,
     Identity,
+    InitLayout,
     Start, //
 };
 use crate::hw::{GpuGen, GpuVariant};
@@ -41,6 +42,7 @@ pub(crate) const CONFIG: Config = Config {
             },
         ],
     },
+    init: InitLayout::G17P,
     cores: Cores::Registers,
     uat_quirks: UatQuirks::DEFAULT,
     adopt_root_entries: true,

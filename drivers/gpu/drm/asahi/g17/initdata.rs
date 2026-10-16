@@ -16,6 +16,8 @@ use core::sync::atomic::{fence, AtomicU32, Ordering};
 use kernel::{c_str, prelude::*};
 use t8140::{kernel_window as high, low};
 
+mod t6040;
+
 const EVENT_RING_RECHECK: u32 = 256;
 
 const INDEX_SIZE: usize = 0x10000;
@@ -159,6 +161,11 @@ pub(super) struct InitData {
     pm_metrics_va: u64,
     /// `Config::recovery_slot_keys`.
     recovery_slot_keys: Option<u64>,
+    /// Primary status A and status B in the cluster (T8140: aurora's private layout).
+    status_a: usize,
+    status_b: usize,
+    /// Separately allocated views (T6040); `None` when they are packed into the bundle.
+    views: Option<[usize; 5]>,
     compute_shared: Option<ComputeShared>,
     compute_scheduler: Option<ComputeScheduler>,
     compute_active: core::cell::Cell<bool>,
@@ -241,6 +248,9 @@ impl InitData {
             metrics_fw_va: 0,
             pm_metrics_va: 0,
             recovery_slot_keys: None,
+            status_a: abi::private::PRIMARY_STATUS_A,
+            status_b: abi::private::STATUS_B,
+            views: None,
             compute_shared: None,
             compute_scheduler: None,
             compute_active: core::cell::Cell::new(false),
@@ -512,7 +522,7 @@ impl InitData {
             core::mem::size_of_val(record),
         )?;
         let producer = self.object(self.cluster)?.word(
-            Self::state_offset(Role::Primary)
+            self.state_offset(Role::Primary)
                 + abi::work_state_offset(channel)
                 + abi::ChannelState::PRODUCER,
         )?;
@@ -532,7 +542,7 @@ impl InitData {
     ) -> Result<[u32; 3]> {
         use super::fw::channels;
         let channel = channels::work_ring_index(priority, engine).ok_or(EINVAL)?;
-        let base = Self::state_offset(Role::Primary) + abi::work_state_offset(channel);
+        let base = self.state_offset(Role::Primary) + abi::work_state_offset(channel);
         let state = self.object(self.cluster)?;
         let mut values = [0; 3];
         for (value, offset) in values.iter_mut().zip([
@@ -611,7 +621,7 @@ impl InitData {
         };
         let channel = channels::work_ring_index(priority, engine).ok_or(EINVAL)?;
         let producer = self.object(self.cluster)?.word(
-            Self::state_offset(Role::Primary)
+            self.state_offset(Role::Primary)
                 + abi::work_state_offset(channel)
                 + abi::ChannelState::PRODUCER,
         )?;
@@ -716,8 +726,11 @@ impl InitData {
             base: range.start,
             dynamic: range.start + t8140::dynamic::KERNEL_OFFSET..range.end,
         };
+        if cfg.init == super::InitLayout::T6040 {
+            return self.build_t6040(&env, cfg, metrics);
+        }
         self.map_register_windows(&env)?;
-        let tables = self.build_descriptor_tables(&env)?;
+        let tables = self.build_descriptor_tables(&env, abi::private::SIZE)?;
         self.build_render_free_lists(&env)?;
         let first_block = self.build_render_pool(&env)?;
         self.build_compute_pools(&env, first_block)?;
@@ -737,13 +750,17 @@ impl InitData {
     }
 
     /// The private cluster, zero page and the three descriptor tables with their low aliases.
-    fn build_descriptor_tables(&mut self, env: &BuildEnv<'_>) -> Result<DescriptorTables> {
+    fn build_descriptor_tables(
+        &mut self,
+        env: &BuildEnv<'_>,
+        cluster_size: usize,
+    ) -> Result<DescriptorTables> {
         use mmu::{
             PROT_FW_PRIV_RW as FP, PROT_FW_SHARED_RW as FS, PROT_GPU_FW_SHARED_RW as GFS,
             PROT_GPU_SHARED_RW as GS,
         };
         use CpuMap::{WriteBack as WB, WriteCombined as WC};
-        self.cluster = self.add(env.fixed(high::PRIVATE_CLUSTER, abi::private::SIZE, FS, WC)?)?;
+        self.cluster = self.add(env.fixed(high::PRIVATE_CLUSTER, cluster_size, FS, WC)?)?;
         self.compute_global = self.add(env.fixed(high::ZERO_PAGE, mmu::UAT_PGSZ, FP, WC)?)?;
         let pb = self.add(env.fixed(high::PB_DESCRIPTORS, mmu::UAT_PGSZ, FS, WC)?)?;
         self.object_mut(pb)?
@@ -1056,8 +1073,8 @@ impl InitData {
             let slot = role as usize;
             let main_offset = abi::bundle::MAIN_CONFIG[slot];
             let main_va = base + high::BUNDLE + main_offset as u64;
-            let state_va = base + high::PRIVATE_CLUSTER + Self::state_offset(role) as u64;
-            let status_va = base + high::PRIVATE_CLUSTER + Self::status_offset(role) as u64;
+            let state_va = base + high::PRIVATE_CLUSTER + self.state_offset(role) as u64;
+            let status_va = base + high::PRIVATE_CLUSTER + self.status_offset(role) as u64;
             let args = abi::MainConfigArgs {
                 bundle_va: base + high::BUNDLE,
                 main_config_va: main_va,
@@ -1113,7 +1130,7 @@ impl InitData {
                 (abi::ChannelState::PRODUCER, abi::OPENING_PRODUCER),
             ] {
                 self.object(self.cluster)?
-                    .word(Self::state_offset(role) + abi::CONTROL_STATE_OFFSET + offset)?
+                    .word(self.state_offset(role) + abi::CONTROL_STATE_OFFSET + offset)?
                     .store(value, Ordering::Relaxed);
             }
         }
@@ -1207,16 +1224,16 @@ impl InitData {
         Ok(opps)
     }
 
-    fn state_offset(role: Role) -> usize {
+    fn state_offset(&self, role: Role) -> usize {
         match role {
             Role::Primary => abi::private::PRIMARY_STATE,
             Role::Secondary => abi::private::SECONDARY_STATE,
         }
     }
 
-    fn status_offset(role: Role) -> usize {
+    fn status_offset(&self, role: Role) -> usize {
         match role {
-            Role::Primary => abi::private::PRIMARY_STATUS_A,
+            Role::Primary => self.status_a,
             Role::Secondary => abi::private::SECONDARY_STATUS_A,
         }
     }
@@ -1224,7 +1241,7 @@ impl InitData {
     /// Recheck the host-authored event pointer pair after a bounded number of drains.
     /// The device mutex serializes the cache and all event consumption.
     pub(super) fn validate_event_ring(&self, role: Role) -> Result {
-        let status = self.object(self.cluster)?.gpu_va() + Self::status_offset(role) as u64;
+        let status = self.object(self.cluster)?.gpu_va() + self.status_offset(role) as u64;
         let expected = (
             status + abi::status::EVENT_STATE,
             status + abi::status::EVENT_RING,
@@ -1255,7 +1272,7 @@ impl InitData {
 
     pub(super) fn status_word(&self, role: Role, offset: usize) -> Result<&AtomicU32> {
         self.object(self.cluster)?.word(
-            Self::status_offset(role)
+            self.status_offset(role)
                 .checked_add(offset)
                 .ok_or(EINVAL)?,
         )
@@ -1267,7 +1284,7 @@ impl InitData {
         offset: usize,
     ) -> Result<[u32; N]> {
         self.object(self.cluster)?.read_words(
-            Self::status_offset(role)
+            self.status_offset(role)
                 .checked_add(offset)
                 .ok_or(EINVAL)?,
         )
@@ -1342,7 +1359,7 @@ impl InitData {
         for offset in [0, 0x10, abi::ChannelState::PRODUCER] {
             if self
                 .object(self.cluster)?
-                .word(Self::state_offset(role) + abi::CONTROL_STATE_OFFSET + offset)?
+                .word(self.state_offset(role) + abi::CONTROL_STATE_OFFSET + offset)?
                 .load(Ordering::SeqCst)
                 != abi::OPENING_PRODUCER
             {
@@ -1357,8 +1374,12 @@ impl InitData {
     /// Validate the serialized view before reading its retained host mapping.
     fn recovery_view_words<const N: usize>(&self, view: usize, offset: usize) -> Result<[u32; N]> {
         let bundle = self.object(self.bundle)?;
-        let base = *abi::bundle::VIEWS.get(view).ok_or(EINVAL)?;
         let extent = *abi::recovery::VIEW_EXTENTS.get(view).ok_or(EINVAL)?;
+        // Separately allocated views (T6040) live at offset 0 of their own object.
+        let (object, base) = match self.views {
+            Some(views) => (self.object(*views.get(view).ok_or(EINVAL)?)?, 0),
+            None => (bundle, *abi::bundle::VIEWS.get(view).ok_or(EINVAL)?),
+        };
         let end = offset.checked_add(N.checked_mul(size_of::<u32>()).ok_or(EOVERFLOW)?)
             .ok_or(EOVERFLOW)?;
         if end > extent {
@@ -1369,17 +1390,17 @@ impl InitData {
         fence(Ordering::Acquire);
         let pointer = bundle.read_words::<2>(pointer_at)?;
         let actual = u64::from(pointer[0]) | u64::from(pointer[1]) << 32;
-        if actual != bundle.gpu_va().checked_add(base as u64).ok_or(EOVERFLOW)? {
+        if actual != object.gpu_va().checked_add(base as u64).ok_or(EOVERFLOW)? {
             return Err(EINVAL);
         }
-        bundle.read_words(base + offset)
+        object.read_words(base + offset)
     }
 }
 
 impl super::recovery::Memory for InitData {
     fn fault_sources(&self) -> Result<super::recovery::Sources> {
         let mask = self.object(self.cluster)?
-            .dword(abi::private::STATUS_B + abi::PrimaryStatusB::RECOVERY_SLOT_MASK)?
+            .dword(self.status_b + abi::PrimaryStatusB::RECOVERY_SLOT_MASK)?
             .load(Ordering::Relaxed);
         let mut sources = super::recovery::Sources::sample(mask as u32, |slot| {
             let key = super::recovery::slot_key(slot, self.recovery_slot_keys)?;
@@ -1397,21 +1418,21 @@ impl super::recovery::Memory for InitData {
         fence(Ordering::Acquire);
         Ok(self
             .object(self.cluster)?
-            .word(abi::private::STATUS_B + abi::PrimaryStatusB::RECOVERY_STATE)?
+            .word(self.status_b + abi::PrimaryStatusB::RECOVERY_STATE)?
             .load(Ordering::Relaxed))
     }
 
     fn host_recovery(&self) -> Result<u32> {
         Ok(self
             .object(self.cluster)?
-            .word(abi::private::STATUS_B + abi::PrimaryStatusB::HOST_RECOVERY)?
+            .word(self.status_b + abi::PrimaryStatusB::HOST_RECOVERY)?
             .load(Ordering::Relaxed))
     }
 
     fn transition(&self, expected: u32, next: u32) -> Result {
         let state = self
             .object(self.cluster)?
-            .word(abi::private::STATUS_B + abi::PrimaryStatusB::RECOVERY_STATE)?;
+            .word(self.status_b + abi::PrimaryStatusB::RECOVERY_STATE)?;
         fence(Ordering::Acquire);
         if state.load(Ordering::Relaxed) != expected {
             return Err(EBUSY);
