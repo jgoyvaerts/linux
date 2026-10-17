@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: GPL-2.0+ OR MIT
+/*
+ * T6040 memory performance: the PMC voter interface with the CLPC agent, and the system level cache planes.
+ *
+ * Layout from this Mac's ADT and the macOS 25G83 kernelcache (AppleT6041PMC, AppleT6041CLPC, AppleT6041MCC), read on
+ * macOS; it is the layout of aurora-silicon's T8140 nodes.
+ *   PMC: floor word of agent a at 0x5_04800000 + 0x4000 * a ("voters"); honoured words at +0xaa000 and rail enable
+ *   words at +0xac000 ("rails"). Both lie inside dcp_pmgr's dcp-fw-pmgr range, which the DCP driver only hands to its
+ *   firmware (no ioremap, no request), so the node is named after its rails range to keep its unit address distinct.
+ *   Static voters: CLPC (1) and AP (3). The PMP's agent (0) stays off while the PMP does not run: its floor word
+ *   holds 0x15 from iBoot (DCS 5, fabric 1), which would pin the DCS at its top state. GFX (2) is dynamic and not
+ *   described yet.
+ *   MCC: 4 AMCC at 0x2_20000000 + 0x2000000 * i, 4 planes each at + 0x40000 * p (ADT amcc-count 4, no plane mask, so
+ *   macOS's default 0xf). Allocation waits for the display, which takes over the scan-out DMA iBoot left running.
+ * nonposted-mmio on each block: the root has none (as in t6040-cpufreq.dtsi).
+ * At boot the PMC driver only enables the CLPC and AP agents, whose floors iBoot leaves at 0, so the DCS and the
+ * fabric stay at their lowest states until clpc votes.
+ */
+
+/ {
+	pmc: power-management@5048aa000 {
+		compatible = "apple,t6040-pmc";
+		reg = <0x5 0x048aa000 0 0x3000>,
+		      <0x5 0x04800000 0 0x10000>;
+		reg-names = "rails", "voters";
+		nonposted-mmio;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		apple,static-voters = <1 3>;
+
+		clpc: performance-controller@1 {
+			compatible = "apple,t6040-clpc";
+			reg = <1>;
+		};
+	};
+
+	mcc: memory-controller@220000000 {
+		compatible = "apple,t6040-mcc", "apple,t8140-mcc";
+		reg = <0x2 0x20000000 0 0x4000>, <0x2 0x20040000 0 0x4000>,
+		      <0x2 0x20080000 0 0x4000>, <0x2 0x200c0000 0 0x4000>,
+		      <0x2 0x22000000 0 0x4000>, <0x2 0x22040000 0 0x4000>,
+		      <0x2 0x22080000 0 0x4000>, <0x2 0x220c0000 0 0x4000>,
+		      <0x2 0x24000000 0 0x4000>, <0x2 0x24040000 0 0x4000>,
+		      <0x2 0x24080000 0 0x4000>, <0x2 0x240c0000 0 0x4000>,
+		      <0x2 0x26000000 0 0x4000>, <0x2 0x26040000 0 0x4000>,
+		      <0x2 0x26080000 0 0x4000>, <0x2 0x260c0000 0 0x4000>;
+		nonposted-mmio;
+		apple,boot-dma-devices = <&display>;
+	};
+};
