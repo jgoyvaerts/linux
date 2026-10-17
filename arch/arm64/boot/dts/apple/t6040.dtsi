@@ -617,6 +617,45 @@
 		status = "okay";
 	};
 
+	/*
+	 * The speaker-amp buses: i2c1 carries the left amps, i2c3 the right ones (t6040-j616s.dts). iBoot leaves both
+	 * gates on and the pins muxed to I2C; the 24 MHz reference is the controllers' input clock (100 kHz = divider 15).
+	 */
+	clk_i2c_ref: clock-i2c-ref {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <24000000>;
+		clock-output-names = "i2c_ref";
+	};
+
+	i2c1: i2c@429014000 {
+		compatible = "apple,t6040-i2c", "apple,t8103-i2c";
+		reg = <4 0x29014000 0 0x4000>;
+		clocks = <&clk_i2c_ref>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x628 4>;
+		pinctrl-0 = <&i2c1_pins>;
+		pinctrl-names = "default";
+		power-domains = <&ps_i2c1>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		status = "disabled";
+	};
+
+	i2c3: i2c@42901c000 {
+		compatible = "apple,t6040-i2c", "apple,t8103-i2c";
+		reg = <4 0x2901c000 0 0x4000>;
+		clocks = <&clk_i2c_ref>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x62a 4>;
+		pinctrl-0 = <&i2c3_pins>;
+		pinctrl-names = "default";
+		power-domains = <&ps_i2c3>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		status = "disabled";
+	};
+
 	cpus {
 		#size-cells = <0>;
 		#address-cells = <2>;
@@ -1004,6 +1043,15 @@
 		wifi_clkreq: wifi-clkreq {
 			pinmux = <0x10000>;
 		};
+
+		/* (function << 16) | pin: I2C is function 1 (ADT gpio-iic_scl/sda) */
+		i2c1_pins: i2c1-pins {
+			pinmux = <0x1003a>, <0x1003b>;
+		};
+
+		i2c3_pins: i2c3-pins {
+			pinmux = <0x1003e>, <0x1003f>;
+		};
 	};
 
 	pcie0: pcie@1cb0000000 {
@@ -1080,6 +1128,25 @@
 			#reset-cells = <0>;
 			power-domains = <&ps_ssd_fab3>;
 			apple,always-on;
+		};
+
+		/* ADT pmgr devices I2C1 (0xad) and I2C3 (0xaf), both children of SIO (0xa6) */
+		ps_i2c1: power-controller@158 {
+			compatible = "apple,t6041-pmgr-pwrstate", "apple,t8103-pmgr-pwrstate";
+			reg = <0x158 4>;
+			label = "i2c1";
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			power-domains = <&ps_kbd_sio>;
+		};
+
+		ps_i2c3: power-controller@168 {
+			compatible = "apple,t6041-pmgr-pwrstate", "apple,t8103-pmgr-pwrstate";
+			reg = <0x168 4>;
+			label = "i2c3";
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			power-domains = <&ps_kbd_sio>;
 		};
 
 		ps_ssd_apcie_st0: power-controller@108 {
