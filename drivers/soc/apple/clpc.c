@@ -436,8 +436,26 @@ static const struct apple_clpc_hw apple_clpc_hw_t8140 = {
 	},
 };
 
+/*
+ * T6040: DCS states 0-5 on rail 0, fabric states 0-2 on rail 1. No cluster
+ * runs below a quarter of its maximum (P 1260 of 4512 MHz, E 1020 of
+ * 2592 MHz), so the first column only completes the table. A busy cluster
+ * in the upper half asks for the top states. With the floor held at DCS 5
+ * and fabric 2 the CPUs read 237-242 GB/s at 135 ns DRAM latency, against
+ * 41 GB/s and 314 ns at 0 and 0. The second column is provisional until the
+ * power of each DCS state is measured.
+ */
+static const struct apple_clpc_hw apple_clpc_hw_t6040 = {
+	.rail = { [APPLE_CLPC_DCS] = 0, [APPLE_CLPC_SOC] = 1 },
+	.map = {
+		[APPLE_CLPC_DCS] = { 1, 2, 5, 5 },
+		[APPLE_CLPC_SOC] = { 0, 1, 2, 2 },
+	},
+};
+
 static const struct of_device_id apple_clpc_of_match[] = {
 	{ .compatible = "apple,t8140-clpc", .data = &apple_clpc_hw_t8140 },
+	{ .compatible = "apple,t6041-clpc", .data = &apple_clpc_hw_t6040 },
 	{}
 };
 MODULE_DEVICE_TABLE(of, apple_clpc_of_match);
