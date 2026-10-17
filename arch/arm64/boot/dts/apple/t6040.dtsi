@@ -7,6 +7,10 @@
 	#address-cells = <2>;
 	#size-cells = <2>;
 
+	/*
+	 * The right-hand USB-C port (ATC2): the PD controller on its own SPMI bus, the ATC2 power states, both DARTs,
+	 * the USB2 PHY and the dwc3 (USB2 host with hotplug). The two left ports below are the same stack.
+	 */
 	spmi_atc2: spmi@509198000 {
 		compatible = "apple,t6040-spmi", "apple,spmi";
 		reg = <5 0x9198000 0 0x100>;
@@ -17,20 +21,34 @@
 		interrupt-parent = <&aic>;
 		interrupts = <0 0x364 4>;
 		power-domains = <&ps_nub_spmi_a1>;
-		status = "disabled";
 
 		usb-pd@c {
 			compatible = "apple,sn201202x";
 			reg = <0xc 0>;
 			interrupts = <0xb 1 0xd 1 0x11 1 0x13 1>;
 			interrupt-names = "irq", "select", "sleep", "wake";
-			status = "disabled";
 
 			connector {
 				compatible = "usb-c-connector";
 				label = "USB-C Right";
 				power-role = "dual";
 				data-role = "dual";
+
+				/*
+				 * The HS endpoint names the dwc3 role switch: tipd looks it up at probe and defers
+				 * until dwc3-apple has registered it.
+				 */
+				ports {
+					#address-cells = <1>;
+					#size-cells = <0>;
+
+					port@0 {
+						reg = <0>;
+						typec2_connector_hs: endpoint {
+							remote-endpoint = <&dwc3_2_hs>;
+						};
+					};
+				};
 			};
 		};
 	};
@@ -41,13 +59,30 @@
 		reg-names = "dwc3-core", "dwc3-apple";
 		interrupt-parent = <&aic>;
 		interrupts = <0 0x693 4>;
-		dr_mode = "host";
+		/*
+		 * Role switch, not a fixed host: the PD controller resets the eUSB2 repeater on every CC connect, so the
+		 * USB2 PHY and the core must start after the attach and stop on detach. The PHY has no device mode.
+		 */
+		dr_mode = "otg";
+		usb-role-switch;
+		role-switch-default-mode = "host";
 		iommus = <&atc2_dart0 0 &atc2_dart1 1>;
 		power-domains = <&ps_atc2_usb>;
 		resets = <&atcphy2>;
 		phys = <&atcphy2 3>;
 		phy-names = "usb2-phy";
-		status = "disabled";
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+				dwc3_2_hs: endpoint {
+					remote-endpoint = <&typec2_connector_hs>;
+				};
+			};
+		};
 	};
 
 	atcphy2: phy@392a90000 {
@@ -57,7 +92,6 @@
 		#phy-cells = <1>;
 		#reset-cells = <0>;
 		power-domains = <&ps_atc2_common_dp>;
-		status = "disabled";
 	};
 
 	atc2_dart1: iommu@392f80000 {
@@ -67,7 +101,6 @@
 		interrupts = <0 0x697 4>;
 		power-domains = <&ps_atc2_usb>;
 		#iommu-cells = <1>;
-		status = "disabled";
 	};
 
 	atc2_dart0: iommu@392f00000 {
@@ -77,7 +110,190 @@
 		interrupts = <0 0x697 4>;
 		power-domains = <&ps_atc2_usb>;
 		#iommu-cells = <1>;
-		status = "disabled";
+	};
+
+	/*
+	 * The two left USB-C ports: left-front ATC1 (PD controller hpm1, SID 0xa) and left-back ATC0 (hpm0, SID 0xc),
+	 * both PD controllers on nub-spmi-a0. Every ATCn address is ATC2's minus (2 - n) * 0x8000000 and every IRQ
+	 * ATC2's minus (2 - n) * 0x20. The ADT lists only irq/sleep/wake; select is irq + 2, as on hpm2.
+	 * nub-spmi-a0 also carries hpm5 (MagSafe, SID 8), which is not described.
+	 */
+	nub_spmi_a0: spmi@509188000 {
+		compatible = "apple,t6040-spmi", "apple,spmi";
+		reg = <5 0x9188000 0 0x100>;
+		#address-cells = <2>;
+		#size-cells = <0>;
+		interrupt-controller;
+		#interrupt-cells = <2>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x362 4>;
+		power-domains = <&ps_nub_spmi_a0>;
+
+		usb-pd@a {
+			compatible = "apple,sn201202x";
+			reg = <0xa 0>;
+			interrupts = <0x25 1 0x27 1 0x2b 1 0x2d 1>;
+			interrupt-names = "irq", "select", "sleep", "wake";
+
+			connector {
+				compatible = "usb-c-connector";
+				label = "USB-C Left Front";
+				power-role = "dual";
+				data-role = "dual";
+
+				ports {
+					#address-cells = <1>;
+					#size-cells = <0>;
+
+					port@0 {
+						reg = <0>;
+						typec1_connector_hs: endpoint {
+							remote-endpoint = <&dwc3_1_hs>;
+						};
+					};
+				};
+			};
+		};
+
+		/*
+		 * hpm0, the left-back port's PD controller. DFU belongs to the boot ROM,
+		 * before any OS runs, and macOS uses this port as a plain USB port too.
+		 */
+		usb-pd@c {
+			compatible = "apple,sn201202x";
+			reg = <0xc 0>;
+			interrupts = <0xb 1 0xd 1 0x11 1 0x13 1>;
+			interrupt-names = "irq", "select", "sleep", "wake";
+
+			connector {
+				compatible = "usb-c-connector";
+				label = "USB-C Left Back";
+				power-role = "dual";
+				data-role = "dual";
+
+				ports {
+					#address-cells = <1>;
+					#size-cells = <0>;
+
+					port@0 {
+						reg = <0>;
+						typec0_connector_hs: endpoint {
+							remote-endpoint = <&dwc3_0_hs>;
+						};
+					};
+				};
+			};
+		};
+	};
+
+	usb@38a280000 {
+		compatible = "apple,t6040-dwc3", "apple,t8103-dwc3";
+		reg = <3 0x8a280000 0 0xcd00 3 0x8a28cd00 0 0x3200>;
+		reg-names = "dwc3-core", "dwc3-apple";
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x673 4>;
+		dr_mode = "otg";
+		usb-role-switch;
+		role-switch-default-mode = "host";
+		iommus = <&atc1_dart0 0 &atc1_dart1 1>;
+		power-domains = <&ps_atc1_usb>;
+		resets = <&atcphy1>;
+		phys = <&atcphy1 3>;
+		phy-names = "usb2-phy";
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+				dwc3_1_hs: endpoint {
+					remote-endpoint = <&typec1_connector_hs>;
+				};
+			};
+		};
+	};
+
+	atcphy1: phy@38aa90000 {
+		compatible = "apple,t6040-atcphy";
+		reg = <3 0x8aa90000 0 0x4000 3 0x8a800000 0 0x4000 3 0x8aa84000 0 0x4000>;
+		reg-names = "bank0", "bank1", "pipehandler";
+		#phy-cells = <1>;
+		#reset-cells = <0>;
+		power-domains = <&ps_atc1_common_dp>;
+	};
+
+	atc1_dart1: iommu@38af80000 {
+		compatible = "apple,t6040-dart", "apple,t8110-dart";
+		reg = <3 0x8af80000 0 0x4000>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x677 4>;
+		power-domains = <&ps_atc1_usb>;
+		#iommu-cells = <1>;
+	};
+
+	atc1_dart0: iommu@38af00000 {
+		compatible = "apple,t6040-dart", "apple,t8110-dart";
+		reg = <3 0x8af00000 0 0x4000>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x677 4>;
+		power-domains = <&ps_atc1_usb>;
+		#iommu-cells = <1>;
+	};
+
+	usb@382280000 {
+		compatible = "apple,t6040-dwc3", "apple,t8103-dwc3";
+		reg = <3 0x82280000 0 0xcd00 3 0x8228cd00 0 0x3200>;
+		reg-names = "dwc3-core", "dwc3-apple";
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x653 4>;
+		dr_mode = "otg";
+		usb-role-switch;
+		role-switch-default-mode = "host";
+		iommus = <&atc0_dart0 0 &atc0_dart1 1>;
+		power-domains = <&ps_atc0_usb>;
+		resets = <&atcphy0>;
+		phys = <&atcphy0 3>;
+		phy-names = "usb2-phy";
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+				dwc3_0_hs: endpoint {
+					remote-endpoint = <&typec0_connector_hs>;
+				};
+			};
+		};
+	};
+
+	atcphy0: phy@382a90000 {
+		compatible = "apple,t6040-atcphy";
+		reg = <3 0x82a90000 0 0x4000 3 0x82800000 0 0x4000 3 0x82a84000 0 0x4000>;
+		reg-names = "bank0", "bank1", "pipehandler";
+		#phy-cells = <1>;
+		#reset-cells = <0>;
+		power-domains = <&ps_atc0_common_dp>;
+	};
+
+	atc0_dart1: iommu@382f80000 {
+		compatible = "apple,t6040-dart", "apple,t8110-dart";
+		reg = <3 0x82f80000 0 0x4000>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x657 4>;
+		power-domains = <&ps_atc0_usb>;
+		#iommu-cells = <1>;
+	};
+
+	atc0_dart0: iommu@382f00000 {
+		compatible = "apple,t6040-dart", "apple,t8110-dart";
+		reg = <3 0x82f00000 0 0x4000>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x657 4>;
+		power-domains = <&ps_atc0_usb>;
+		#iommu-cells = <1>;
 	};
 
 	power-management@508300000 {
@@ -85,7 +301,6 @@
 		reg = <5 0x8300000 0 0x4000>;
 		#address-cells = <1>;
 		#size-cells = <1>;
-		status = "disabled";
 
 		ps_atc2_common_dp: power-controller@b0 {
 			compatible = "apple,t8103-pmgr-pwrstate";
@@ -94,7 +309,6 @@
 			#power-domain-cells = <0>;
 			#reset-cells = <0>;
 			power-domains = <&ps_atc2_phymxwrap>;
-			status = "disabled";
 		};
 
 		ps_atc2_phymxwrap: power-controller@160 {
@@ -104,7 +318,6 @@
 			#power-domain-cells = <0>;
 			#reset-cells = <0>;
 			power-domains = <&ps_atc2_common &ps_atc2_usb_aon>;
-			status = "disabled";
 		};
 
 		ps_atc2_usb: power-controller@140 {
@@ -114,7 +327,6 @@
 			#power-domain-cells = <0>;
 			#reset-cells = <0>;
 			power-domains = <&ps_atc2_common &ps_atc2_usb_aon>;
-			status = "disabled";
 		};
 
 		ps_atc2_usb_aon: power-controller@d8 {
@@ -124,7 +336,6 @@
 			#power-domain-cells = <0>;
 			#reset-cells = <0>;
 			apple,always-on;
-			status = "disabled";
 		};
 
 		ps_nub_spmi_a1: power-controller@70 {
@@ -134,7 +345,89 @@
 			#power-domain-cells = <0>;
 			#reset-cells = <0>;
 			apple,always-on;
-			status = "disabled";
+		};
+
+		/* The left-front port: the ATC2 shapes at the ATC1 offsets (ADT PS window 3). */
+		ps_atc1_common_dp: power-controller@a8 {
+			compatible = "apple,t8103-pmgr-pwrstate";
+			reg = <0xa8 4>;
+			label = "atc1_common_dp";
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			power-domains = <&ps_atc1_phymxwrap>;
+		};
+
+		ps_atc1_phymxwrap: power-controller@158 {
+			compatible = "apple,t8103-pmgr-pwrstate";
+			reg = <0x158 4>;
+			label = "atc1_phymxwrap";
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			power-domains = <&ps_atc1_common &ps_atc1_usb_aon>;
+		};
+
+		ps_atc1_usb: power-controller@120 {
+			compatible = "apple,t8103-pmgr-pwrstate";
+			reg = <0x120 4>;
+			label = "atc1_usb";
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			power-domains = <&ps_atc1_common &ps_atc1_usb_aon>;
+		};
+
+		ps_atc1_usb_aon: power-controller@d0 {
+			compatible = "apple,t8103-pmgr-pwrstate";
+			reg = <0xd0 4>;
+			label = "atc1_usb_aon";
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			apple,always-on;
+		};
+
+		ps_nub_spmi_a0: power-controller@68 {
+			compatible = "apple,t8103-pmgr-pwrstate";
+			reg = <0x68 4>;
+			label = "nub_spmi_a0";
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			apple,always-on;
+		};
+
+		/* The left-back port: the ATC2 shapes at the ATC0 offsets (ADT PS window 3). */
+		ps_atc0_common_dp: power-controller@a0 {
+			compatible = "apple,t8103-pmgr-pwrstate";
+			reg = <0xa0 4>;
+			label = "atc0_common_dp";
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			power-domains = <&ps_atc0_phymxwrap>;
+		};
+
+		ps_atc0_phymxwrap: power-controller@150 {
+			compatible = "apple,t8103-pmgr-pwrstate";
+			reg = <0x150 4>;
+			label = "atc0_phymxwrap";
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			power-domains = <&ps_atc0_common &ps_atc0_usb_aon>;
+		};
+
+		ps_atc0_usb: power-controller@118 {
+			compatible = "apple,t8103-pmgr-pwrstate";
+			reg = <0x118 4>;
+			label = "atc0_usb";
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			power-domains = <&ps_atc0_common &ps_atc0_usb_aon>;
+		};
+
+		ps_atc0_usb_aon: power-controller@c8 {
+			compatible = "apple,t8103-pmgr-pwrstate";
+			reg = <0xc8 4>;
+			label = "atc0_usb_aon";
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			apple,always-on;
 		};
 	};
 
@@ -854,13 +1147,41 @@
 		#size-cells = <1>;
 		#address-cells = <1>;
 
+		/*
+		 * Always-on: the firmware leaves atc2_usb on while its parent atc2_common is power-gated, and genpd
+		 * refuses an active child under an off parent (-EINVAL). Its fabric parents are on at boot.
+		 */
 		ps_atc2_common: power-controller@3e0 {
 			compatible = "apple,t8103-pmgr-pwrstate";
 			reg = <0x3e0 4>;
 			label = "atc2_common";
 			#power-domain-cells = <0>;
 			#reset-cells = <0>;
-			status = "disabled";
+			apple,always-on;
+		};
+
+		/*
+		 * The left-front port's ATC1_COMMON (ADT 0x6b, PS 0x5_028003b8): always-on for the
+		 * same reason as atc2_common above. Whether the firmware also leaves ATC1_USB on
+		 * under it is unknown, and an inconsistent pair stops genpd with -EINVAL.
+		 */
+		ps_atc1_common: power-controller@3b8 {
+			compatible = "apple,t8103-pmgr-pwrstate";
+			reg = <0x3b8 4>;
+			label = "atc1_common";
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			apple,always-on;
+		};
+
+		/* The left-back port's ATC0_COMMON (ADT 0x66, PS 0x5_02800390): as atc1_common. */
+		ps_atc0_common: power-controller@390 {
+			compatible = "apple,t8103-pmgr-pwrstate";
+			reg = <0x390 4>;
+			label = "atc0_common";
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			apple,always-on;
 		};
 
 		ps_avd_sys: power-controller@170 {
