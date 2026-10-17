@@ -62,6 +62,7 @@
  * @dcs_max: highest DCS performance state
  * @ap_agent: voter agent of the application processor, which a DCS limit
  *	votes through
+ * @agent_rails: rails on which an agent is enabled
  */
 struct apple_pmc_hw {
 	u32 agent_stride;
@@ -72,6 +73,7 @@ struct apple_pmc_hw {
 	u32 dcs_rail;
 	u32 dcs_max;
 	u32 ap_agent;
+	u32 agent_rails;
 };
 
 struct apple_pmc {
@@ -169,10 +171,10 @@ static void apple_pmc_enable_restore(struct apple_pmc *pmc, const u32 *prev,
 }
 
 /*
- * Enable or disable @agent on every rail. If a rail does not take the
- * change, undo it on the rails changed so far: genpd keeps a domain whose
- * power_on() fails off, and never calls its power_off(), so an agent left
- * enabled on some rails would stay enabled for good.
+ * Enable or disable @agent on the rails in hw->agent_rails. If a rail does
+ * not take the change, undo it on the rails changed so far: genpd keeps a
+ * domain whose power_on() fails off, and never calls its power_off(), so an
+ * agent left enabled on some rails would stay enabled for good.
  */
 static int apple_pmc_agent_enable(struct apple_pmc *pmc, unsigned int agent,
 				  bool enable)
@@ -185,6 +187,8 @@ static int apple_pmc_agent_enable(struct apple_pmc *pmc, unsigned int agent,
 	raw_spin_lock_irqsave(&pmc->lock, flags);
 	memcpy(prev, pmc->enable, sizeof(prev));
 	for (rail = 0; rail < pmc->hw->rails; rail++) {
+		if (!(pmc->hw->agent_rails & BIT(rail)))
+			continue;
 		ret = apple_pmc_enable_update(pmc, rail,
 					      enable ? BIT(agent) : 0,
 					      enable ? 0 : BIT(agent));
@@ -804,10 +808,31 @@ static const struct apple_pmc_hw apple_pmc_hw_t8140 = {
 	.dcs_rail = 0,
 	.dcs_max = 4,
 	.ap_agent = 3,
+	.agent_rails = GENMASK(3, 0),
+};
+
+/*
+ * T6040 (M4 Pro): the T8140 layout, with DCS states 0-5 and fabric states
+ * 0-2. The ADT's voter-agent rail mask is 0x7 (DCS, SOC and DISP_INT).
+ * Agents are enabled on DCS and SOC only: iBoot leaves both at their
+ * lowest state, so an agent with a zero floor changes nothing there. How
+ * DISP_INT arbitrates zero floors is not known.
+ */
+static const struct apple_pmc_hw apple_pmc_hw_t6040 = {
+	.agent_stride = 0x4000,
+	.agents = 4,
+	.rails = 4,
+	.agent_state = 0x0,
+	.rail_enable = 0x2000,
+	.dcs_rail = 0,
+	.dcs_max = 5,
+	.ap_agent = 3,
+	.agent_rails = GENMASK(1, 0),
 };
 
 static const struct of_device_id apple_pmc_of_match[] = {
 	{ .compatible = "apple,t8140-pmc", .data = &apple_pmc_hw_t8140 },
+	{ .compatible = "apple,t6040-pmc", .data = &apple_pmc_hw_t6040 },
 	{}
 };
 MODULE_DEVICE_TABLE(of, apple_pmc_of_match);
