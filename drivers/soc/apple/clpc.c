@@ -52,16 +52,19 @@ enum apple_clpc_rail {
  * @rail: PMC rail of the DCS and of the fabric
  * @map: state of each rail for a busy cluster below 25, 50, 75 and 100
  *	percent of its maximum frequency
+ * @sustain: consecutive busy samples before a cluster requests a state
  */
 struct apple_clpc_hw {
 	unsigned int rail[APPLE_CLPC_RAILS];
 	u8 map[APPLE_CLPC_RAILS][APPLE_CLPC_LEVELS];
+	unsigned int sustain;
 };
 
 struct apple_clpc_cluster {
 	unsigned int policy_cpu;
 	cpumask_var_t cpus;
 	unsigned int busy;
+	unsigned int streak;
 	unsigned int level;
 	unsigned int request[APPLE_CLPC_RAILS];
 };
@@ -167,8 +170,9 @@ static void apple_clpc_sample_cluster(struct apple_clpc *clpc,
 
 	q = min_t(unsigned int, cl->level / (100 / APPLE_CLPC_LEVELS),
 		  APPLE_CLPC_LEVELS - 1);
+	cl->streak = busy >= APPLE_CLPC_BUSY_PCT ? cl->streak + 1 : 0;
 	for (rail = 0; rail < APPLE_CLPC_RAILS; rail++)
-		cl->request[rail] = busy >= APPLE_CLPC_BUSY_PCT ?
+		cl->request[rail] = cl->streak >= clpc->hw->sustain ?
 				   clpc->hw->map[rail][q] : 0;
 }
 
@@ -434,6 +438,7 @@ static const struct apple_clpc_hw apple_clpc_hw_t8140 = {
 		[APPLE_CLPC_DCS] = { 1, 2, 3, 4 },
 		[APPLE_CLPC_SOC] = { 0, 0, 0, 0 },
 	},
+	.sustain = 1,
 };
 
 /*
@@ -444,6 +449,10 @@ static const struct apple_clpc_hw apple_clpc_hw_t8140 = {
  * and fabric 2 the CPUs read 237-242 GB/s at 135 ns DRAM latency, against
  * 41 GB/s and 314 ns at 0 and 0. The second column is provisional until the
  * power of each DCS state is measured.
+ *
+ * A cluster requests only after three busy samples in a row (12 ms). At idle
+ * a single busy sample raised the floor about 60 % of the time, from short
+ * bursts of background work; three in a row bring that to about 11 %.
  */
 static const struct apple_clpc_hw apple_clpc_hw_t6040 = {
 	.rail = { [APPLE_CLPC_DCS] = 0, [APPLE_CLPC_SOC] = 1 },
@@ -451,6 +460,7 @@ static const struct apple_clpc_hw apple_clpc_hw_t6040 = {
 		[APPLE_CLPC_DCS] = { 1, 2, 5, 5 },
 		[APPLE_CLPC_SOC] = { 0, 1, 2, 2 },
 	},
+	.sustain = 3,
 };
 
 static const struct of_device_id apple_clpc_of_match[] = {
