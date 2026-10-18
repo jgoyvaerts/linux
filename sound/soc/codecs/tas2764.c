@@ -11,6 +11,9 @@
 #include <linux/hwmon.h>
 #include <linux/pm.h>
 #include <linux/i2c.h>
+#include <linux/list.h>
+#include <linux/mutex.h>
+#include <linux/refcount.h>
 #include <linux/gpio/consumer.h>
 #include <linux/regulator/consumer.h>
 #include <linux/regmap.h>
@@ -30,6 +33,22 @@ enum tas2764_devid {
 	DEVID_SN012776 = 1
 };
 
+/*
+ * Amps that share one SDZ supply and carry "apple,sdz-group-fail-closed" form a group. An over-temperature or
+ * over-current fault on any of them forces the supply off, which puts every amp of the group in hardware
+ * shutdown, and no amp of the group enables the supply again until the driver is reloaded. The supply's own
+ * enable count cannot do this: one amp's disable leaves a shared line up for the others.
+ */
+struct tas2764_sdz_group {
+	struct list_head node;
+	struct device_node *supply;	/* the SDZ-supply node: the group's key */
+	refcount_t users;
+	bool failed;
+};
+
+static LIST_HEAD(tas2764_sdz_groups);
+static DEFINE_MUTEX(tas2764_sdz_groups_lock);
+
 struct tas2764_priv {
 	struct snd_soc_component *component;
 	struct gpio_desc *reset_gpio;
@@ -45,6 +64,7 @@ struct tas2764_priv {
 
 	bool dac_powered;
 	bool unmuted;
+	struct tas2764_sdz_group *sdz_group;
 
 	struct {
 		int tx_mode;
@@ -53,6 +73,93 @@ struct tas2764_priv {
 };
 
 #include "tas2764-quirks.h"
+
+/* LTCH0 faults that shut the whole SDZ group down: over temperature, over current */
+#define TAS2764_INT_LTCH0_GROUP_FAULTS	(BIT(0) | BIT(1))
+
+static bool tas2764_group_failed(struct tas2764_priv *tas2764)
+{
+	return tas2764->sdz_group && READ_ONCE(tas2764->sdz_group->failed);
+}
+
+/* Force the shared SDZ supply off for the whole group; idempotent. */
+static void tas2764_group_shutdown(struct tas2764_priv *tas2764, unsigned int cause)
+{
+	struct tas2764_sdz_group *group = tas2764->sdz_group;
+	int ret;
+
+	/* Under the lock that tas2764_sdz_enable() takes: no amp can enable the supply in between */
+	mutex_lock(&tas2764_sdz_groups_lock);
+	WRITE_ONCE(group->failed, true);
+	ret = regulator_force_disable(tas2764->sdz_reg);
+	mutex_unlock(&tas2764_sdz_groups_lock);
+	dev_crit(tas2764->dev, "SDZ group shut down (cause %#x): %s\n", cause,
+		 ret ? "forcing the supply off FAILED" : "every amp of the group is in hardware shutdown");
+}
+
+/* Enable the SDZ supply unless the amp's group failed; the check and the enable are one step. */
+static int tas2764_sdz_enable(struct tas2764_priv *tas2764)
+{
+	int ret;
+
+	if (!tas2764->sdz_group)
+		return regulator_enable(tas2764->sdz_reg);
+
+	mutex_lock(&tas2764_sdz_groups_lock);
+	ret = READ_ONCE(tas2764->sdz_group->failed) ? -EIO : regulator_enable(tas2764->sdz_reg);
+	mutex_unlock(&tas2764_sdz_groups_lock);
+	return ret;
+}
+
+static void tas2764_group_leave(void *data)
+{
+	struct tas2764_sdz_group *group = data;
+
+	mutex_lock(&tas2764_sdz_groups_lock);
+	if (refcount_dec_and_test(&group->users)) {
+		list_del(&group->node);
+		of_node_put(group->supply);
+		kfree(group);
+	}
+	mutex_unlock(&tas2764_sdz_groups_lock);
+}
+
+static int tas2764_group_join(struct device *dev, struct tas2764_priv *tas2764)
+{
+	struct tas2764_sdz_group *group;
+	struct device_node *supply;
+
+	if (!of_property_read_bool(dev->of_node, "apple,sdz-group-fail-closed"))
+		return 0;
+	/* A group needs the shared supply to act on: a shutdown GPIO of the amp's own would bypass it */
+	if (tas2764->sdz_gpio)
+		return dev_err_probe(dev, -EINVAL, "SDZ group with a shutdown GPIO of its own\n");
+	supply = of_parse_phandle(dev->of_node, "SDZ-supply", 0);
+	if (!supply)
+		return dev_err_probe(dev, -EINVAL, "SDZ group without an SDZ supply\n");
+
+	mutex_lock(&tas2764_sdz_groups_lock);
+	list_for_each_entry(group, &tas2764_sdz_groups, node) {
+		if (group->supply == supply) {
+			refcount_inc(&group->users);
+			of_node_put(supply);
+			goto found;
+		}
+	}
+	group = kzalloc(sizeof(*group), GFP_KERNEL);
+	if (!group) {
+		mutex_unlock(&tas2764_sdz_groups_lock);
+		of_node_put(supply);
+		return -ENOMEM;
+	}
+	group->supply = supply;
+	refcount_set(&group->users, 1);
+	list_add(&group->node, &tas2764_sdz_groups);
+found:
+	mutex_unlock(&tas2764_sdz_groups_lock);
+	tas2764->sdz_group = group;
+	return devm_add_action_or_reset(dev, tas2764_group_leave, group);
+}
 
 static const char *tas2764_int_ltch0_msgs[8] = {
 	"fault: over temperature", /* INT_LTCH0 & BIT(0) */
@@ -99,6 +206,9 @@ static irqreturn_t tas2764_irq(int irq, void *data)
 		}
 	}
 
+	if ((latched[0] & TAS2764_INT_LTCH0_GROUP_FAULTS) && tas2764->sdz_group)
+		tas2764_group_shutdown(tas2764, latched[0]);
+
 	if (latched[0]) {
 		dev_err_ratelimited(tas2764->dev, "other context to the fault: %02x,%02x,%02x,%02x,%02x",
 				    latched[1], latched[2], latched[3], latched[4], latched[5]);
@@ -130,6 +240,9 @@ static int tas2764_update_pwr_ctrl(struct tas2764_priv *tas2764)
 	struct snd_soc_component *component = tas2764->component;
 	unsigned int val;
 	int ret;
+
+	if (tas2764_group_failed(tas2764))
+		return -EIO;
 
 	if (tas2764->dac_powered)
 		val = tas2764->unmuted ?
@@ -179,7 +292,7 @@ static int tas2764_codec_resume(struct snd_soc_component *component)
 	struct tas2764_priv *tas2764 = snd_soc_component_get_drvdata(component);
 	int ret;
 
-	ret = regulator_enable(tas2764->sdz_reg);
+	ret = tas2764_sdz_enable(tas2764);
 
 	if (ret) {
 		dev_err(tas2764->dev, "Failed to enable regulator\n");
@@ -244,6 +357,16 @@ static const struct snd_soc_dapm_route tas2764_audio_map[] = {
 	{"ISENSE", "Switch", "IMON"},
 	{"VSENSE", "Switch", "VMON"},
 };
+
+/* A failed SDZ group refuses every stream until the driver is reloaded */
+static int tas2764_startup(struct snd_pcm_substream *substream, struct snd_soc_dai *dai)
+{
+	struct tas2764_priv *tas2764 = snd_soc_component_get_drvdata(dai->component);
+
+	if (tas2764_group_failed(tas2764))
+		return -EIO;
+	return 0;
+}
 
 static int tas2764_mute(struct snd_soc_dai *dai, int mute, int direction)
 {
@@ -606,6 +729,7 @@ static int tas2764_set_bclk_ratio(struct snd_soc_dai *dai, unsigned int ratio)
 }
 
 static const struct snd_soc_dai_ops tas2764_dai_ops = {
+	.startup = tas2764_startup,
 	.mute_stream = tas2764_mute,
 	.hw_params  = tas2764_hw_params,
 	.set_fmt    = tas2764_set_fmt,
@@ -776,7 +900,7 @@ static int tas2764_codec_probe(struct snd_soc_component *component)
 
 	tas2764->component = component;
 
-	ret = regulator_enable(tas2764->sdz_reg);
+	ret = tas2764_sdz_enable(tas2764);
 	if (ret != 0) {
 		dev_err(tas2764->dev, "Failed to enable regulator: %d\n", ret);
 		return ret;
@@ -815,6 +939,8 @@ static int tas2764_codec_probe(struct snd_soc_component *component)
 		ret = devm_request_threaded_irq(tas2764->dev, tas2764->irq, NULL, tas2764_irq,
 						IRQF_ONESHOT | IRQF_SHARED | IRQF_TRIGGER_LOW,
 						"tas2764", tas2764);
+		if (ret && tas2764->sdz_group)
+			return dev_err_probe(tas2764->dev, ret, "SDZ group needs its fault IRQ\n");
 		if (ret)
 			dev_warn(tas2764->dev, "failed to request IRQ: %d\n", ret);
 	}
@@ -999,7 +1125,7 @@ static int tas2764_parse_dt(struct device *dev, struct tas2764_priv *tas2764)
 	if (ret)
 		tas2764->v_sense_slot = -1;
 
-	return 0;
+	return tas2764_group_join(dev, tas2764);
 }
 
 static int tas2764_i2c_probe(struct i2c_client *client)
