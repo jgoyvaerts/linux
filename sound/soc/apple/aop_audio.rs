@@ -42,6 +42,8 @@ use kernel::{
 
 use pin_init::Zeroable;
 
+mod aop_spkr;
+
 /// An unaligned u32 type.
 ///
 /// This is useful to avoid having to pack firmware structures entirely, since that is incompatible
@@ -732,8 +734,11 @@ impl SndSocAopData {
     }
 }
 
-#[repr(transparent)]
-struct SndSocAopDriver(*mut bindings::snd_card);
+struct SndSocAopDriver {
+    card: *mut bindings::snd_card,
+    /// The J616s speaker stream's ASoC component (T6040, where the node has a "spkr" DMA channel)
+    spkr: Option<aop_spkr::SpeakerComponent>,
+}
 
 fn copy_str(target: &mut [u8], source: &[u8]) {
     target.fill(0);
@@ -894,7 +899,10 @@ impl SndSocAopDriver {
         ack: None,
     };
     fn new(data: Arc<SndSocAopData>) -> Result<Self> {
-        let mut this = SndSocAopDriver(ptr::null_mut());
+        let mut this = SndSocAopDriver {
+            card: ptr::null_mut(),
+            spkr: None,
+        };
         let ret = unsafe {
             bindings::snd_card_new(
                 data.dev.as_raw(),
@@ -902,7 +910,7 @@ impl SndSocAopDriver {
                 ptr::null(),
                 THIS_MODULE.as_ptr(),
                 0,
-                &mut this.0,
+                &mut this.card,
             )
         };
         if ret < 0 {
@@ -918,15 +926,15 @@ impl SndSocAopDriver {
             .property_read::<CString>(c_str!("apple,machine-kind"))
             .required_by(&data.dev)?;
         unsafe {
-            copy_str(&mut (*this.0).driver, c"aop_audio".to_bytes_with_nul());
+            copy_str(&mut (*this.card).driver, c"aop_audio".to_bytes_with_nul());
         }
         let id_str = CString::try_from_fmt(fmt!("Apple{}HPAI", *chassis))?;
         unsafe {
-            copy_str(&mut (*this.0).id, id_str.to_bytes_with_nul());
+            copy_str(&mut (*this.card).id, id_str.to_bytes_with_nul());
         }
         let shortname = CString::try_from_fmt(fmt!("{} {} HPAI", *machine_kind, *chassis))?;
         unsafe {
-            copy_str(&mut (*this.0).shortname, shortname.to_bytes_with_nul());
+            copy_str(&mut (*this.card).shortname, shortname.to_bytes_with_nul());
         }
         let longname = CString::try_from_fmt(fmt!(
             "{} {} High-Power Audio Interface",
@@ -934,12 +942,12 @@ impl SndSocAopDriver {
             *chassis
         ))?;
         unsafe {
-            copy_str(&mut (*this.0).longname, longname.to_bytes_with_nul());
+            copy_str(&mut (*this.card).longname, longname.to_bytes_with_nul());
         }
 
         let mut pcm = ptr::null_mut();
         let ret =
-            unsafe { bindings::snd_pcm_new(this.0, longname.as_ptr() as _, 0, 0, 1, &mut pcm) };
+            unsafe { bindings::snd_pcm_new(this.card, longname.as_ptr() as _, 0, 0, 1, &mut pcm) };
         if ret < 0 {
             dev_err!(data.dev, "Unable to allocate PCM device");
             return Err(Error::from_errno(ret));
@@ -960,7 +968,7 @@ impl SndSocAopDriver {
             copy_str(&mut (*pcm).name, c"aop_audio".to_bytes_with_nul());
         }
 
-        let ret = unsafe { bindings::snd_card_register(this.0) };
+        let ret = unsafe { bindings::snd_card_register(this.card) };
         if ret < 0 {
             dev_err!(data.dev, "Unable to register sound card");
             return Err(Error::from_errno(ret));
@@ -971,9 +979,11 @@ impl SndSocAopDriver {
 
 impl Drop for SndSocAopDriver {
     fn drop(&mut self) {
-        if self.0 != ptr::null_mut() {
+        // The speaker component (and any card bound to its DAIs) goes before the microphone card.
+        self.spkr.take();
+        if self.card != ptr::null_mut() {
             unsafe {
-                bindings::snd_card_free(self.0);
+                bindings::snd_card_free(self.card);
             }
         }
     }
@@ -1057,7 +1067,16 @@ impl platform::Driver for SndSocAopDriver {
             if data.set_decimator_config_hf().is_err() {
                 dev_warn!(data.dev, "decimator config refused, continuing\n");
             }
-            return Ok(Self::new(data)?);
+            let mut this = Self::new(data.clone())?;
+            // The speaker stream, where the node has its DMA channel.
+            if data
+                .fwnode
+                .property_match_string(c_str!("dma-names"), c_str!("spkr"))
+                .is_ok()
+            {
+                this.spkr = Some(aop_spkr::SpeakerComponent::register(data)?);
+            }
+            return Ok(this);
         }
         data.set_lpai_channel_cfg()?;
         data.set_pdm_config()?;
