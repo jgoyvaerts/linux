@@ -78,12 +78,18 @@ static irqreturn_t tas2764_irq(int irq, void *data)
 {
 	struct tas2764_priv *tas2764 = data;
 	u8 latched[6] = {0, 0, 0, 0, 0, 0};
+	unsigned int val;
 	int ret = IRQ_NONE;
 	int i;
 
-	for (i = 0; i < ARRAY_SIZE(latched); i++)
-		latched[i] = snd_soc_component_read(tas2764->component,
-						    tas2764_int_readout_regs[i]);
+	/* An unreadable latch is no fault report (a negative errno would read as every fault bit) */
+	for (i = 0; i < ARRAY_SIZE(latched); i++) {
+		if (regmap_read(tas2764->regmap, tas2764_int_readout_regs[i], &val)) {
+			dev_err_ratelimited(tas2764->dev, "interrupt latch %d unreadable\n", i);
+			return IRQ_NONE;
+		}
+		latched[i] = val;
+	}
 
 	for (i = 0; i < 8; i++) {
 		if (latched[0] & BIT(i)) {
