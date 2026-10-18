@@ -192,6 +192,15 @@ struct macaudio_snd_data {
 	atomic_t sw_gain_prepared_epoch;
 	atomic_t sw_gain_limit_failed;
 	struct work_struct sw_gain_stop_work;
+
+	/*
+	 * A lock that did not take on every speaker volume (a control write
+	 * failed) is a failed lock: the playback streams are stopped and
+	 * refused until the driver is reloaded, since a volume above the safe
+	 * value may be left behind.
+	 */
+	bool speaker_lock_failed;
+	struct work_struct lock_fail_work;
 };
 
 static int please_blow_up_my_speakers;
@@ -290,8 +299,10 @@ static struct macaudio_link_props macaudio_fe_link_props[] = {
 
 static void macaudio_vlimit_unlock(struct macaudio_snd_data *ma, bool unlock)
 {
-	int ret, max;
+	int ret, max, hits = 0;
 	const char *name = volume_control_names[ma->cfg->amp];
+	struct snd_kcontrol *kctl;
+	bool failed = false;
 
 	if (!name) {
 		WARN_ON_ONCE(1);
@@ -328,16 +339,91 @@ static void macaudio_vlimit_unlock(struct macaudio_snd_data *ma, bool unlock)
 		break;
 	}
 
-	ret = snd_soc_limit_volume(&ma->card, name, max);
-	if (ret < 0)
+	/*
+	 * One control at a time: snd_soc_limit_volume() stops at the first
+	 * control it cannot clip, which would leave the rest at their old
+	 * limit and value.
+	 */
+	list_for_each_entry(kctl, &ma->card.snd_card->controls, list) {
+		if (!snd_soc_control_matches(kctl, name))
+			continue;
+
+		hits++;
+		ret = snd_soc_limit_volume(&ma->card, kctl->id.name, max);
+		if (ret < 0) {
+			dev_err(ma->card.dev, "Failed to %slock volume %s: %d\n",
+				unlock ? "un" : "", kctl->id.name, ret);
+			failed = true;
+		}
+	}
+	if (!hits)
 		dev_err(ma->card.dev, "Failed to %slock volume %s: %d\n",
-			unlock ? "un" : "", name, ret);
+			unlock ? "un" : "", name, -EINVAL);
+
 	/*
 	 * With a software gain the limit is the whole protection: refuse to
 	 * play rather than run the amplifier at full scale unlimited.
 	 */
 	if (ma->cfg->amp == AMP_MAX98360A)
-		atomic_set(&ma->sw_gain_limit_failed, ret < 0);
+		atomic_set(&ma->sw_gain_limit_failed, failed || !hits);
+
+	if (failed && !unlock) {
+		WRITE_ONCE(ma->speaker_lock_failed, true);
+		schedule_work(&ma->lock_fail_work);
+	}
+}
+
+/*
+ * Stop every running playback stream of the card, or with sw_gain_only those
+ * on software-gain links whose prepare predates the current lock epoch.
+ */
+static void macaudio_stop_playback(struct macaudio_snd_data *ma, bool sw_gain_only)
+{
+	struct snd_soc_pcm_runtime *rtd;
+	struct snd_pcm_substream *substream;
+	unsigned long flags;
+
+	/*
+	 * No volume or control lock may be held while taking the stream lock.
+	 * Pick the links from the runtime being walked: not every playback
+	 * substream on the card carries a runtime as its private data.
+	 */
+	for_each_card_rtds(&ma->card, rtd) {
+		if (!rtd->pcm)
+			continue;
+		if (sw_gain_only && !ma->link_props[rtd->dai_link->id].sw_gain)
+			continue;
+		substream = rtd->pcm->streams[SNDRV_PCM_STREAM_PLAYBACK].substream;
+		if (!substream)
+			continue;
+		snd_pcm_stream_lock_irqsave(substream, flags);
+		if (substream->runtime &&
+		    (!sw_gain_only ||
+		     atomic_read(&ma->sw_gain_prepared_epoch) !=
+				atomic_read(&ma->sw_gain_lock_epoch))) {
+			switch (substream->runtime->state) {
+			case SNDRV_PCM_STATE_PREPARED:
+			case SNDRV_PCM_STATE_RUNNING:
+			case SNDRV_PCM_STATE_DRAINING:
+			case SNDRV_PCM_STATE_PAUSED:
+				snd_pcm_stop(substream, SNDRV_PCM_STATE_XRUN);
+				break;
+			default:
+				break;
+			}
+		}
+		snd_pcm_stream_unlock_irqrestore(substream, flags);
+	}
+}
+
+/* Stop every running playback stream of the card after a failed lock. */
+static void macaudio_lock_fail_work(struct work_struct *work)
+{
+	struct macaudio_snd_data *ma = container_of(work, struct macaudio_snd_data,
+						  lock_fail_work);
+
+	dev_crit(ma->card.dev, "speaker volume lock failed: stopping and refusing playback\n");
+	macaudio_stop_playback(ma, false);
 }
 
 static void macaudio_vlimit_update(struct macaudio_snd_data *ma)
@@ -505,38 +591,8 @@ static void macaudio_sw_gain_stop_work(struct work_struct *work)
 {
 	struct macaudio_snd_data *ma = container_of(work, struct macaudio_snd_data,
 						  sw_gain_stop_work);
-	struct snd_soc_pcm_runtime *rtd;
-	struct snd_pcm_substream *substream;
-	unsigned long flags;
 
-	/*
-	 * No volume or control lock may be held while taking the stream lock.
-	 * Pick the links from the runtime being walked: not every playback
-	 * substream on the card carries a runtime as its private data.
-	 */
-	for_each_card_rtds(&ma->card, rtd) {
-		if (!rtd->pcm || !ma->link_props[rtd->dai_link->id].sw_gain)
-			continue;
-		substream = rtd->pcm->streams[SNDRV_PCM_STREAM_PLAYBACK].substream;
-		if (!substream)
-			continue;
-		snd_pcm_stream_lock_irqsave(substream, flags);
-		if (substream->runtime &&
-		    atomic_read(&ma->sw_gain_prepared_epoch) !=
-				atomic_read(&ma->sw_gain_lock_epoch)) {
-			switch (substream->runtime->state) {
-			case SNDRV_PCM_STATE_PREPARED:
-			case SNDRV_PCM_STATE_RUNNING:
-			case SNDRV_PCM_STATE_DRAINING:
-			case SNDRV_PCM_STATE_PAUSED:
-				snd_pcm_stop(substream, SNDRV_PCM_STATE_XRUN);
-				break;
-			default:
-				break;
-			}
-		}
-		snd_pcm_stream_unlock_irqrestore(substream, flags);
-	}
+	macaudio_stop_playback(ma, true);
 }
 
 static int macaudio_copy_link(struct device *dev, struct snd_soc_dai_link *target,
@@ -1116,6 +1172,10 @@ static int macaudio_fe_prepare(struct snd_pcm_substream *substream)
 {
 	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct macaudio_snd_data *ma = snd_soc_card_get_drvdata(rtd->card);
+
+	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK &&
+	    READ_ONCE(ma->speaker_lock_failed))
+		return -EIO;
 
 	if (!macaudio_sw_gain_pcm(substream))
 		return 0;
@@ -2010,6 +2070,7 @@ static int macaudio_snd_platform_probe(struct platform_device *pdev)
 	INIT_WORK(&data->lock_update_work, macaudio_vlimit_update_work);
 	INIT_DELAYED_WORK(&data->lock_timeout_work, macaudio_vlimit_timeout_work);
 	INIT_WORK(&data->sw_gain_stop_work, macaudio_sw_gain_stop_work);
+	INIT_WORK(&data->lock_fail_work, macaudio_lock_fail_work);
 	atomic_set(&data->sw_gain_lock_epoch, 0);
 	atomic_set(&data->sw_gain_prepared_epoch, -1);
 	atomic_set(&data->sw_gain_limit_failed, 0);
@@ -2029,6 +2090,7 @@ static void macaudio_snd_platform_remove(struct platform_device *pdev)
 	cancel_work_sync(&ma->lock_update_work);
 	cancel_delayed_work_sync(&ma->lock_timeout_work);
 	cancel_work_sync(&ma->sw_gain_stop_work);
+	cancel_work_sync(&ma->lock_fail_work);
 }
 
 static struct platform_driver macaudio_snd_driver = {
