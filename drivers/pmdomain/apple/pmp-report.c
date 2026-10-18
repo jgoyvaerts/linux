@@ -18,8 +18,14 @@
 #include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/soc/apple/pmp-report.h>
+#include <linux/workqueue.h>
 
 #define PMP_REPORT_READY 0x1
+
+/* How often a report that defers requests checks whether the PMP runs. */
+#define PMP_REPORT_POLL_MS	100
+#define PMP_REPORT_POLL_SLOW_MS	1000
+#define PMP_REPORT_FAST_POLLS	300
 
 /**
  * struct apple_pmp_report_offsets - per-SoC layout of the report region
@@ -30,6 +36,10 @@
  * @fast_die: 32-bit word holding the fast die-temperature effort of each
  *	CPU cluster, one byte per lane; 0 if the SoC has none
  * @fast_die_lanes: number of lanes at @fast_die, at most 4
+ * @running_any: the PMP runs while any bit of the 64-bit status word is set,
+ *	not only bit 0
+ * @defer_requests: keep power state requests in memory until the PMP runs,
+ *	then write them all at once; nothing is written to a stopped PMP
  */
 struct apple_pmp_report_offsets {
 	u32 tgt_read;
@@ -38,16 +48,33 @@ struct apple_pmp_report_offsets {
 	u32 status;
 	u32 fast_die;
 	u32 fast_die_lanes;
+	bool running_any;
+	bool defer_requests;
 };
 
 struct apple_pmp_report {
 	struct device *dev;
 	const struct apple_pmp_report_offsets *offsets;
 	void __iomem *base;
+	/* Protects the request word, @shadow, @known and @ready. */
 	spinlock_t lock;
 	struct list_head list;
 	struct dentry *debugfs;
+	/* Requests made through entries: bits requested on, all bits. */
+	u64 shadow;
+	u64 known;
+	/* Requests go to the hardware; always true without @defer_requests. */
+	bool ready;
+	unsigned int polls;
+	struct delayed_work ready_work;
 };
+
+static bool apple_pmp_report_running(const struct apple_pmp_report *rep)
+{
+	u64 status = readq(rep->base + rep->offsets->status);
+
+	return rep->offsets->running_any ? status : status & PMP_REPORT_READY;
+}
 
 /* Bound report regions, protected by RCU until managed teardown drains readers. */
 static LIST_HEAD(apple_pmp_reports);
@@ -89,7 +116,7 @@ int apple_pmp_report_fast_die_effort(const struct device_node *np,
 			ret = -EOPNOTSUPP;
 		} else if (lane >= offs->fast_die_lanes) {
 			ret = -EINVAL;
-		} else if (!(readl(rep->base + offs->status) & PMP_REPORT_READY)) {
+		} else if (!apple_pmp_report_running(rep)) {
 			ret = -EAGAIN;
 		} else {
 			*effort = readl(rep->base + offs->fast_die) >>
@@ -109,12 +136,12 @@ static int apple_pmp_report_status_show(struct seq_file *s, void *unused)
 {
 	struct apple_pmp_report *rep = s->private;
 	const struct apple_pmp_report_offsets *offs = rep->offsets;
-	u32 status = readl(rep->base + offs->status);
+	bool running = apple_pmp_report_running(rep);
 	unsigned int lane;
 	u32 effort;
 
-	seq_printf(s, "running: %u\n", !!(status & PMP_REPORT_READY));
-	if (!(status & PMP_REPORT_READY) || !offs->fast_die)
+	seq_printf(s, "running: %u\n", running);
+	if (!running || !offs->fast_die)
 		return 0;
 
 	effort = readl(rep->base + offs->fast_die);
@@ -130,6 +157,7 @@ static void apple_pmp_report_release(void *data)
 {
 	struct apple_pmp_report *rep = data;
 
+	cancel_delayed_work_sync(&rep->ready_work);
 	/* Withdraw child providers while their power callbacks can still use MMIO. */
 	of_platform_depopulate(rep->dev);
 	mutex_lock(&apple_pmp_reports_lock);
@@ -139,6 +167,44 @@ static void apple_pmp_report_release(void *data)
 	synchronize_rcu();
 	/* The debugfs proxy drains active reads and rejects subsequent accesses. */
 	debugfs_remove(rep->debugfs);
+}
+
+/*
+ * Wait for the PMP to run, then hand it every request made so far, as macOS
+ * does for each PMP-notified device that is already powered on.
+ */
+static void apple_pmp_report_ready_work(struct work_struct *work)
+{
+	struct apple_pmp_report *rep = container_of(to_delayed_work(work),
+						    struct apple_pmp_report,
+						    ready_work);
+	const struct apple_pmp_report_offsets *offs = rep->offsets;
+	unsigned long flags;
+	u64 val, want;
+
+	if (!apple_pmp_report_running(rep)) {
+		unsigned int ms = rep->polls++ < PMP_REPORT_FAST_POLLS ?
+				  PMP_REPORT_POLL_MS : PMP_REPORT_POLL_SLOW_MS;
+
+		queue_delayed_work(system_freezable_power_efficient_wq,
+				   &rep->ready_work, msecs_to_jiffies(ms));
+		return;
+	}
+
+	spin_lock_irqsave(&rep->lock, flags);
+	val = readq(rep->base + offs->tgt_read);
+	val = (val & ~rep->known) | rep->shadow;
+	writeq(val, rep->base + offs->tgt_write);
+	want = rep->shadow;
+	rep->ready = true;
+	spin_unlock_irqrestore(&rep->lock, flags);
+
+	if (want && readq_poll_timeout(rep->base + offs->actual, val,
+				       (val & want) == want, 1000, 1000000))
+		dev_warn(rep->dev, "PMP did not acknowledge requests %#llx (ack %#llx)\n",
+			 want, val);
+	dev_info(rep->dev, "PMP running (status %#llx), requests %#llx\n",
+		 readq(rep->base + offs->status), rep->shadow);
 }
 
 static int apple_pmp_report_probe(struct platform_device *pdev)
@@ -158,6 +224,8 @@ static int apple_pmp_report_probe(struct platform_device *pdev)
 	if (IS_ERR(rep->base))
 		return PTR_ERR(rep->base);
 	rep->offsets = of_device_get_match_data(dev);
+	rep->ready = !rep->offsets->defer_requests;
+	INIT_DELAYED_WORK(&rep->ready_work, apple_pmp_report_ready_work);
 
 	INIT_LIST_HEAD(&rep->list);
 	ret = devm_add_action_or_reset(dev, apple_pmp_report_release, rep);
@@ -177,6 +245,10 @@ static int apple_pmp_report_probe(struct platform_device *pdev)
 	ret = of_platform_populate(np, NULL, NULL, dev);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to create child devices\n");
+
+	if (!rep->ready)
+		queue_delayed_work(system_freezable_power_efficient_wq,
+				   &rep->ready_work, 0);
 
 	return 0;
 }
@@ -212,11 +284,30 @@ static const struct apple_pmp_report_offsets apple_pmp_offsets_t8140 = {
 	.fast_die_lanes = 2,
 };
 
+/*
+ * T6040 (macOS T6041): PTD entries 1 (PMP-STATUS), 480 (SOC-DEV-PS-REQ), 488
+ * (SOC-DEV-PS-ACK) and 600 (FAST-DIE-CE: E, P0, P1). Reads are 16 bytes per
+ * entry from the base, writes 8 bytes per entry from base + 0x10000. macOS
+ * treats any set bit of PMP-STATUS as running, and writes no request before
+ * the PMP starts here.
+ */
+static const struct apple_pmp_report_offsets apple_pmp_offsets_t6040 = {
+	.tgt_read = 0x1e00,
+	.tgt_write = 0x10f00,
+	.actual = 0x1e80,
+	.status = 0x10,
+	.fast_die = 0x2580,
+	.fast_die_lanes = 3,
+	.running_any = true,
+	.defer_requests = true,
+};
+
 static const struct of_device_id apple_pmp_report_of_match[] = {
 	{ .compatible = "apple,t6000-pmp-v2-report", .data = &apple_pmp_offsets_t600x },
 	{ .compatible = "apple,t6020-pmp-v2-report", .data = &apple_pmp_offsets_t602x },
 	{ .compatible = "apple,t8112-pmp-v2-report", .data = &apple_pmp_offsets_t8112 },
 	{ .compatible = "apple,t8140-pmp-v2-report", .data = &apple_pmp_offsets_t8140 },
+	{ .compatible = "apple,t6040-pmp-v2-report", .data = &apple_pmp_offsets_t6040 },
 	{}
 };
 
@@ -247,16 +338,24 @@ static int apple_pmp_report_set_state(struct apple_pmp_report *rep, u32 id,
 	u64 bit_val = BIT_ULL(id);
 	u64 val;
 	unsigned long flags;
+	bool ready;
 
 	spin_lock_irqsave(&rep->lock, flags);
-	val = readq(rep->base + rep->offsets->tgt_read);
-	val &= ~bit_val;
+	rep->known |= bit_val;
 	if (enable)
-		val |= bit_val;
-	writeq(val, rep->base + rep->offsets->tgt_write);
+		rep->shadow |= bit_val;
+	else
+		rep->shadow &= ~bit_val;
+	ready = rep->ready;
+	if (ready) {
+		val = readq(rep->base + rep->offsets->tgt_read);
+		val &= ~bit_val;
+		if (enable)
+			val |= bit_val;
+		writeq(val, rep->base + rep->offsets->tgt_write);
+	}
 	spin_unlock_irqrestore(&rep->lock, flags);
-	val = readq(rep->base + rep->offsets->status);
-	if ((val & PMP_REPORT_READY) == 0)
+	if (!ready || !apple_pmp_report_running(rep))
 		return 0;
 	return readq_poll_timeout_atomic(
 		rep->base + rep->offsets->actual,
