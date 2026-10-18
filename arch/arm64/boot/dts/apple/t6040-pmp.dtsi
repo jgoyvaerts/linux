@@ -1,0 +1,127 @@
+// SPDX-License-Identifier: GPL-2.0+ OR MIT
+/*
+ * T6040 PMP (power management coprocessor): power states, report region, DART, mailbox and the coprocessor.
+ *
+ * From the J616s ADT and the macOS 25G83 ApplePMP, ApplePTD and AppleT8110DART drivers; no per-unit value is here.
+ * CPU addresses are ADT child addresses + 0x200000000, as in t6040.dtsi.
+ *   PMP: ASC 0x5_00e00000 (CPU_RUN = +0x44 bit 4), SRAM 0x5_00700000 (0xe0000; the boot argument block is in it),
+ *   mailbox at ASC + 0x8000 with ADT IRQs 0x19e-0x1a1. dart-pmp reg[0] 0x5_00300000, IRQ 0x185, the PMP on SID 0,
+ *   window vm-base 0x100_0000_0000 / 64 GiB. iBoot locks it (PROTECT 0x1e7, SIDs 0 and 1 translating, 3-level), so
+ *   apple-dart adopts iBoot's SID 0 table and leaves SID 1 (ptd-fwd) alone; both tables lie above /memory, in
+ *   iBoot's carve-outs. apple,dma-range keeps Linux's IOVAs in that window. dart-pmp reg[1] (0x5_00578000) is the
+ *   SoC's shared GAPF clock-protection block, not an APF: never described here.
+ *   Report (PTD) region: reads 16 B per entry at 0x5_003c0000, writes 8 B per entry at 0x5_003d0000.
+ *   soc-device bits: EACC0 10, PACC0 11, PACC1 12, AGX 13, ANE0 14, ISP0 15, DISPINT 16, DISPEXT0-3 17-20, AVE0/1
+ *   21/22, AVD0 23, ... ATC0-3 29-32, ANS 33; the PMP acknowledges 10-14 and 16-20 only. PMP-STATUS and every
+ *   report entry read 0 while the PMP is stopped, so the report writes nothing until it runs.
+ *   pmgr pmc = 1 and pmc-pmgr = 0x3f are SoC-level (boot arguments PMC_, PMCV, PMCB). The loader adds the per-unit
+ *   ones (apple,board-id, apple,dram-vendor-id, apple,dram-channel-disable) and the firmware's tunables
+ *   (apple,tunable-<iop-pmp-nub property>); without them the driver refuses to probe.
+ */
+
+&{/power-management@502800000} {
+	ps_pms: power-controller@100 {
+		compatible = "apple,t8103-pmgr-pwrstate";
+		reg = <0x100 4>;
+		label = "pms";
+		#power-domain-cells = <0>;
+		#reset-cells = <0>;
+		apple,always-on;
+	};
+
+	ps_pmp: power-controller@410 {
+		compatible = "apple,t8103-pmgr-pwrstate";
+		reg = <0x410 4>;
+		label = "pmp";
+		#power-domain-cells = <0>;
+		#reset-cells = <0>;
+		apple,always-on;
+	};
+
+	ps_pms_sram: power-controller@418 {
+		compatible = "apple,t8103-pmgr-pwrstate";
+		reg = <0x418 4>;
+		label = "pms_sram";
+		#power-domain-cells = <0>;
+		#reset-cells = <0>;
+		apple,always-on;
+	};
+};
+
+/ {
+	pmp_report: pmp-report@5003c0000 {
+		compatible = "apple,t6040-pmp-v2-report";
+		reg = <0x5 0x003c0000 0 0x20000>;
+		nonposted-mmio;
+		power-domains = <&ps_pms_sram>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		/* The CPU clusters, for their fast die-temperature loops; on while Linux runs. */
+		report@a {
+			compatible = "apple,t6040-pmp-v2-report-entry", "apple,t6000-pmp-v2-report-entry";
+			reg = <0xa>;
+			label = "pmp-eacc0";
+			apple,always-on;
+		};
+
+		report@b {
+			compatible = "apple,t6040-pmp-v2-report-entry", "apple,t6000-pmp-v2-report-entry";
+			reg = <0xb>;
+			label = "pmp-pacc0";
+			apple,always-on;
+		};
+
+		report@c {
+			compatible = "apple,t6040-pmp-v2-report-entry", "apple,t6000-pmp-v2-report-entry";
+			reg = <0xc>;
+			label = "pmp-pacc1";
+			apple,always-on;
+		};
+
+		/*
+		 * The GPU (soc-device 13, AGX). macOS requests it after powering AFR and GFX; the asahi driver powers the
+		 * GPU at probe, before the PMP starts and this request is replayed. Without it the running PMP treats the
+		 * GPU as off and holds it at its lowest performance state (338 MHz).
+		 */
+		report@d {
+			compatible = "apple,t6040-pmp-v2-report-entry", "apple,t6000-pmp-v2-report-entry";
+			reg = <0xd>;
+			label = "pmp-gfx";
+			apple,always-on;
+		};
+	};
+
+	pmp_dart: iommu@500300000 {
+		compatible = "apple,t6040-dart", "apple,t8110-dart";
+		reg = <0x5 0x00300000 0 0xc000>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x185 4>;
+		power-domains = <&ps_pmp>;
+		#iommu-cells = <1>;
+		apple,dma-range = <0x100 0x0 0x10 0x0>;
+	};
+
+	pmp_mbox: mailbox@500e08000 {
+		compatible = "apple,t6040-asc-mailbox", "apple,asc-mailbox-v4";
+		reg = <0x5 0x00e08000 0 0x4000>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x19e 4 0 0x19f 4 0 0x1a0 4 0 0x1a1 4>;
+		interrupt-names = "send-empty", "send-not-empty", "recv-empty", "recv-not-empty";
+		power-domains = <&ps_pmp>, <&ps_pms_sram>;
+		#mbox-cells = <0>;
+	};
+
+	pmp: pmp@500700000 {
+		compatible = "apple,t6040-pmp-v2", "apple,t6000-pmp-v2";
+		reg = <0x5 0x00700000 0 0xe0000>,
+		      <0x5 0x00e00000 0 0x4000>;
+		reg-names = "pmp", "asc";
+		mboxes = <&pmp_mbox>;
+		mbox-names = "mbox";
+		iommus = <&pmp_dart 0>;
+		power-domains = <&ps_pmp>;
+		apple,pmc = <1>;
+		apple,pmc-pmgr = <0x3f>;
+	};
+};

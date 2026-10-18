@@ -5,6 +5,10 @@
  * (P1); frequencies voltage-states1/5/13-sram, word 0 = kHz; opp-level = the one-based p-state the driver writes.
  * Cluster n is MPIDR Aff1 = n; one table per cluster, as opp-shared means one clock domain per table.
  * nonposted-mmio on each block: the root has none, and SoC MMIO needs non-posted writes.
+ * apple,fast-die-effort: the PMP's per-cluster fast die-temperature effort (FAST-DIE-CE: byte 0 E, 1 P0, 2 P1) sets
+ * a frequency limit while the PMP runs (t6040-pmp.dtsi). Until a sample finds the PMP running, apple-soc-cpufreq
+ * holds each cluster at the fastest state within a third of its top state's power, frequency standing in for power
+ * without an energy model: the lowest state here (E 1020 MHz, P 1260 MHz).
  */
 
 / {
@@ -13,6 +17,7 @@
 		reg = <0x2 0x10e20000 0 0x1000>;
 		nonposted-mmio;
 		#performance-domain-cells = <0>;
+		apple,fast-die-effort = <&pmp_report 0>;
 	};
 
 	cpufreq_p0: cpufreq@211e20000 {
@@ -20,6 +25,7 @@
 		reg = <0x2 0x11e20000 0 0x1000>;
 		nonposted-mmio;
 		#performance-domain-cells = <0>;
+		apple,fast-die-effort = <&pmp_report 1>;
 	};
 
 	cpufreq_p1: cpufreq@212e20000 {
@@ -27,6 +33,7 @@
 		reg = <0x2 0x12e20000 0 0x1000>;
 		nonposted-mmio;
 		#performance-domain-cells = <0>;
+		apple,fast-die-effort = <&pmp_report 2>;
 	};
 
 	opp_e: opp-table-e {
