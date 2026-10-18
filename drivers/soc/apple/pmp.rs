@@ -45,8 +45,13 @@ use kernel::{
     types::ForeignOwnable, //
 };
 
+// The whole resource is mapped; the boot argument block may lie past this
+// minimum (T6040), so it is only reached through the try_* accessors.
 const PMP_MMIO_SIZE: usize = 0x80000;
 const ASC_MMIO_SIZE: usize = 0x4000;
+const BOOTARGS_UUID: usize = 0x204;
+const BOOTARGS_UUID_MAGIC: u32 = 0x6469_7575; // "uuid"
+const BOOTARGS_UUID_VERSION: u32 = 5;
 const BOOTARGS_OFFSET: usize = 0x22c;
 const BOOTARGS_SIZE: usize = 0x230;
 const CPU_CONTROL: usize = 0x44;
@@ -58,6 +63,7 @@ const OPC_FREE: u64 = 0x14;
 const OPC_SET_BUF: u64 = 0x30;
 const OPC_REGISTER_IOREG: u64 = 0x32;
 const OPC_SET_IOREG: u64 = 0x34;
+const OPC_SET_ENTRY: u64 = 0x36;
 const OPC_ACK_MASK: u64 = 0x1;
 const OPC_SHIFT: u32 = 48;
 const MALLOC_SIZE_MASK: u64 = 0xFFFFFF;
@@ -69,6 +75,16 @@ const PIO_GRANULARITY: u64 = 0x1000000;
 const fn from_fourcc(b: &[u8; 4]) -> u32 {
     b[3] as u32 | (b[2] as u32) << 8 | (b[1] as u32) << 16 | (b[0] as u32) << 24
 }
+
+/// Boot arguments set from an optional property when it is present; the
+/// firmware's default for each is 0.
+const OPTIONAL_BOOTARGS: [(&[u8; 4], &CStr); 5] = [
+    (b"DCAP", c"apple,dram-capacity"),
+    (b"DCHD", c"apple,dram-channel-disable"),
+    (b"PMC_", c"apple,pmc"),
+    (b"PMCX", c"apple,pmc-msg-disabled"),
+    (b"CVAR", c"apple,soc-chip-variant"),
+];
 
 struct PmpAllocation {
     addr: u64,
@@ -160,27 +176,56 @@ impl PmpData {
         rtk.as_mut().wake()?;
         rtk.start_endpoint(PMP_ENDPOINT)
     }
-    fn patch_bootargs(&self, dev: &platform::Device<Core>, patches: &[(u32, u32)]) -> Result<()> {
+    fn patch_bootargs(
+        &self,
+        dev: &platform::Device<Core>,
+        patches: &[(u32, u32)],
+        check_uuid: bool,
+    ) -> Result<()> {
         let io = self.pmp_mmio.access(dev.as_ref())?.relaxed();
+        if check_uuid {
+            let magic = io.read32(BOOTARGS_UUID);
+            let version = io.read32(BOOTARGS_UUID + 4);
+            if magic != BOOTARGS_UUID_MAGIC || version != BOOTARGS_UUID_VERSION {
+                dev_err!(
+                    self.dev,
+                    "no boot argument header (uuid {:#x}, version {})\n",
+                    magic,
+                    version
+                );
+                return Err(ENODEV);
+            }
+        }
         let offset = io.read32(BOOTARGS_OFFSET) as usize;
         let size = io.read32(BOOTARGS_SIZE) as usize;
         let mut arg_bytes = kvec![0u8; size]?;
         io.try_memcpy_fromio(&mut arg_bytes, offset)?;
         let mut idx = 0;
-        while idx < size {
+        while idx + 8 <= size {
             let key = u32::from_le_bytes(arg_bytes[idx..idx + 4].try_into().unwrap());
-            let size = u32::from_le_bytes(arg_bytes[idx + 4..idx + 8].try_into().unwrap()) as usize;
+            let len = u32::from_le_bytes(arg_bytes[idx + 4..idx + 8].try_into().unwrap()) as usize;
             idx += 8;
+            if len > size - idx {
+                dev_err!(self.dev, "malformed boot argument block\n");
+                return Err(EINVAL);
+            }
             for (k, v) in patches.iter() {
                 if *k != key {
                     continue;
                 }
-                arg_bytes[idx..idx + size].copy_from_slice(&(*v as u64).to_le_bytes()[..size]);
+                // Write only this argument; the block holds unaligned ones.
+                let at = offset + idx;
+                if len == 4 && at % 4 == 0 {
+                    io.try_write32(*v, at)?;
+                } else {
+                    let bytes = (*v as u64).to_le_bytes();
+                    io.try_memcpy_toio(at, &bytes[..len.min(bytes.len())])?;
+                }
                 break;
             }
-            idx += size;
+            idx += len;
         }
-        io.try_memcpy_toio(offset, &arg_bytes)
+        Ok(())
     }
     fn get_iova_table(&self) -> Result<u64> {
         let mut state = self.state.lock();
@@ -321,13 +366,24 @@ impl PmpData {
             };
             if node.property_present(&name_str) {
                 let len = node.property_count_elem::<u8>(&name_str)?;
-                let data = node
-                    .property_read_array_vec::<u8>(&name_str, len)?
-                    .required_by(&self.dev)?;
-                unsafe {
-                    val_buf.as_mut()[0..len].copy_from_slice(&data);
+                if len > val_buf.size() {
+                    // Answered as missing, which the firmware tolerates.
+                    dev_warn!(
+                        self.dev,
+                        "property {:?} ({} bytes) does not fit the firmware buffer ({} bytes)",
+                        name_str,
+                        len,
+                        val_buf.size()
+                    );
+                } else {
+                    let data = node
+                        .property_read_array_vec::<u8>(&name_str, len)?
+                        .required_by(&self.dev)?;
+                    unsafe {
+                        val_buf.as_mut()[0..len].copy_from_slice(&data);
+                    }
+                    size = len as u32;
                 }
-                size = len as u32;
             } else {
                 // Not every boot loader provides every tunable the firmware
                 // asks for, and the firmware starts without them.
@@ -358,6 +414,8 @@ impl PmpData {
             OPC_SET_BUF => self.set_buf(msg & MSG_IOVA_MASK)?,
             OPC_REGISTER_IOREG => self.register_ioreg(msg & MSG_IOVA_MASK)?,
             OPC_SET_IOREG => self.set_ioreg(msg & SET_IOREG_INDEX_MASK)?,
+            // T6040 firmware; macOS acknowledges it and does nothing else.
+            OPC_SET_ENTRY => (OPC_SET_ENTRY | OPC_ACK_MASK) << OPC_SHIFT,
             _ => {
                 dev_err!(self.dev, "Got unknown message {}", msg);
                 return Err(EIO);
@@ -408,13 +466,26 @@ struct PmpHwConfig {
     /// DMA mask to set before the firmware allocates anything, or `None` to
     /// keep the default.
     dma_mask: Option<DmaMask>,
+    /// Check the firmware's `uuid` header before trusting the boot argument
+    /// block it points to.
+    check_bootargs_uuid: bool,
 }
 
-const HW_CFG_DEFAULT: PmpHwConfig = PmpHwConfig { dma_mask: None };
+const HW_CFG_DEFAULT: PmpHwConfig = PmpHwConfig {
+    dma_mask: None,
+    check_bootargs_uuid: false,
+};
 
 /// T8140: the DART translates 42 bits and its DMA window starts at 1 TiB.
 const HW_CFG_T8140: PmpHwConfig = PmpHwConfig {
     dma_mask: Some(DmaMask::new::<42>()),
+    check_bootargs_uuid: false,
+};
+
+/// T6040: the DART window starts at 1 TiB; the boot argument header is version 5.
+const HW_CFG_T6040: PmpHwConfig = PmpHwConfig {
+    dma_mask: Some(DmaMask::new::<42>()),
+    check_bootargs_uuid: true,
 };
 
 kernel::of_device_table!(
@@ -423,6 +494,7 @@ kernel::of_device_table!(
     <PmpDriver as platform::Driver>::IdInfo,
     [
         (of::DeviceId::new(c"apple,t8140-pmp-v2"), &HW_CFG_T8140),
+        (of::DeviceId::new(c"apple,t6040-pmp-v2"), &HW_CFG_T6040),
         (of::DeviceId::new(c"apple,t6000-pmp-v2"), &HW_CFG_DEFAULT),
     ]
 );
@@ -449,20 +521,20 @@ impl platform::Driver for PmpDriver {
             .property_read(c"apple,dram-vendor-id")
             .required_by(&dev)?;
         let bdid = node.property_read(c"apple,board-id").required_by(&dev)?;
-        match node.property_read(c"apple,dram-capacity").optional() {
-            Some(dcap) => data.patch_bootargs(
-                pdev,
-                &[
-                    (from_fourcc(b"BDID"), bdid),
-                    (from_fourcc(b"DCAP"), dcap),
-                    (from_fourcc(b"DVID"), dvid),
-                ],
-            )?,
-            None => data.patch_bootargs(
-                pdev,
-                &[(from_fourcc(b"BDID"), bdid), (from_fourcc(b"DVID"), dvid)],
-            )?,
-        };
+        let mut patches = KVec::with_capacity(9, GFP_KERNEL)?;
+        patches.push((from_fourcc(b"BDID"), bdid), GFP_KERNEL)?;
+        patches.push((from_fourcc(b"DVID"), dvid), GFP_KERNEL)?;
+        for (tag, prop) in OPTIONAL_BOOTARGS.iter() {
+            if let Some(v) = node.property_read::<u32>(prop).optional() {
+                patches.push((from_fourcc(tag), v), GFP_KERNEL)?;
+            }
+        }
+        // PMCV and PMCB are bits 0 and 3 of the PMGR's pmc-pmgr word.
+        if let Some(v) = node.property_read::<u32>(c"apple,pmc-pmgr").optional() {
+            patches.push((from_fourcc(b"PMCV"), v & 1), GFP_KERNEL)?;
+            patches.push((from_fourcc(b"PMCB"), (v >> 3) & 1), GFP_KERNEL)?;
+        }
+        data.patch_bootargs(pdev, &patches, cfg.check_bootargs_uuid)?;
         let rtkit = rtkit::RtKit::<PmpData>::new(&dev, None, 0, data.clone())?;
         *data.rtkit.lock() = Some(rtkit);
         data.start_cpu(pdev)?;
