@@ -103,12 +103,21 @@ struct macaudio_platform_cfg {
 	/*
 	 * A CPU component other than the MCA: its front-end DAI names in
 	 * place of "mca-pcm-N", the DAI format its serial links run (the
-	 * default MACAUDIO_DAI_FMT when 0) and the primary front-end's
-	 * bclk ratio when the link's frame length is not ours to choose.
+	 * default MACAUDIO_DAI_FMT when 0) and the primary and secondary
+	 * front-ends' bclk ratios when the link's frame length is not ours
+	 * to choose.
 	 */
 	const char *fe_dai_names[MACAUDIO_NUM_FE_LINKS];
 	unsigned int dai_fmt;
 	unsigned int primary_bclk_ratio;
+	unsigned int secondary_bclk_ratio;
+	/*
+	 * The front-ends' CPU component is their PCM provider as well: no
+	 * platform lookup by OF node, which takes every component on that
+	 * node (the J616s AOP speaker and jack components share one, each
+	 * for its own card).
+	 */
+	bool fe_cpu_is_platform;
 };
 
 static const char *volume_control_names[] = {
@@ -829,6 +838,8 @@ static int macaudio_parse_of(struct macaudio_snd_data *ma)
 			link->dai_fmt = ma->cfg->dai_fmt;
 		if (i == 0 && ma->cfg->primary_bclk_ratio)
 			link_props->bclk_ratio = ma->cfg->primary_bclk_ratio;
+		if (i == 1 && ma->cfg->secondary_bclk_ratio)
+			link_props->bclk_ratio = ma->cfg->secondary_bclk_ratio;
 		if (ma->cfg->sw_gain_dai)
 			link_props->sw_gain = !strcmp(link->cpus[0].dai_name,
 						      ma->cfg->sw_gain_dai);
@@ -977,8 +988,12 @@ static int macaudio_parse_of(struct macaudio_snd_data *ma)
 		num_links += num_bes;
 	}
 
-	for (i = 0; i < ARRAY_SIZE(macaudio_fe_links); i++)
-		card->dai_link[i].platforms->of_node = platform;
+	for (i = 0; i < ARRAY_SIZE(macaudio_fe_links); i++) {
+		if (ma->cfg->fe_cpu_is_platform)
+			card->dai_link[i].num_platforms = 0;
+		else
+			card->dai_link[i].platforms->of_node = platform;
+	}
 
 	/* Skip the speaker sense PCM link if this amp has no sense (or no speakers) */
 	if (!ma->has_sense) {
@@ -1968,6 +1983,28 @@ struct macaudio_platform_cfg macaudio_j493_cfg = {
 	true,	AMP_SN012776,	SPKR_2W,	true,	15,	-20,
 };
 
+/*
+ * J616s (T6040, MacBook Pro 16" M4 Pro): the AOP firmware runs MCA cluster
+ * 0, so the CPU component is the AOP audio driver (front-ends j616-pcm-N,
+ * back-end spkr). One serializer carries all six SN012776 amps in a 250-bit
+ * frame at 12 MHz: six 32-bit playback slots, twelve 16-bit sense slots. The
+ * amps take I2S with an inverted frame clock and a normal bit clock, as on
+ * the J713 (T8132: the same amp and frame).
+ */
+struct macaudio_platform_cfg macaudio_j616_cfg = {
+	.enable_speakers = true,
+	.amp = AMP_SN012776,
+	.speakers = SPKR_2W1T,
+	.stereo = true,
+	.amp_gain = 15,
+	.safe_vol = -20,
+	.fe_dai_names = { "j616-pcm-0", "j616-pcm-1", "j616-pcm-2" },
+	.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_CBC_CFC |
+		   SND_SOC_DAIFMT_GATED | SND_SOC_DAIFMT_NB_IF,
+	.secondary_bclk_ratio = 250,
+	.fe_cpu_is_platform = true,
+};
+
 struct macaudio_platform_cfg macaudio_fallback_cfg = {
 	false,	AMP_NONE,	SPKR_NONE,	false,	0,	0,
 };
@@ -2027,6 +2064,8 @@ static const struct of_device_id macaudio_snd_device_id[]  = {
 	/* j575    AID33   sn012776    15      1x 1W    Compat: apple,j375-macaudio */
 	/* j613    AID20   sn012776    15      2x 1W+1T Compat: apple,j413-macaudio */
 	/* j615    AID21   sn012776    15      2x 2W+1T Compat: apple,j415-macaudio */
+	/* j616    AID35   sn012776    15      2x 2W+1T (AOP-fed, one serializer) */
+	{ .compatible = "apple,j616-macaudio", .data = &macaudio_j616_cfg },
 	/* j700    AID44   max98360a   -       2x 1W    (AOP-fed, software gain) */
 	{ .compatible = "apple,j700-macaudio", .data = &macaudio_j700_cfg },
 	/* Fallback, jack only */
