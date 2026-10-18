@@ -466,12 +466,17 @@
 		#size-cells = <2>;
 		status = "disabled";
 
-		audio {
+		/*
+		 * "dma" is the microphones' leap ADMAC channel. "spkr" and "sense" are the speaker
+		 * stream's base-ns ADMAC channels 0 and 1 (ADT audio-speaker dma-channels).
+		 */
+		aop_audio: audio {
 			compatible = "apple,t6040-aop-audio", "apple,t6030-aop-audio";
 			apple,chassis-name = "J616";
 			apple,machine-kind = "MacBook Pro";
-			dmas = <&admac0 1>;
-			dma-names = "dma";
+			dmas = <&admac0 1>, <&admac1 0>, <&admac1 1>;
+			dma-names = "dma", "spkr", "sense";
+			#sound-dai-cells = <1>;
 		};
 	};
 

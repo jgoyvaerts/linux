@@ -308,6 +308,7 @@
 		compatible = "ti,sn012776", "ti,tas2764";
 		reg = <0x38>;
 		SDZ-supply = <&speaker_sdz>;
+		apple,sdz-group-fail-closed;
 		#sound-dai-cells = <0>;
 		sound-name-prefix = "Left Woofer 1";
 		interrupts-extended = <&pinctrl 55 8>;
@@ -319,6 +320,7 @@
 		compatible = "ti,sn012776", "ti,tas2764";
 		reg = <0x39>;
 		SDZ-supply = <&speaker_sdz>;
+		apple,sdz-group-fail-closed;
 		#sound-dai-cells = <0>;
 		sound-name-prefix = "Left Woofer 2";
 		interrupts-extended = <&pinctrl 55 8>;
@@ -330,6 +332,7 @@
 		compatible = "ti,sn012776", "ti,tas2764";
 		reg = <0x3a>;
 		SDZ-supply = <&speaker_sdz>;
+		apple,sdz-group-fail-closed;
 		#sound-dai-cells = <0>;
 		sound-name-prefix = "Left Tweeter";
 		interrupts-extended = <&pinctrl 55 8>;
@@ -345,6 +348,7 @@
 		compatible = "ti,sn012776", "ti,tas2764";
 		reg = <0x3b>;
 		SDZ-supply = <&speaker_sdz>;
+		apple,sdz-group-fail-closed;
 		#sound-dai-cells = <0>;
 		sound-name-prefix = "Right Woofer 1";
 		interrupts-extended = <&pinctrl 55 8>;
@@ -356,6 +360,7 @@
 		compatible = "ti,sn012776", "ti,tas2764";
 		reg = <0x3c>;
 		SDZ-supply = <&speaker_sdz>;
+		apple,sdz-group-fail-closed;
 		#sound-dai-cells = <0>;
 		sound-name-prefix = "Right Woofer 2";
 		interrupts-extended = <&pinctrl 55 8>;
@@ -367,10 +372,47 @@
 		compatible = "ti,sn012776", "ti,tas2764";
 		reg = <0x3d>;
 		SDZ-supply = <&speaker_sdz>;
+		apple,sdz-group-fail-closed;
 		#sound-dai-cells = <0>;
 		sound-name-prefix = "Right Tweeter";
 		interrupts-extended = <&pinctrl 55 8>;
 		ti,imon-slot-no = <20>;
 		ti,vmon-slot-no = <22>;
+	};
+};
+
+/*
+ * The speaker sound card. The AOP firmware runs the stream (MCA cluster 0, one serializer for all six amps);
+ * macaudio's J616 variant links the AOP audio component's spkr back-end (DAI 3) to the amps. The codecs are
+ * listed in the ADT provider order, so each gets its native playback slot (LW1 0, RW1 1, LW2 2, RW2 3, LT 4,
+ * RT 5). The idle masks are the master node's amp-tx-zd-config rows 0 and 1: LW1 drives zeros in the right
+ * amps' sense slots, RW1 in the left amps'. Every amp joins the SDZ fail-closed group: an over-temperature or
+ * over-current fault on any one forces the shared shutdown line low.
+ */
+/ {
+	sound {
+		compatible = "apple,j616-macaudio", "apple,macaudio";
+		model = "MacBook Pro J616";
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		dai-link@0 {
+			reg = <0>;
+			link-name = "Speakers";
+			dai-tdm-idle-mode-0 = "zero";
+			dai-tdm-idle-mode-1 = "zero";
+			dai-tdm-slot-tx-idle-mask-0 = <0xf0f0f0>;
+			dai-tdm-slot-tx-idle-mask-1 = <0x0f0f0f>;
+
+			cpu {
+				sound-dai = <&aop_audio 3>;
+			};
+
+			codec {
+				sound-dai = <&speaker_left_woof1>, <&speaker_right_woof1>,
+					    <&speaker_left_woof2>, <&speaker_right_woof2>,
+					    <&speaker_left_tweet>, <&speaker_right_tweet>;
+			};
+		};
 	};
 };
