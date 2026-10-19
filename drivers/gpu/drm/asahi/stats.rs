@@ -76,3 +76,42 @@ impl StatsSnapshot {
         self.jobs.fetch_add(1, Ordering::Relaxed);
     }
 }
+
+/// Words kept per statistics record (G17: 18-word ring records).
+pub(crate) const RAW_WORDS: usize = 18;
+/// Record tags kept (the G17 ring accepts tags below 32).
+pub(crate) const RAW_TAGS: usize = 32;
+
+/// The last raw record of every G17 statistics tag and how many arrived, exported read-only as
+/// `agx_stats_raw` until the record layouts are decoded. One GPU per system, so one table.
+#[repr(C)]
+pub(crate) struct RawStats {
+    pub(crate) count: [AtomicU32; RAW_TAGS],
+    pub(crate) words: [[AtomicU32; RAW_WORDS]; RAW_TAGS],
+}
+
+#[allow(clippy::declare_interior_mutable_const)]
+const RAW_ZERO: AtomicU32 = AtomicU32::new(0);
+#[allow(clippy::declare_interior_mutable_const)]
+const RAW_ROW: [AtomicU32; RAW_WORDS] = [RAW_ZERO; RAW_WORDS];
+
+pub(crate) static RAW_STATS: RawStats = RawStats {
+    count: [RAW_ZERO; RAW_TAGS],
+    words: [RAW_ROW; RAW_TAGS],
+};
+
+const _: () = assert!(core::mem::size_of::<RawStats>() == RAW_TAGS * (1 + RAW_WORDS) * 4);
+
+impl RawStats {
+    /// Called by the statistics ring consumer for every record it returns to the firmware.
+    pub(crate) fn note(&self, words: &[u32; RAW_WORDS]) {
+        let tag = words[0] as usize;
+        if tag >= RAW_TAGS {
+            return;
+        }
+        for (dst, src) in self.words[tag].iter().zip(words) {
+            dst.store(*src, Ordering::Relaxed);
+        }
+        self.count[tag].fetch_add(1, Ordering::Release);
+    }
+}

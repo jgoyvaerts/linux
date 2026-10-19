@@ -97,7 +97,11 @@ impl Rings {
             let tag = match ring {
                 // Copy the entire trace entry before returning its slot.
                 ReportRing::Trace => init.status_read_words::<EVENT_WORDS>(role, offset)?[0],
-                ReportRing::Statistics => init.status_read_words::<1>(role, offset)?[0],
+                ReportRing::Statistics => {
+                    let words = init.status_read_words::<EVENT_WORDS>(role, offset)?;
+                    crate::stats::RAW_STATS.note(&words);
+                    words[0]
+                }
             };
             if tag >= u32::BITS || allowed_types & (1 << tag) == 0 {
                 return Err(EIO);

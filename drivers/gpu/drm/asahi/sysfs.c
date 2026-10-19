@@ -123,6 +123,61 @@ void asahi_current_owner(char *comm, int *pid)
 }
 EXPORT_SYMBOL_GPL(asahi_current_owner);
 
+/* Mirrors stats.rs RawStats: per tag a record count, then the last record's words. */
+#define ASAHI_RAW_TAGS 32
+#define ASAHI_RAW_WORDS 18
+struct asahi_raw_stats {
+	u32 count[ASAHI_RAW_TAGS];
+	u32 words[ASAHI_RAW_TAGS][ASAHI_RAW_WORDS];
+};
+
+static const struct asahi_raw_stats *asahi_raw;
+
+static ssize_t agx_stats_raw_show(struct device *dev,
+				  struct device_attribute *attr, char *buf)
+{
+	ssize_t n = 0;
+	int tag, w;
+
+	if (!asahi_raw)
+		return sysfs_emit(buf, "unsupported\n");
+	for (tag = 0; tag < ASAHI_RAW_TAGS; tag++) {
+		u32 count = smp_load_acquire(&asahi_raw->count[tag]);
+
+		if (!count)
+			continue;
+		n += scnprintf(buf + n, PAGE_SIZE - n, "tag %2d count %u:", tag, count);
+		for (w = 0; w < ASAHI_RAW_WORDS; w++)
+			n += scnprintf(buf + n, PAGE_SIZE - n, " %08x",
+				       READ_ONCE(asahi_raw->words[tag][w]));
+		n += scnprintf(buf + n, PAGE_SIZE - n, "\n");
+	}
+	return n;
+}
+
+static DEVICE_ATTR(agx_stats_raw, 0444, agx_stats_raw_show, NULL);
+
+/*
+ * G17 only: export the static raw statistics table. The table is static, so only the
+ * attribute's lifetime matters; asahi_sysfs_unregister() removes it with agx_stats.
+ */
+int asahi_sysfs_register_raw(struct device *dev, const void *raw, void **handle)
+{
+	int ret;
+
+	if (!dev || !raw)
+		return -ENODEV;
+	BUILD_BUG_ON(sizeof(struct asahi_raw_stats) != ASAHI_RAW_TAGS * (1 + ASAHI_RAW_WORDS) * 4);
+	asahi_raw = raw;
+	ret = device_create_file(dev, &dev_attr_agx_stats_raw);
+	if (ret)
+		asahi_raw = NULL;
+	if (handle)
+		*handle = NULL;
+	return ret;
+}
+EXPORT_SYMBOL_GPL(asahi_sysfs_register_raw);
+
 void asahi_sysfs_unregister(struct device *dev, void *handle)
 {
 	struct asahi_stats_attribute *stats = handle;
@@ -132,6 +187,8 @@ void asahi_sysfs_unregister(struct device *dev, void *handle)
 
 	/* Removal drains active show callbacks before either allocation dies. */
 	device_remove_file(dev, &stats->attr);
+	if (asahi_raw)
+		device_remove_file(dev, &dev_attr_agx_stats_raw);
 	kfree(stats);
 }
 EXPORT_SYMBOL_GPL(asahi_sysfs_unregister);

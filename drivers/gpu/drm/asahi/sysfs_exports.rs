@@ -14,6 +14,23 @@ extern "C" {
         handle: *mut *mut c_void,
     ) -> c_int;
     fn asahi_sysfs_unregister(dev: *mut c_void, handle: *mut c_void);
+    fn asahi_sysfs_register_raw(
+        dev: *mut c_void,
+        raw: *const crate::stats::RawStats,
+        handle: *mut *mut c_void,
+    ) -> c_int;
+}
+
+/// Export the static raw statistics table as `agx_stats_raw` (G17).
+pub(crate) fn register_raw(dev: *mut kernel::bindings::device) -> kernel::error::Result<*mut c_void> {
+    let mut handle = core::ptr::null_mut();
+    // SAFETY: RAW_STATS is a static that outlives the attribute; the C side only reads it.
+    let ret = unsafe { asahi_sysfs_register_raw(dev.cast(), &crate::stats::RAW_STATS, &mut handle) };
+    if ret < 0 {
+        Err(kernel::error::Error::from_errno(ret))
+    } else {
+        Ok(handle)
+    }
 }
 
 /// Register only after initialization succeeds, keeping the snapshot Arc alive.

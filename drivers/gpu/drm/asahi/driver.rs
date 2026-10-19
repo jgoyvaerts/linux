@@ -303,7 +303,8 @@ impl AsahiDriver {
             gpu.shutdown();
             return Err(error);
         }
-        // G17's firmware channel format has no supported stats decoder yet.
+        // G17's firmware channel format has no supported stats decoder yet; its raw records
+        // are exported as agx_stats_raw (shares agx_stats' handle lifetime).
         let raw_dev = pdev.as_ref().as_raw();
         let raw_stats = match crate::sysfs_exports::register(raw_dev, core::ptr::null(), false) {
             Ok(handle) => handle,
@@ -312,6 +313,9 @@ impl AsahiDriver {
                 return Err(error);
             }
         };
+        if let Err(error) = crate::sysfs_exports::register_raw(raw_dev) {
+            dev_warn!(pdev.as_ref(), "agx_stats_raw not registered: {:?}\n", error);
+        }
         Ok(Self {
             drm,
             raw_dev,
