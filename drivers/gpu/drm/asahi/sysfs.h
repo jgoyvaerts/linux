@@ -7,6 +7,7 @@ struct device;
 
 int asahi_sysfs_register(struct device *dev, const void *snapshot,
 			 int export_enabled, void **handle);
+void asahi_current_owner(char *comm, int *pid);
 void asahi_sysfs_unregister(struct device *dev, void *handle);
 
 #endif /* _ASAHI_SYSFS_H */

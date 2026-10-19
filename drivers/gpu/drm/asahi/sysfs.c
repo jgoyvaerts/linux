@@ -8,6 +8,8 @@
 #include <linux/errno.h>
 #include <linux/export.h>
 #include <linux/module.h>
+#include <linux/sched.h>
+#include <linux/pid.h>
 #include <linux/slab.h>
 #include <linux/stddef.h>
 #include <linux/string.h>
@@ -112,6 +114,14 @@ int asahi_sysfs_register(struct device *dev, const void *snapshot,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(asahi_sysfs_register);
+
+/* The calling process's thread-group leader name and tgid, for the G17 failure logs. */
+void asahi_current_owner(char *comm, int *pid)
+{
+	strscpy(comm, current->group_leader->comm, TASK_COMM_LEN);
+	*pid = task_tgid_nr(current);
+}
+EXPORT_SYMBOL_GPL(asahi_current_owner);
 
 void asahi_sysfs_unregister(struct device *dev, void *handle)
 {

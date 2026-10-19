@@ -713,7 +713,9 @@ impl Queue {
     ) -> Result<Option<Arc<VmStatus>>> {
         if !self.quarantined {
             let at = core::panic::Location::caller();
-            pr_warn!("G17: compute queue quarantined ({:?}) from {}:{}\n", error,
+            let owner = self.active.iter().next().map(|a| a.packet.completion.status().owner());
+            pr_warn!("G17: compute queue of {} quarantined ({:?}) from {}:{}\n",
+                crate::g17::status::OwnerLabel(owner), error,
                 at.file().rsplit("asahi/").next().unwrap_or(at.file()), at.line());
             self.quarantined = true;
             self.quarantine_error = Some(error);

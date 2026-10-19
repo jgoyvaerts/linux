@@ -1069,7 +1069,9 @@ impl Pair {
     ) -> Result {
         if !self.quarantined {
             let at = core::panic::Location::caller();
-            pr_warn!("G17: render pair quarantined ({:?}) from {}:{}\n", error,
+            let owner = self.active.front().map(|a| a.packet.completion.status().owner());
+            pr_warn!("G17: render pair of {} quarantined ({:?}) from {}:{}\n",
+                crate::g17::status::OwnerLabel(owner), error,
                 at.file().rsplit("asahi/").next().unwrap_or(at.file()), at.line());
         }
         self.quarantined = true;

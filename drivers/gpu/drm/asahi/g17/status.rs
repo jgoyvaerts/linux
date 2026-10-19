@@ -19,6 +19,50 @@ pub(crate) struct VmStatus {
     /// client's VM handle exists; released by `release_mirror` at VM close.
     #[pin]
     mirror: Mutex<Option<Mirror>>,
+    /// The process that created the VM, named in failure logs.
+    owner: Owner,
+}
+
+/// A VM's creating process (thread group leader), captured at creation for the kernel log.
+/// Without it a recovery or timeout cannot be tied to the compositor or a test client.
+#[derive(Clone, Copy)]
+pub(crate) struct Owner {
+    pid: i32,
+    comm: [u8; 16],
+}
+
+impl Owner {
+    /// Must run in the creating process's context (the VM_CREATE ioctl).
+    fn current() -> Self {
+        extern "C" {
+            fn asahi_current_owner(comm: *mut u8, pid: *mut i32);
+        }
+        let mut owner = Self { pid: 0, comm: [0u8; 16] };
+        // SAFETY: the C helper copies at most 16 bytes (TASK_COMM_LEN, NUL-terminated) into
+        // `comm` and writes one int; both live on this stack frame.
+        unsafe { asahi_current_owner(owner.comm.as_mut_ptr(), &mut owner.pid) };
+        owner
+    }
+}
+
+/// An optional owner for log lines ("an idle queue" when no work names one).
+pub(crate) struct OwnerLabel(pub(crate) Option<Owner>);
+
+impl kernel::fmt::Display for OwnerLabel {
+    fn fmt(&self, f: &mut kernel::fmt::Formatter<'_>) -> kernel::fmt::Result {
+        match &self.0 {
+            Some(owner) => kernel::fmt::Display::fmt(owner, f),
+            None => f.write_str("an idle queue"),
+        }
+    }
+}
+
+impl kernel::fmt::Display for Owner {
+    fn fmt(&self, f: &mut kernel::fmt::Formatter<'_>) -> kernel::fmt::Result {
+        let len = self.comm.iter().position(|&b| b == 0).unwrap_or(self.comm.len());
+        let name = core::str::from_utf8(&self.comm[..len]).unwrap_or("?");
+        write!(f, "{}[{}]", name, self.pid)
+    }
 }
 
 /// One aligned word inside the retained, vmapped mirror object.
@@ -36,7 +80,12 @@ impl VmStatus {
             error: AtomicI32::new(0),
             reported_error: AtomicI32::new(0),
             mirror <- new_mutex!(None, "Asahi VM status mirror"),
+            owner: Owner::current(),
         })
+    }
+
+    pub(crate) fn owner(&self) -> Owner {
+        self.owner
     }
 
     pub(crate) fn get(&self) -> i32 {
@@ -76,7 +125,8 @@ impl VmStatus {
             Ok(_) => {
                 let at = core::panic::Location::caller();
                 pr_warn!(
-                    "GPU work of a client failed ({:?}, reported at {}:{}); the client sees a lost device\n",
+                    "GPU work of client {} failed ({:?}, reported at {}:{}); the client sees a lost device\n",
+                    self.owner,
                     error,
                     at.file().rsplit("asahi/").next().unwrap_or(at.file()),
                     at.line()
