@@ -242,6 +242,12 @@ impl job::Backend for Backend {
             return true;
         }
         let decision = firmware.queues.render_timeout_decision(packet, renewals);
+        // As compute does: work still blocked behind another VM's older unfinished work after the
+        // whole grace is innocent, so its failure must stay non-sticky. The pair's quarantine
+        // extends the class to the pair's other groups.
+        if decision == Decision::Spare {
+            packet.completion.classify(crate::g17::recovery::Class::Spared);
+        }
         if decision != Decision::Own && (renewals == 0 || decision == Decision::Spare) {
             dev_warn!(self.shared.dev.as_ref(),
                 "Render watchdog owner={} renewals={} decision={:?} behind earlier work of another VM\n",
