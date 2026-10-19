@@ -284,6 +284,17 @@ impl InitData {
             abi::SecondaryRoot::merged(&root, status_b_va, power_state_va, config_va),
         )?;
 
+        // The power-state object (root +0xb8) is also the struct the 25G83 firmware's fast-die
+        // limiter (fn 0x1fc00) reads through its global at 0x195750 (read back from the running
+        // firmware: 0xfffffc20_00170000; macOS: AGXArmFirmware+0x968). Each time the PMP
+        // publishes LTS-TO-GFX (110.00 C) the limit becomes min(LTS, +0xc8); left at 0 the limit
+        // was 0 C, the limiter throttled forever and the GPU sat at p1 (338 MHz) whenever the PMP
+        // ran (2026-10-19). macOS's defaults: target 101.00 C (gpu-fast-die0-target), release
+        // 96.00 C. The dirty word +0xc4 stays 0: it would also copy the zero gains at +0xd0.
+        let power_state = self.object_mut(objects.power_state)?;
+        power_state.write(0xc8, 10100u32)?;
+        power_state.write(0xcc, 9600u32)?;
+
         // The opening control record is staged in slot 0.
         for (offset, value) in [
             (0, 0),
