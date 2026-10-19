@@ -40,6 +40,44 @@ struct asahi_stats_attribute {
 	bool export_enabled;
 };
 
+/* Mirrors stats.rs RawStats: per tag a record count, then the last record's words. */
+#define ASAHI_RAW_TAGS 32
+#define ASAHI_RAW_WORDS 18
+struct asahi_raw_stats {
+	u32 count[ASAHI_RAW_TAGS];
+	u32 words[ASAHI_RAW_TAGS][ASAHI_RAW_WORDS];
+};
+
+static const struct asahi_raw_stats *asahi_raw;
+
+#define ASAHI_RAW(tag, word) READ_ONCE(asahi_raw->words[tag][word])
+
+/*
+ * G17 (M4 Pro, 25G83) records decoded from live data (2026-10-19): tag 19 is the utilization
+ * record (64-bit timestamp, four percentages), tag 25 the power state (timestamp, last-busy
+ * timestamp, active, powered off, unknown, p-state, ...). Pseudo-tags 0 and 1 hold the host's
+ * fast-die controller state (throttling, temperature x100, limit x100).
+ */
+static ssize_t agx_stats_show_g17(char *buf)
+{
+	ssize_t n = 0;
+
+	if (smp_load_acquire(&asahi_raw->count[25])) {
+		n += scnprintf(buf + n, PAGE_SIZE - n, "pstate %u\n", ASAHI_RAW(25, 8));
+		n += scnprintf(buf + n, PAGE_SIZE - n, "active %u\n", ASAHI_RAW(25, 5));
+		n += scnprintf(buf + n, PAGE_SIZE - n, "powered_off %u\n", ASAHI_RAW(25, 6));
+	}
+	if (smp_load_acquire(&asahi_raw->count[19]))
+		n += scnprintf(buf + n, PAGE_SIZE - n, "util %u %u %u %u\n", ASAHI_RAW(19, 3),
+			       ASAHI_RAW(19, 4), ASAHI_RAW(19, 5), ASAHI_RAW(19, 6));
+	if (smp_load_acquire(&asahi_raw->count[0])) {
+		n += scnprintf(buf + n, PAGE_SIZE - n, "fastdie_throttling %u\n", ASAHI_RAW(0, 0));
+		n += scnprintf(buf + n, PAGE_SIZE - n, "temperature_centi_c %u\n", ASAHI_RAW(0, 1));
+		n += scnprintf(buf + n, PAGE_SIZE - n, "fastdie_limit_centi_c %u\n", ASAHI_RAW(1, 7));
+	}
+	return n ? n : sysfs_emit(buf, "unsupported\n");
+}
+
 static ssize_t agx_stats_show(struct device *dev,
 			      struct device_attribute *attr, char *buf)
 {
@@ -49,7 +87,7 @@ static ssize_t agx_stats_show(struct device *dev,
 	ssize_t n = 0;
 
 	if (!stats->export_enabled)
-		return sysfs_emit(buf, "unsupported\n");
+		return asahi_raw ? agx_stats_show_g17(buf) : sysfs_emit(buf, "unsupported\n");
 	n += scnprintf(buf + n, PAGE_SIZE - n, "busy_ns %llu\n",
 		       (unsigned long long)READ_ONCE(snap->busy_ns));
 	n += scnprintf(buf + n, PAGE_SIZE - n, "jobs %llu\n",
@@ -122,16 +160,6 @@ void asahi_current_owner(char *comm, int *pid)
 	*pid = task_tgid_nr(current);
 }
 EXPORT_SYMBOL_GPL(asahi_current_owner);
-
-/* Mirrors stats.rs RawStats: per tag a record count, then the last record's words. */
-#define ASAHI_RAW_TAGS 32
-#define ASAHI_RAW_WORDS 18
-struct asahi_raw_stats {
-	u32 count[ASAHI_RAW_TAGS];
-	u32 words[ASAHI_RAW_TAGS][ASAHI_RAW_WORDS];
-};
-
-static const struct asahi_raw_stats *asahi_raw;
 
 static ssize_t agx_stats_raw_show(struct device *dev,
 				  struct device_attribute *attr, char *buf)
