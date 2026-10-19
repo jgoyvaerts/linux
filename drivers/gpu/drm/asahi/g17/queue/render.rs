@@ -1121,6 +1121,7 @@ impl Pair {
                 qids,
                 host,
             };
+            let borrowed = observed.is_some();
             let result = if let Some(observed) = observed {
                 if observed.ticket != front.ticket {
                     return Err(EIO);
@@ -1134,6 +1135,14 @@ impl Pair {
                 Ok(retirement::Poll::Pending) => return self.replay_abandoned(host, defer),
                 Ok(retirement::Poll::Retry) => return Ok(false),
                 Err(error) => {
+                    // The client sees this as a lost device; name the failing check's source.
+                    pr_warn!(
+                        "G17: render retirement failed ({:?}, {} snapshot, ordinal {}, qids {:?})\n",
+                        error,
+                        if borrowed { "borrowed" } else { "fresh" },
+                        front.ticket.ordinal,
+                        qids
+                    );
                     self.quarantine(error, defer)?;
                     return Ok(false);
                 }
