@@ -103,6 +103,17 @@ pub(crate) static RAW_STATS: RawStats = RawStats {
 const _: () = assert!(core::mem::size_of::<RawStats>() == RAW_TAGS * (1 + RAW_WORDS) * 4);
 
 impl RawStats {
+    /// Stores host-side probe words in an unused tag slot (G17 statistics use tags 16..30).
+    pub(crate) fn put(&self, slot: usize, words: &[u32; RAW_WORDS]) {
+        if slot >= RAW_TAGS {
+            return;
+        }
+        for (dst, src) in self.words[slot].iter().zip(words) {
+            dst.store(*src, Ordering::Relaxed);
+        }
+        self.count[slot].fetch_add(1, Ordering::Release);
+    }
+
     /// Called by the statistics ring consumer for every record it returns to the firmware.
     pub(crate) fn note(&self, words: &[u32; RAW_WORDS]) {
         let tag = words[0] as usize;

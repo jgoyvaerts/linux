@@ -61,6 +61,12 @@ impl Rings {
 
     pub(crate) fn drain_statistics(&mut self, dev: &Device, init: &InitData, role: Role) {
         self.drain_report(dev, init, role, ReportRing::Statistics);
+        // Pseudo-tags 0..3 of agx_stats_raw (G17 statistics use tags 16..30): see power_probe.
+        if let Ok(probe) = init.power_probe() {
+            for (slot, words) in probe.iter().enumerate() {
+                crate::stats::RAW_STATS.put(slot, words);
+            }
+        }
     }
 
     fn drain_report(&mut self, dev: &Device, init: &InitData, role: Role, ring: ReportRing) {

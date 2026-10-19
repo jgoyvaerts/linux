@@ -1278,6 +1278,26 @@ impl InitData {
         )
     }
 
+    /// Read-only probe for agx_stats_raw (25G83): the fast-die controller state `P` (the power
+    /// configuration at bundle+0x5380, P+0x2260 throttling, +0x2264 temperature x100, +0x2268
+    /// enable, +0x2270 release, +0x22c4 limit) and region C around its fast-die (+0xc4..) and
+    /// PPM (+0x128) words. The GPU sits at p1 while the PMP runs (2026-10-19) and these show
+    /// whether this limiter is the cause.
+    pub(super) fn power_probe(&self) -> Result<[[u32; 18]; 4]> {
+        if !crate::g17::fw::is_25g83() {
+            return Err(ENODEV);
+        }
+        const P: usize = 0x5380 + 0x2260;
+        let bundle = self.object(self.bundle)?;
+        let region = self.object(self.region_c)?;
+        Ok([
+            bundle.read_words::<18>(P)?,
+            bundle.read_words::<18>(P + 18 * 4)?,
+            region.read_words::<18>(0xc0)?,
+            region.read_words::<18>(0xc0 + 18 * 4)?,
+        ])
+    }
+
     pub(super) fn status_read_words<const N: usize>(
         &self,
         role: Role,
