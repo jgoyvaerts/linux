@@ -63,6 +63,9 @@ struct State {
     owners: [u64; cfg::RENDER_SLOTS],
     epochs: [u64; cfg::RENDER_SLOTS],
     quarantined: u64,
+    /// Quarantined slots whose failed work is all spared (innocent): waiting publications fail
+    /// their own fence with EBUSY instead of a device-loss error, so the VM stays usable.
+    spared: u64,
     kill_hold: u64,
     released: u64,
     epoch: u64,
@@ -78,6 +81,7 @@ impl State {
             owners: [0; cfg::RENDER_SLOTS],
             epochs: [0; cfg::RENDER_SLOTS],
             quarantined: 0,
+            spared: 0,
             kill_hold: 0,
             released: 0,
             epoch: 0,
@@ -431,7 +435,14 @@ impl Pool {
                 .is_some_and(|slot| state.quarantined & (1u64 << slot) != 0)
             {
                 if now >= quarantine_deadline {
-                    return Err(EIO);
+                    // Behind an innocent pair's quarantine (another VM wedged the GPU) only this
+                    // publication fails, not the VM: it recovers once the pair drains.
+                    let spared = state
+                        .owners
+                        .iter()
+                        .position(|id| *id == owner)
+                        .is_some_and(|slot| state.spared & (1u64 << slot) != 0);
+                    return Err(if spared { EBUSY } else { EIO });
                 }
                 let slice = remaining_ms.min(wait_slice_ms(quarantine_deadline, now)?);
                 if matches!(self.released.wait_interruptible_timeout(
@@ -562,6 +573,7 @@ impl Pool {
         }
         state.released &= !released;
         state.quarantined &= !released;
+        state.spared &= !released;
         state.kill_hold = 0;
         drop(state);
         self.released.notify_all();
@@ -667,14 +679,26 @@ impl RenderLease {
     pub(crate) fn slot(&self) -> u8 {
         self.slot
     }
-    pub(crate) fn quarantine(&self) {
-        self.pool.state.lock().quarantined |= 1u64 << self.slot;
+    /// `spared`: the failing work is innocent. Any guilty failure makes the slot's quarantine
+    /// guilty for good; only a quarantine that starts spared and stays spared is marked spared.
+    pub(crate) fn quarantine(&self, spared: bool) {
+        let bit = 1u64 << self.slot;
+        let mut state = self.pool.state.lock();
+        if !spared {
+            state.spared &= !bit;
+        } else if state.quarantined & bit == 0 {
+            state.spared |= bit;
+        }
+        state.quarantined |= bit;
+        drop(state);
         self.pool.released.notify_all();
     }
     /// The VM pin must be retired first. Keep this lease until after clearing
     /// quarantine; its drop is what permits waiting publications to proceed.
     pub(crate) fn rehabilitate_after_processor_stop(&self) {
-        self.pool.state.lock().quarantined &= !(1u64 << self.slot);
+        let mut state = self.pool.state.lock();
+        state.quarantined &= !(1u64 << self.slot);
+        state.spared &= !(1u64 << self.slot);
     }
     /// Requires the runtime's closed-recovery, exact pair-drain witness.
     pub(crate) fn rehabilitate_after_firmware_drain(&self) {
@@ -756,12 +780,34 @@ mod fault_capacity_tests {
     use super::*;
 
     #[test]
+    fn a_guilty_failure_makes_a_spared_quarantine_guilty() {
+        let pool = Pool::new().unwrap();
+        let queue = pool.reserve_queue().unwrap();
+        let lease = pool.acquire_render(1, None, u64::MAX, || Ok(())).unwrap();
+        let bit = 1u64 << lease.slot();
+        lease.quarantine(true);
+        assert_ne!(pool.state.lock().spared & bit, 0);
+        lease.quarantine(false);
+        assert_eq!(pool.state.lock().spared & bit, 0);
+        // Once guilty, a later spared failure does not make it spared again.
+        lease.quarantine(true);
+        assert_eq!(pool.state.lock().spared & bit, 0);
+        assert_ne!(pool.state.lock().quarantined & bit, 0);
+        pool.release_owner(1);
+        lease.rehabilitate_after_firmware_drain();
+        drop(lease);
+        drop(queue);
+        let state = pool.state.lock();
+        assert_eq!(state.quarantined | state.spared, 0);
+    }
+
+    #[test]
     fn closed_faulting_clients_return_leases_after_drain() {
         let pool = Pool::new(MAX_EXECUTION_CONTEXTS).unwrap();
         for owner in 1..=512 {
             let queue = pool.reserve_queue().unwrap();
             let lease = pool.acquire_render(owner, None, u64::MAX, || Ok(())).unwrap();
-            lease.quarantine();
+            lease.quarantine(false);
             pool.release_owner(owner);
             let bit = 1u64 << lease.slot();
             assert_ne!(pool.state.lock().active & bit, 0);

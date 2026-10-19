@@ -497,7 +497,7 @@ impl Completion {
     /// Called under the device mutex before deferring the error signal.
     pub(crate) fn quarantine_render(&self) {
         if let Some(lease) = self.render.lock().as_ref() {
-            lease.quarantine();
+            lease.quarantine(self.spared());
         }
     }
 
