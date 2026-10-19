@@ -1378,10 +1378,14 @@ impl gpu::Gpu for Gpu {
         params.features |=
             u64::from(uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_PER_COMMAND_INPUT_SYNCS)
                 | u64::from(uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_EXACT_PRIOR_BARRIERS)
-                | u64::from(uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_FEW_PRIMITIVES)
                 | u64::from(uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_FRAGMENT_BARRIERS)
                 | u64::from(uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_RENDER_RAY_QUERY)
                 | u64::from(uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_BOUNDED_AS_BUILD);
+        // The 25G83 firmware hangs a render whose fragment stage carries the few-primitives
+        // auxiliary framebuffer bit (render.rs), so it is neither offered nor honoured there.
+        if !fw::is_25g83() {
+            params.features |= u64::from(uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_FEW_PRIMITIVES);
+        }
         params.gpu_generation = self.cfg.gpu_generation as u32;
         params.gpu_variant = self.cfg.identity.gpu_variant as u32;
         params.gpu_revision = self.id.gpu_rev as u32;
