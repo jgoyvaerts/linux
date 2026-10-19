@@ -53,6 +53,9 @@ struct State {
     owners: [u64; cfg::RENDER_SLOTS],
     epochs: [u64; cfg::RENDER_SLOTS],
     quarantined: u64,
+    /// Quarantined slots whose failed work is all spared (innocent): waiting publications fail
+    /// their own fence with EBUSY instead of a device-loss error, so the VM stays usable.
+    spared: u64,
     kill_hold: u64,
     released: u64,
     epoch: u64,
@@ -68,6 +71,7 @@ impl State {
             owners: [0; cfg::RENDER_SLOTS],
             epochs: [0; cfg::RENDER_SLOTS],
             quarantined: 0,
+            spared: 0,
             kill_hold: 0,
             released: 0,
             epoch: 0,
@@ -338,7 +342,15 @@ impl Pool {
                 .is_some_and(|slot| state.quarantined & (1u64 << slot) != 0)
             {
                 if quarantine_budget == 0 {
-                    return Err(EIO);
+                    // Behind an innocent pair's quarantine (another VM wedged the GPU) only this
+                    // publication fails; a device-loss error would make the VM sticky and the
+                    // compositor abort (2026-10-19). It recovers once the pair drains.
+                    let spared = state
+                        .owners
+                        .iter()
+                        .position(|id| *id == owner)
+                        .is_some_and(|slot| state.spared & (1u64 << slot) != 0);
+                    return Err(if spared { EBUSY } else { EIO });
                 }
                 quarantine_budget = match self
                     .released
@@ -446,6 +458,7 @@ impl Pool {
         }
         state.released &= !released;
         state.quarantined &= !released;
+        state.spared &= !released;
         state.kill_hold = 0;
         drop(state);
         self.released.notify_all();
@@ -471,14 +484,26 @@ impl RenderLease {
     pub(crate) fn slot(&self) -> u8 {
         self.slot
     }
-    pub(crate) fn quarantine(&self) {
-        self.pool.state.lock().quarantined |= 1u64 << self.slot;
+    /// `spared`: the failing work is innocent. Any guilty failure makes the slot's quarantine
+    /// guilty for good; only a quarantine that starts spared and stays spared is marked spared.
+    pub(crate) fn quarantine(&self, spared: bool) {
+        let bit = 1u64 << self.slot;
+        let mut state = self.pool.state.lock();
+        if !spared {
+            state.spared &= !bit;
+        } else if state.quarantined & bit == 0 {
+            state.spared |= bit;
+        }
+        state.quarantined |= bit;
+        drop(state);
         self.pool.released.notify_all();
     }
     /// The VM pin must be retired first. Keep this lease until after clearing
     /// quarantine; its drop is what permits waiting publications to proceed.
     pub(crate) fn rehabilitate_after_processor_stop(&self) {
-        self.pool.state.lock().quarantined &= !(1u64 << self.slot);
+        let mut state = self.pool.state.lock();
+        state.quarantined &= !(1u64 << self.slot);
+        state.spared &= !(1u64 << self.slot);
     }
     /// Requires the runtime's closed-recovery, exact pair-drain witness.
     pub(crate) fn rehabilitate_after_firmware_drain(&self) {
