@@ -403,6 +403,7 @@ impl<B: Backend> crate::queue::Queue for Queue<B> {
         if let Err(error) = result {
             self.context.status().record_if_device_loss(error);
             if [EIO, ETIMEDOUT, ENODEV].contains(&error) || self.context.status().get() != 0 {
+                pr_warn!("G17: submission failed ({:?}); failing the VM\n", error);
                 self.backend.fail_vm(error);
             }
         }

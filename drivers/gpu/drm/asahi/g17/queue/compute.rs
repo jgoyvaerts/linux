@@ -705,12 +705,16 @@ impl Queue {
 
     /// Return VM identity for queue-local failure fanout. Deferred callbacks are collected under
     /// the mutex and invoked afterwards; failed packets stay retained until their witness.
+    #[track_caller]
     pub(crate) fn quarantine(
         &mut self,
         error: Error,
         defer: &mut impl FnMut(Deferred) -> Result,
     ) -> Result<Option<Arc<VmStatus>>> {
         if !self.quarantined {
+            let at = core::panic::Location::caller();
+            pr_warn!("G17: compute queue quarantined ({:?}) from {}:{}\n", error,
+                at.file().rsplit("asahi/").next().unwrap_or(at.file()), at.line());
             self.quarantined = true;
             self.quarantine_error = Some(error);
             self.failure_status_pending = true;

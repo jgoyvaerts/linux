@@ -1040,11 +1040,17 @@ impl Pair {
     }
     /// Classification controls VM poisoning. Every failed render fence settles,
     /// while command memory remains owned until paired retirement or stop.
+    #[track_caller]
     pub(crate) fn quarantine(
         &mut self,
         error: Error,
         defer: &mut impl FnMut(Deferred) -> Result,
     ) -> Result {
+        if !self.quarantined {
+            let at = core::panic::Location::caller();
+            pr_warn!("G17: render pair quarantined ({:?}) from {}:{}\n", error,
+                at.file().rsplit("asahi/").next().unwrap_or(at.file()), at.line());
+        }
         self.quarantined = true;
         // Successors published after recovery can still fail behind its spared
         // head. Classify the whole failing group before any fence can settle.
