@@ -528,8 +528,11 @@ impl Completion {
             feed.note_render_pass(ticks[2], ticks[3]);
         }
         if let Err(error) = result {
+            // Spared work cancelled after another VM's recovery is not this client's device loss.
             if self.spared() {
-                self.status.report_failure(error);
+                if error != ECANCELED {
+                    self.status.report_failure(error);
+                }
             } else if error != ECANCELED {
                 self.status.record(error);
             }
