@@ -390,7 +390,7 @@ impl Payload {
                     scissor_va: cmd.isp_scissor_base,
                     depth_bias_va: cmd.isp_dbias_base,
                     depth_bias_is_int: cmd.flags & DBIAS_INT != 0,
-                    few_primitives: cmd.flags & FEW_PRIMITIVES != 0,
+                    few_primitives: cmd.flags & FEW_PRIMITIVES != 0 && !super::fw::is_25g83(),
                     fragment_barriers: cmd.flags & FRAGMENT_BARRIERS != 0,
                     occlusion_query_va: cmd.isp_oclqry_base,
                     sampler_heap_va: cmd.sampler_heap,
