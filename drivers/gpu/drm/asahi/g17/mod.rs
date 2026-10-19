@@ -1420,6 +1420,15 @@ impl gpu::Gpu for Gpu {
         true
     }
 
+    /// The G17 runtime never programs fault_control into the firmware, so unmapped reads are not
+    /// guaranteed to return zero. Advertising soft faults made Mesa point out-of-bounds vec3/vec4
+    /// vertex fetches at address 0 and skip bounds checks on bounded loads; on T6040 those reads
+    /// returned non-zero data (2026-10-19: every robustness2 rgba32 vertex_attribute_fetch case
+    /// failed; all pass with soft faults off).
+    fn supports_soft_faults(&self) -> bool {
+        false
+    }
+
     fn queue_limits(&self) -> Option<uapi::drm_asahi_queue_limits> {
         Some(uapi::drm_asahi_queue_limits {
             max_queues: mmu::MAX_EXECUTION_CONTEXTS,

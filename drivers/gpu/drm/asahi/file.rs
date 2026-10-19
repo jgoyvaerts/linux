@@ -15,7 +15,6 @@ use crate::{
     driver,
     gem,
     mmu,
-    module_parameters,
     queue,
     util::{
         align,
@@ -375,7 +374,7 @@ impl File {
             params.features |= uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_INDEPENDENT_QUEUES as u64;
         }
 
-        if *module_parameters::fault_control.value() == 0xb {
+        if gpu.supports_soft_faults() {
             params.features |= uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_SOFT_FAULTS as u64;
         }
 
