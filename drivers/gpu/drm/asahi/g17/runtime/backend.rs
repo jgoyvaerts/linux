@@ -230,11 +230,24 @@ impl job::Backend for Backend {
         if packet.engine() == Engine::Compute {
             return self.defer_compute_timeout(packet, renewals);
         }
-        if !crate::g17::timeout::transaction_grace(renewals) { return false; }
+        use crate::g17::timeout::{self, Decision};
         let mut state = self.shared.state.lock();
-        (*state)
-            .as_deref_mut()
-            .is_some_and(|firmware| firmware.queues.defer_render_timeout(packet, ETIMEDOUT))
+        let Some(firmware) = (*state).as_deref_mut() else {
+            return false;
+        };
+        // Borrowed-graph and queued-retirement deferrals share the renewal bound.
+        if timeout::transaction_grace(renewals)
+            && firmware.queues.defer_render_timeout(packet, ETIMEDOUT)
+        {
+            return true;
+        }
+        let decision = firmware.queues.render_timeout_decision(packet, renewals);
+        if decision != Decision::Own && (renewals == 0 || decision == Decision::Spare) {
+            dev_warn!(self.shared.dev.as_ref(),
+                "Render watchdog owner={} renewals={} decision={:?} behind earlier work of another VM\n",
+                self.owner, renewals, decision);
+        }
+        decision == Decision::Defer
     }
 
     fn try_early(&self, packet: &Arc<Packet>) -> bool {
