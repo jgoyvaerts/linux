@@ -423,6 +423,11 @@ impl Payload {
                     rsrc_spec_hi: cmd.flags & RSRC_SPEC_HI != 0,
                 };
                 for stage in ray_query {
+                    if (stage.intersection.enabled() || stage.scratch.enabled())
+                        && !ray_tracing_allowed()
+                    {
+                        return Err(refuse_ray_tracing());
+                    }
                     if stage.intersection.enabled() {
                         require_range(space, stage.intersection.pool, stage.intersection.pool_bytes, Access::Read)?;
                         let code = stage.intersection.default_program & 0x0000_ffff_ffff_ffff;
@@ -453,6 +458,10 @@ impl Payload {
                 )?;
                 sampler(space, cmd.sampler_heap, cmd.sampler_count)?;
                 attachments.validate(space)?;
+                let scratch = ScratchRequest::new(cmd.scs_layout)?;
+                if (scratch.enabled() || intersection.enabled()) && !ray_tracing_allowed() {
+                    return Err(refuse_ray_tracing());
+                }
                 if intersection.enabled() {
                     require_range(space, intersection.pool, intersection.pool_bytes, Access::Read)?;
                     let code = intersection.default_program & 0x0000_ffff_ffff_ffff;
@@ -460,7 +469,7 @@ impl Payload {
                 }
                 Ok(Validated::Compute {
                     intersection: *intersection,
-                    scratch: ScratchRequest::new(cmd.scs_layout)?,
+                    scratch,
                     usc_base: window.base,
                     cdm_va: cmd.cdm_ctrl_stream_base,
                     cdm_end_va: cmd.cdm_ctrl_stream_end - 4,
@@ -471,4 +480,17 @@ impl Payload {
             }
         }
     }
+}
+
+/// Whether ray-traversal work is accepted. On the 25G83 firmware (M4 Pro) a stalled traversal
+/// wedges the whole GPU without a firmware recovery; the driver can neither kill a traversal
+/// (queue/compute/exit.rs) nor start a recovery, so it is refused there.
+pub(crate) fn ray_tracing_allowed() -> bool {
+    !crate::g17::fw::is_25g83()
+}
+
+fn refuse_ray_tracing() -> Error {
+    kernel::pr_warn_once!("G17: ray-traversal work refused on this firmware\n");
+    // EOPNOTSUPP (the kernel crate only names the kernel-internal ENOTSUPP).
+    Error::from_errno(-(kernel::bindings::EOPNOTSUPP as i32))
 }

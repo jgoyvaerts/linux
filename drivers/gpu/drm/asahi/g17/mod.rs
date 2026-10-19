@@ -1382,8 +1382,10 @@ impl gpu::Gpu for Gpu {
         params.features |=
             uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_PER_COMMAND_INPUT_SYNCS as u64
                 | uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_EXACT_PRIOR_BARRIERS as u64
-                | uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_FRAGMENT_BARRIERS as u64
-                | uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_RENDER_RAY_QUERY as u64;
+                | uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_FRAGMENT_BARRIERS as u64;
+        if command::ray_tracing_allowed() {
+            params.features |= uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_RENDER_RAY_QUERY as u64;
+        }
         // The 25G83 firmware hangs a render whose fragment stage carries the few-primitives
         // auxiliary framebuffer bit (render.rs), so it is neither offered nor honoured there.
         if !fw::is_25g83() {
