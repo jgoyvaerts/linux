@@ -1415,22 +1415,42 @@ impl Pair {
         if !self.active.iter().any(|a| Arc::ptr_eq(&a.packet, packet)) {
             return Ok(false);
         }
-        if !self.quarantined && self.active.len() == 1 {
-            let active = self.active.front().ok_or(EIO)?;
-            let mut observer = Observer {
-                memory: &self.memory,
-                qids: self.qids(),
-                host,
-            };
-            core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
-            let snapshot = observer.snapshot(active.ticket.ordinal)?;
-            let stamps = observer.stamps()?;
-            let (_, state) = observer.host.epoch()?;
-            if active.outer_published
-                && retirement::abandoned(&active.ticket, snapshot, stamps, state, false)?
-            {
+        // A spared (innocent) front group the firmware retired without executing during another
+        // VM's recovery is retired on its own even with successors queued: on 25G83 the firmware
+        // drops such groups without running them, and quarantining the pair instead left the
+        // client with a sticky EIO (2026-10-19: groups 9, pass 0/0, stamps covering, job list
+        // empty; the compositor froze). It fails with ECANCELED, which spared work never reports
+        // as device loss; consecutive abandoned spared successors are retired the same way.
+        let front_spared = self.active.front().is_some_and(|a| {
+            Arc::ptr_eq(&a.packet, packet) && a.packet.completion.spared()
+        });
+        if !self.quarantined && (self.active.len() == 1 || front_spared) {
+            let mut retired = false;
+            loop {
+                let Some(active) = self.active.front() else {
+                    break;
+                };
+                let spared = active.packet.completion.spared();
+                if retired && !spared {
+                    break;
+                }
+                let mut observer = Observer {
+                    memory: &self.memory,
+                    qids: self.qids(),
+                    host,
+                };
+                core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
+                let snapshot = observer.snapshot(active.ticket.ordinal)?;
+                let stamps = observer.stamps()?;
+                let (_, state) = observer.host.epoch()?;
+                if !active.outer_published
+                    || !retirement::abandoned(&active.ticket, snapshot, stamps, state, false)?
+                {
+                    break;
+                }
                 let qos = self.qos_owners();
                 let buffer = self.buffer_id();
+                let left = self.active.len() - 1;
                 let active = self.active.front_mut().ok_or(EIO)?;
                 if !active.flist_completed {
                     host.complete_render(
@@ -1442,19 +1462,31 @@ impl Pair {
                     active.flist_completed = true;
                     active.qos_completed = true;
                 }
-                if !active.failed && !active.packet.completion.spared() {
+                if !active.failed && !spared {
                     active.packet.completion.status().record(EIO);
                     if self.terminal.is_none() {
                         self.terminal = Some((active.packet.completion.status().clone(), error));
                     }
                 }
+                pr_warn!(
+                    "G17: render of {} retired unexecuted after a recovery (ordinal {}, {} groups left)\n",
+                    active.packet.completion.status().owner(),
+                    active.ticket.ordinal,
+                    left
+                );
                 defer(Deferred::Retired(
                     active.packet.completion.clone(),
-                    Err(EIO),
+                    Err(if spared { ECANCELED } else { EIO }),
                 ))?;
                 let ordinal = active.ticket.ordinal;
                 self.memory.retire(ordinal)?;
                 self.active.pop().ok_or(EIO)?;
+                retired = true;
+                if !spared {
+                    break;
+                }
+            }
+            if retired {
                 return Ok(true);
             }
         }
