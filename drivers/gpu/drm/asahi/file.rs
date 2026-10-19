@@ -18,7 +18,6 @@ use crate::{
     gem,
     memacct,
     mmu,
-    module_parameters,
     queue,
     util::{
         align,
@@ -408,7 +407,7 @@ impl File {
                 u64::from(uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_INDEPENDENT_QUEUES);
         }
 
-        if module_parameters::fault_control.value() == 0xb {
+        if gpu.supports_soft_faults() {
             params.features |= uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_SOFT_FAULTS as u64;
         }
 

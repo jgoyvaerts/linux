@@ -284,6 +284,10 @@ pub(crate) trait Gpu: Send + Sync {
     fn is_crashed(&self) -> bool;
     /// Fill in the hardware description reported to userspace.
     fn get_params(&self, params: &mut uapi::drm_asahi_params_global) -> Result;
+    /// Whether unmapped GPU reads return zero (fault_control programmed into the firmware).
+    fn supports_soft_faults(&self) -> bool {
+        crate::module_parameters::fault_control.value() == 0xb
+    }
     /// Whether user VMs retain a sticky error and support a userspace mirror.
     fn supports_vm_status(&self) -> bool {
         false
