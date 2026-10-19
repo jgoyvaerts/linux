@@ -336,7 +336,7 @@ impl<B: Backend> sched::JobImpl for Job<B> {
         }
         let deferred = job.backend.defer_timeout(&job.packet, job.victim_renewals);
         if deferred {
-            job.victim_renewals += 1;
+            job.victim_renewals = job.victim_renewals.saturating_add(1);
         }
         deferred
     }
