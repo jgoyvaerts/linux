@@ -51,7 +51,7 @@ struct Identity {
 /// One shared namespace for tiling, fragment and compute queues.
 pub(crate) struct QueueIds {
     entries: [Option<Identity>; QID_COUNT],
-    compute_publication: u64,
+    publication: u64,
     leased: usize,
     /// First QID the host may use.
     floor: usize,
@@ -61,7 +61,7 @@ impl QueueIds {
     pub(crate) fn new() -> impl Init<Self, Error> {
         kernel::try_init!(Self {
             entries <- pin_init::init_array_from_fn(|_| None),
-            compute_publication: 0,
+            publication: 0,
             leased: 0,
             floor: if super::fw::is_25g83() { QID_FLOOR_25G83 } else { 0 },
         })
@@ -121,10 +121,11 @@ impl QueueIds {
         Ok(id)
     }
 
-    /// Ordered under the device mutex; no atomic operation on the submission path.
-    pub(crate) fn next_compute_publication(&mut self) -> Result<u64> {
-        self.compute_publication = self.compute_publication.checked_add(1).ok_or(EOVERFLOW)?;
-        Ok(self.compute_publication)
+    /// Ordered under the device mutex; no atomic operation on the submission path. Compute and
+    /// render publications share it, so a watchdog can order work across both engines.
+    pub(crate) fn next_publication(&mut self) -> Result<u64> {
+        self.publication = self.publication.checked_add(1).ok_or(EOVERFLOW)?;
+        Ok(self.publication)
     }
 
     /// Call after preflighting the complete installation, before any address

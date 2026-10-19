@@ -27,10 +27,11 @@ impl Backend {
             let Some(own) = queue.timeout_head() else {
                 return Ok(Decision::Own);
             };
-            let others = firmware.queues.compute.iter().flatten()
+            let computes = firmware.queues.compute.iter().flatten()
                 .filter_map(|entry| entry.queue.as_deref())
                 .filter(|other| other.owner() != Some(self.owner))
                 .filter_map(|other| other.timeout_head());
+            let others = Iterator::chain(computes, firmware.queues.render_timeout_heads());
             let decision = timeout::classify(own, renewals, others);
             if decision == Decision::Spare {
                 firmware.queues.compute(self.owner).ok_or(EIO)?

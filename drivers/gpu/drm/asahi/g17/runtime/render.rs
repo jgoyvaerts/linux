@@ -425,6 +425,9 @@ impl crate::g17::queue::render::Host for Host<'_> {
     fn publish_qid(&mut self, id: kick::Id) -> Result {
         self.firmware.queues.qids.publish(id)
     }
+    fn next_publication(&mut self) -> Result<u64> {
+        self.firmware.queues.qids.next_publication()
+    }
     fn publish_outer_pair(
         &mut self,
         priority: u8,
@@ -821,5 +824,52 @@ impl Registry {
         packet.completion.defer_timeout(error);
         entry.pending_timeout = true;
         true
+    }
+
+    /// The oldest published group of every render pair, for cross-VM timeout attribution
+    /// (crate::g17::timeout).
+    pub(in crate::g17) fn render_timeout_heads(
+        &self,
+    ) -> impl Iterator<Item = crate::g17::timeout::Head> + '_ {
+        self.render
+            .entries
+            .iter()
+            .flatten()
+            .filter_map(|entry| entry.pair.as_ref())
+            .filter_map(|pair| pair.timeout_head())
+    }
+
+    /// A render watchdog blocked behind another VM's older unfinished work gets the same
+    /// bounded grace as compute; the oldest unfinished work is never excused. When the GPU
+    /// stalls on one client, the others' renders then outlive the culprit's teardown instead
+    /// of all timing out together (2026-10-19: a stalled dEQP compute job failed every VM,
+    /// and Hyprland aborted on the EIO).
+    pub(in crate::g17) fn render_timeout_decision(
+        &self,
+        packet: &Arc<Packet>,
+        renewals: u8,
+    ) -> crate::g17::timeout::Decision {
+        let own = self
+            .render
+            .entries
+            .iter()
+            .flatten()
+            .filter_map(|entry| entry.pair.as_ref())
+            .find(|pair| pair.contains_packet(packet))
+            .and_then(|pair| pair.timeout_head());
+        let computes = self
+            .compute
+            .iter()
+            .flatten()
+            .filter_map(|entry| entry.queue.as_deref())
+            .filter_map(|queue| queue.timeout_head());
+        match own {
+            Some(own) => crate::g17::timeout::classify(
+                own,
+                renewals,
+                Iterator::chain(self.render_timeout_heads(), computes),
+            ),
+            None => crate::g17::timeout::Decision::Own,
+        }
     }
 }

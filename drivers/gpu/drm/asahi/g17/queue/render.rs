@@ -87,6 +87,8 @@ pub(crate) trait Host {
     fn qos_cancel(&mut self, publication: qos::Publication) -> Result;
     fn install_pair(&mut self, registration: &RenderRegistration) -> Result;
     fn publish_qid(&mut self, id: kick::Id) -> Result;
+    /// The next publication number, shared with compute (timeout ordering).
+    fn next_publication(&mut self) -> Result<u64>;
     fn publish_outer_pair(
         &mut self,
         priority: u8,
@@ -120,6 +122,8 @@ struct Prepared {
     mcache: Option<McacheTable>,
 }
 struct Active {
+    /// Publication number, shared with compute (crate::g17::timeout).
+    published: u64,
     qos_completed: bool,
     flist_completed: bool,
     outer_published: bool,
@@ -709,8 +713,10 @@ impl Pair {
         let next_inner = (next_ordinal as u32).wrapping_mul(2);
         let flist_submission = self.free_list.prepare_submission(2)?;
         let pm_submission = memory.manager.prepare_submission()?;
+        let published = host.next_publication()?;
         self.active
             .push(Active {
+                published,
                 qos_completed: false,
                 flist_completed: false,
                 outer_published: false,
@@ -944,6 +950,21 @@ impl Pair {
                 .all(|qid| masks[usize::from(qid) / 64] & (1u64 << (qid % 64)) != 0)
         })
     }
+    /// The oldest published group, for cross-VM timeout attribution (crate::g17::timeout).
+    pub(crate) fn timeout_head(&self) -> Option<crate::g17::timeout::Head> {
+        if self.quarantined {
+            return None;
+        }
+        self.active
+            .front()
+            .filter(|active| active.outer_published)
+            .map(|active| crate::g17::timeout::Head {
+                vm: Arc::as_ptr(active.packet.completion.status()) as usize,
+                published: active.published,
+                finished: active.drained_result.is_some(),
+            })
+    }
+
     pub(crate) fn contains_packet(&self, packet: &Arc<Packet>) -> bool {
         self.active
             .iter()
