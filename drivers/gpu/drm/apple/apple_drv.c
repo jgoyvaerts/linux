@@ -267,7 +267,7 @@ DEFINE_DRM_GEM_DMA_FOPS(apple_fops);
 
 #define DART_PAGE_SIZE 16384
 
-static struct drm_gem_dma_object *
+struct drm_gem_dma_object *
 apple_drm_gem_create_scanout(struct drm_device *drm, size_t size)
 {
 	struct drm_gem_dma_object *dma_obj;
