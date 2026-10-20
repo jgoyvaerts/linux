@@ -20,7 +20,9 @@ properties:
     oneOf:
       - const: apple,t6000-pmp-v2
       - items:
-          - const: apple,t8140-pmp-v2
+          - enum:
+              - apple,t6040-pmp-v2
+              - apple,t8140-pmp-v2
           - const: apple,t6000-pmp-v2
 
   reg:
@@ -56,6 +58,28 @@ properties:
   apple,dram-capacity:
     $ref: /schemas/types.yaml#/definitions/uint32
     description: Firmware DRAM capacity value copied by the bootloader.
+
+  apple,dram-channel-disable:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: Disabled DRAM channel mask (boot argument DCHD), copied by the bootloader.
+
+  apple,pmc:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: Boot argument PMC_, the PMGR's pmc value in Apple's device tree.
+
+  apple,pmc-pmgr:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description:
+      PMGR PMC configuration word from Apple's device tree. Bits 0 and 3 are
+      passed as the boot arguments PMCV and PMCB.
+
+  apple,pmc-msg-disabled:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: Boot argument PMCX, from Apple's device tree.
+
+  apple,soc-chip-variant:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: SoC chip variant (boot argument CVAR), copied by the bootloader.
 
   apple,pio-ranges:
     $ref: /schemas/types.yaml#/definitions/uint64-array
