@@ -267,7 +267,7 @@ EXPORT_SYMBOL_GPL(snd_dmaengine_pcm_pointer_no_residue);
  * This function can be used as the PCM pointer callback for dmaengine based PCM
  * driver implementations.
  *
- * Return: PCM position in frames
+ * Return: PCM position in frames, or SNDRV_PCM_POS_XRUN on a DMA error
  */
 snd_pcm_uframes_t snd_dmaengine_pcm_pointer(struct snd_pcm_substream *substream)
 {
@@ -279,6 +279,10 @@ snd_pcm_uframes_t snd_dmaengine_pcm_pointer(struct snd_pcm_substream *substream)
 	unsigned int pos = 0;
 
 	status = dmaengine_tx_status(prtd->dma_chan, prtd->cookie, &state);
+	if (status == DMA_ERROR) {
+		runtime->delay = 0;
+		return SNDRV_PCM_POS_XRUN;
+	}
 	if (status == DMA_IN_PROGRESS || status == DMA_PAUSED) {
 		buf_size = snd_pcm_lib_buffer_bytes(substream);
 		if (state.residue > 0 && state.residue <= buf_size)
