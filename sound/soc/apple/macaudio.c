@@ -207,6 +207,23 @@ static int please_blow_up_my_speakers;
 module_param(please_blow_up_my_speakers, int, 0644);
 MODULE_PARM_DESC(please_blow_up_my_speakers, "Allow unsafe or untested operating configurations");
 
+/*
+ * While the speaker volumes are unlocked, their maximum is the machine's
+ * max_vol, or this parameter if it is lower (a test ceiling for bring-up).
+ * speakersafetyd writes each volume to 0 dB minus its reduction through the
+ * control's dB range, so its writes clamp to the ceiling. A change applies at
+ * the next unlock: an owner that already holds the lock keeps its limit until
+ * it lets go.
+ */
+static int speaker_ceiling_db;
+module_param(speaker_ceiling_db, int, 0644);
+MODULE_PARM_DESC(speaker_ceiling_db, "Lower the unlocked speaker volume ceiling to this many dB, -100..0 (0: the machine's own; TAS5770/SN012776)");
+
+static int macaudio_ceiling_db(struct macaudio_snd_data *ma)
+{
+	return clamp(min(READ_ONCE(speaker_ceiling_db), ma->cfg->max_vol), -100, 0);
+}
+
 SND_SOC_DAILINK_DEFS(primary,
 	DAILINK_COMP_ARRAY(COMP_CPU("mca-pcm-0")), // CPU
 	DAILINK_COMP_ARRAY(COMP_DUMMY()), // CODEC
@@ -315,13 +332,13 @@ static void macaudio_vlimit_unlock(struct macaudio_snd_data *ma, bool unlock)
 		return;
 	case AMP_TAS5770:
 		if (unlock)
-			max = TAS5770_DB(ma->cfg->max_vol);
+			max = TAS5770_DB(macaudio_ceiling_db(ma));
 		else
 			max = 1; //TAS5770_DB(ma->cfg->safe_vol);
 		break;
 	case AMP_SN012776:
 		if (unlock)
-			max = SN012776_DB(ma->cfg->max_vol);
+			max = SN012776_DB(macaudio_ceiling_db(ma));
 		else
 			max = 1; //SN012776_DB(ma->cfg->safe_vol);
 		break;
@@ -465,7 +482,8 @@ static void macaudio_vlimit_update(struct macaudio_snd_data *ma)
 
 	if (unlock != ma->speaker_volume_unlocked) {
 		if (unlock) {
-			dev_info(ma->card.dev, "Speaker volumes unlocked\n");
+			dev_info(ma->card.dev, "Speaker volumes unlocked (ceiling %d dB)\n",
+				 macaudio_ceiling_db(ma));
 		} else  {
 			dev_info(ma->card.dev, "Speaker volumes locked: %s\n", reason);
 			ma->speaker_volume_was_locked = true;

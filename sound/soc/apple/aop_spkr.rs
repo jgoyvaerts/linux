@@ -159,7 +159,15 @@ impl Speakers {
             );
             return Err(EIO);
         }
-        if self.power_state()? != state {
+        let now = self.power_state()?;
+        dev_info!(
+            self.aop.dev,
+            "M4_SPKR power {:#x} param {} -> state {:#x}\n",
+            state,
+            param,
+            now
+        );
+        if now != state {
             return Err(EIO);
         }
         Ok(())
@@ -805,6 +813,10 @@ impl SpeakerComponent {
             );
             return Err(Error::from_errno(ret));
         }
+        dev_info!(
+            aop.dev,
+            "M4_SPKR component registered (spkr stream, base-ns ADMAC channels 0 and 1)\n"
+        );
         Ok(Self {
             dev: aop.dev.clone(),
             ctx,
