@@ -7,20 +7,12 @@
 /* For mode parsing */
 #include <drm/drm_modes.h>
 
-#include "dcp-display-metadata.h"
-#include "dcp-metadata-epoch.h"
-
 struct apple_dcp;
-struct apple_connector;
-struct apple_dcp_typec_route;
 
 struct dcp_parse_ctx {
 	struct apple_dcp *dcp;
 	const void *blob;
 	u32 pos, len;
-	/* External H17P candidates require separate publication/lookup proof. */
-	bool automatic_1080p180_rgb8;
-	bool ambiguous_180hz;
 };
 
 enum dcp_color_eotf {
@@ -102,75 +94,21 @@ struct dcp_display_mode {
 	struct dcp_color_mode sdr;
 	struct dcp_color_mode best;
 	bool vrr;
-	/* IsPreferred, outside the external SDR path */
-	bool preferred;
-	bool metadata_timing_valid;
-	bool automatic_rgb8_quirk;
-	u64 automatic_connection_sequence;
-	u64 automatic_catalog_sequence;
-	bool automatic_service_pending;
-	/* Immutable receipt provenance; never retag a cached exception. */
-	struct dcp_metadata_ticket unsafe_rgb8_ticket;
-	u64 unsafe_rgb8_service_epoch;
 };
 
 struct dimension {
 	s64 total, front_porch, sync_width, active;
 	s64 precise_sync_rate;
-	s64 sync_polarity;
-	s64 pixel_repetition;
 };
 
-/*
- * Upper bound on the TimingElements catalog. DCP reports one element per
- * timing it derived from the sink's EDID and DisplayID, and every catalog
- * logged on J700 so far holds at most 14. The cap leaves ample headroom
- * while keeping the retained array (320 bytes per entry) below 1 MiB.
- */
-#define DCP_MAX_TIMING_MODES 1024
-
 int parse(const void *blob, size_t size, struct dcp_parse_ctx *ctx);
-bool dcp_property_complete(const void *blob, size_t received, size_t advertised);
-#if IS_ENABLED(CONFIG_KUNIT)
-bool dcp_mode_ranks_above(bool preferred, s64 score, bool best_preferred,
-			  s64 best_score);
-#endif
-
 struct dcp_display_mode *enumerate_modes(struct dcp_parse_ctx *handle,
 					 unsigned int *count, int width_mm,
-					 int height_mm, unsigned notch_height,
-					 bool internal, bool external_sdr);
-int parse_display_metadata(struct dcp_parse_ctx *handle, struct dcp_display_metadata *out);
-/* Caller holds modes_lock while checking connector ownership. */
-bool dcp_modes_for_connector(struct apple_dcp *dcp,
-			     struct apple_connector *connector);
-void dcp_modes_begin_attachment(struct apple_dcp *dcp);
-struct dcp_display_mode *dcp_modes_dup(struct apple_dcp *dcp,
-				       struct apple_connector *connector,
-				       unsigned int *count, u64 *generation);
-void dcp_modes_adopt(struct apple_dcp *dcp, struct apple_connector *connector,
-		     u64 generation, struct dcp_display_mode *modes,
-		     unsigned int count);
-bool dcp_modes_end_typec(struct apple_dcp *dcp, struct apple_dcp_typec_route *route);
-void dcp_modes_init(struct apple_dcp *dcp);
-void dcp_modes_release(void *data);
-int dcp_attributes_replace(struct apple_dcp *dcp, struct dcp_parse_ctx *handle,
-			   u64 generation);
-u64 dcp_modes_transfer_begin(struct apple_dcp *dcp);
-int dcp_modes_replace(struct apple_dcp *dcp, struct dcp_parse_ctx *handle,
-		      u64 generation);
-
-int parse_array_count(const struct dcp_parse_ctx *handle, u32 *count);
-
-/* Caller serializes readers against replacement. */
-int replace_modes(struct dcp_parse_ctx *handle,
-		  struct dcp_display_mode **modes, unsigned int *count,
-		  int width_mm, int height_mm, unsigned int notch_height,
-		  bool internal);
+					 int height_mm, unsigned notch_height);
 int parse_display_attributes(struct dcp_parse_ctx *handle, int *width_mm,
-			     int *height_mm, bool *backlight_control);
+			     int *height_mm);
 int parse_epic_service_init(struct dcp_parse_ctx *handle, const char **name,
-			    const char **class, s64 *unit, bool h17p_keys);
+			    const char **class, s64 *unit);
 
 struct dcp_sound_format_mask {
 	u64 formats;			/* SNDRV_PCM_FMTBIT_* */
