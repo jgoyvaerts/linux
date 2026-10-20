@@ -829,6 +829,67 @@
 		status = "disabled";
 	};
 
+	/*
+	 * The other I2C buses of this board (ADT i2c2/4/6/8; the SoC's i2c0/5/7 are not wired here): i2c2 carries the
+	 * headphone codec, i2c4 an SD-card helper, i2c6 the USB-C retimers, i2c8 the HDMI converter. Listed after
+	 * i2c1/i2c3 so that those keep their bus numbers.
+	 */
+	i2c2: i2c@429018000 {
+		compatible = "apple,t6041-i2c", "apple,t8103-i2c";
+		reg = <4 0x29018000 0 0x4000>;
+		clocks = <&clkref>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x629 4>;
+		pinctrl-0 = <&i2c2_pins>;
+		pinctrl-names = "default";
+		power-domains = <&ps_i2c2>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		status = "disabled";
+	};
+
+	i2c4: i2c@429020000 {
+		compatible = "apple,t6041-i2c", "apple,t8103-i2c";
+		reg = <4 0x29020000 0 0x4000>;
+		clocks = <&clkref>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x62b 4>;
+		pinctrl-0 = <&i2c4_pins>;
+		pinctrl-names = "default";
+		power-domains = <&ps_i2c4>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		status = "disabled";
+	};
+
+	i2c6: i2c@429028000 {
+		compatible = "apple,t6041-i2c", "apple,t8103-i2c";
+		reg = <4 0x29028000 0 0x4000>;
+		clocks = <&clkref>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x62d 4>;
+		pinctrl-0 = <&i2c6_pins>;
+		pinctrl-names = "default";
+		power-domains = <&ps_i2c6>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		status = "disabled";
+	};
+
+	i2c8: i2c@429030000 {
+		compatible = "apple,t6041-i2c", "apple,t8103-i2c";
+		reg = <4 0x29030000 0 0x4000>;
+		clocks = <&clkref>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x62f 4>;
+		pinctrl-0 = <&i2c8_pins>;
+		pinctrl-names = "default";
+		power-domains = <&ps_i2c8>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		status = "disabled";
+	};
+
 	cpus {
 		#size-cells = <0>;
 		#address-cells = <2>;
@@ -1253,6 +1314,22 @@
 		i2c3_pins: i2c3-pins {
 			pinmux = <0x1003e>, <0x1003f>;
 		};
+
+		i2c2_pins: i2c2-pins {
+			pinmux = <0x1003c>, <0x1003d>;
+		};
+
+		i2c4_pins: i2c4-pins {
+			pinmux = <0x10040>, <0x10041>;
+		};
+
+		i2c6_pins: i2c6-pins {
+			pinmux = <0x10044>, <0x10045>;
+		};
+
+		i2c8_pins: i2c8-pins {
+			pinmux = <0x10048>, <0x10049>;
+		};
 	};
 
 	pcie0: pcie@1cb0000000 {
@@ -1360,6 +1437,43 @@
 			compatible = "apple,t6041-pmgr-pwrstate", "apple,t8103-pmgr-pwrstate";
 			reg = <0x168 4>;
 			label = "i2c3";
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			power-domains = <&ps_kbd_sio>;
+		};
+
+		/* ADT pmgr devices I2C2 (0xae), I2C4 (0xb0), I2C6 (0xb2) and I2C8 (0xb4), children of SIO */
+		ps_i2c2: power-controller@160 {
+			compatible = "apple,t6041-pmgr-pwrstate", "apple,t8103-pmgr-pwrstate";
+			reg = <0x160 4>;
+			label = "i2c2";
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			power-domains = <&ps_kbd_sio>;
+		};
+
+		ps_i2c4: power-controller@170 {
+			compatible = "apple,t6041-pmgr-pwrstate", "apple,t8103-pmgr-pwrstate";
+			reg = <0x170 4>;
+			label = "i2c4";
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			power-domains = <&ps_kbd_sio>;
+		};
+
+		ps_i2c6: power-controller@180 {
+			compatible = "apple,t6041-pmgr-pwrstate", "apple,t8103-pmgr-pwrstate";
+			reg = <0x180 4>;
+			label = "i2c6";
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			power-domains = <&ps_kbd_sio>;
+		};
+
+		ps_i2c8: power-controller@190 {
+			compatible = "apple,t6041-pmgr-pwrstate", "apple,t8103-pmgr-pwrstate";
+			reg = <0x190 4>;
+			label = "i2c8";
 			#power-domain-cells = <0>;
 			#reset-cells = <0>;
 			power-domains = <&ps_kbd_sio>;
