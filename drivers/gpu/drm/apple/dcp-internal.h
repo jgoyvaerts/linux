@@ -4,6 +4,7 @@
 #ifndef __APPLE_DCP_INTERNAL_H__
 #define __APPLE_DCP_INTERNAL_H__
 
+#include <drm/drm_mode.h>
 #include <linux/backlight.h>
 #include <linux/device.h>
 #include <linux/ioport.h>
@@ -34,8 +35,6 @@ extern bool dcp_swap_stats;
 /* M4 (R39 prep): page-flip event policy (bit0 raw completion time, bit1 running sequence) and fake swap timestamps */
 extern unsigned int dcp_flip_event_mode;
 extern bool dcp_swap_timestamps;
-/* M4 (R52): 1 = read the DCP gamma table once (A420) after the first swaps and log its shape; read-only */
-extern bool dcp_gamma_probe;
 extern unsigned int dcp_backlight_default_nits;
 extern unsigned long dcp_clk_hz;
 
@@ -247,7 +246,13 @@ struct apple_dcp {
 	ktime_t m4_vbl_epoch, m4_intent_time, m4_complete_time;
 	u32 m4_stats_intent_n, m4_stats_intent_max_us;
 	u64 m4_stats_intent_sum_us;
-	bool m4_gamma_probed;
+	/*
+	 * GAMMA_LUT (26.6): the firmware's own table, read before the first
+	 * change; the table being sent; the LUT it is composed from, if any.
+	 */
+	struct iomfb_gamma_table_req *gamma_fw, *gamma_out;
+	struct drm_color_lut gamma_lut[IOMFB_GAMMA_ENTRIES];
+	bool gamma_fw_read, gamma_user, gamma_pending, gamma_unusable;
 	bool use_timestamps;
 	/* IOMFBParameter 14 carried a minimum refresh rate at the last modeset: the panel runs adaptive sync */
 	bool vrr_enabled;

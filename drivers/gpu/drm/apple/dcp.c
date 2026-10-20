@@ -135,12 +135,7 @@ MODULE_PARM_DESC(swap_timestamps,
 		 "Send the fake non-zero swap timestamps in VRR-marked modes (default 1)");
 
 /* what the runtime may apply (read from the .ko before it passes a load parameter): see /reports/r52/display */
-MODULE_INFO(m4_opt_in, "cursor_plane:0,1;gamma_probe:0,1");
-
-/* M4 (R52): read-only probe of the DCP gamma table (A420): shows the value scale and the default curve. */
-bool dcp_gamma_probe;
-module_param_named(gamma_probe, dcp_gamma_probe, bool, 0444);
-MODULE_PARM_DESC(gamma_probe, "Read the DCP gamma table once after the first swaps and log it (default 0)");
+MODULE_INFO(m4_opt_in, "cursor_plane:0,1");
 
 unsigned long dcp_clk_hz;
 module_param_named(dcp_clk_hz, dcp_clk_hz, ulong, 0444);
@@ -814,6 +809,14 @@ bool dcp_fw_compat_is_12_x(struct platform_device *pdev)
 	struct apple_dcp *dcp = platform_get_drvdata(pdev);
 
 	return dcp->fw_compat == DCP_FIRMWARE_V_12_3;
+}
+
+/* GAMMA_LUT entries, 0 where the driver cannot program the gamma table */
+unsigned int dcp_gamma_lut_size(struct platform_device *pdev)
+{
+	struct apple_dcp *dcp = platform_get_drvdata(pdev);
+
+	return dcp->fw_compat == DCP_FIRMWARE_V_26_6 ? IOMFB_GAMMA_ENTRIES : 0;
 }
 
 unsigned long* dcp_get_iomfb_surfaces(struct platform_device *pdev)
