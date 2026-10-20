@@ -1213,10 +1213,19 @@ impl File {
             return Err(EINVAL);
         }
 
-        // TODO: Allow with CAP_SYS_NICE
-        if data.priority >= uapi::drm_asahi_priority_DRM_ASAHI_PRIORITY_HIGH {
+        // REALTIME stays reserved. HIGH needs CAP_SYS_NICE or DRM master, as amdgpu and
+        // panthor require for raised queue priority; EACCES lets userspace fall back to MEDIUM.
+        if data.priority == uapi::drm_asahi_priority_DRM_ASAHI_PRIORITY_REALTIME {
             cls_pr_debug!(Errors, "queue_create: Invalid priority\n");
             return Err(EINVAL);
+        }
+        // SAFETY: capable() only reads the calling task's credentials (ioctl process context).
+        if data.priority == uapi::drm_asahi_priority_DRM_ASAHI_PRIORITY_HIGH
+            && !unsafe { bindings::capable(bindings::CAP_SYS_NICE as _) }
+            && !file.is_current_master()
+        {
+            cls_pr_debug!(Errors, "queue_create: HIGH priority needs CAP_SYS_NICE or DRM master\n");
+            return Err(EACCES);
         }
 
         let queues_xa = file.inner().queues();

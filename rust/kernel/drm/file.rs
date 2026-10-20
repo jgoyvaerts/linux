@@ -70,6 +70,12 @@ impl<T: DriverFile> File<T> {
         self.0.get()
     }
 
+    /// Whether this file holds the device's DRM master (the compositor or display server).
+    pub fn is_current_master(&self) -> bool {
+        // SAFETY: By the type invariants of `Self`, `self.as_raw()` is a valid open `drm_file`.
+        unsafe { bindings::drm_is_current_master(self.as_raw()) }
+    }
+
     /// Tag recent feeder work for temporary capacity hints during syncobj waits.
     /// User scheduling attributes and CPU affinity remain unchanged.
     pub fn set_syncobj_wait_hint(&self, util_min: u32, duration_ms: u32) {
