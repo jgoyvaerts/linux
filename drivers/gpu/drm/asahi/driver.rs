@@ -316,6 +316,11 @@ impl AsahiDriver {
         if let Err(error) = crate::sysfs_exports::register_raw(raw_dev) {
             dev_warn!(pdev.as_ref(), "agx_stats_raw not registered: {:?}\n", error);
         }
+        if let Err(error) =
+            crate::sysfs_exports::register_idle(raw_dev, crate::g17::power::IDLE_HOLD_MS.as_ptr())
+        {
+            dev_warn!(pdev.as_ref(), "idle_off_delay_ms not registered: {:?}\n", error);
+        }
         Ok(Self {
             drm,
             raw_dev,

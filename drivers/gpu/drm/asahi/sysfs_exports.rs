@@ -21,6 +21,18 @@ extern "C" {
     ) -> c_int;
 }
 
+extern "C" {
+    fn asahi_sysfs_register_idle(dev: *mut c_void, word: *mut u32) -> c_int;
+}
+
+/// Export the idle power-off delay as the read-write `idle_off_delay_ms` (G17).
+pub(crate) fn register_idle(dev: *mut kernel::bindings::device, word: *mut u32) -> kernel::error::Result {
+    // SAFETY: `word` is a static atomic that outlives the attribute; the C side reads and writes
+    // it with READ_ONCE/WRITE_ONCE.
+    let ret = unsafe { asahi_sysfs_register_idle(dev.cast(), word) };
+    if ret < 0 { Err(kernel::error::Error::from_errno(ret)) } else { Ok(()) }
+}
+
 /// Export the static raw statistics table as `agx_stats_raw` (G17).
 pub(crate) fn register_raw(dev: *mut kernel::bindings::device) -> kernel::error::Result<*mut c_void> {
     let mut handle = core::ptr::null_mut();

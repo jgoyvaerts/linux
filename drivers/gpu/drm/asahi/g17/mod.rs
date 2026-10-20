@@ -36,7 +36,7 @@ mod job;
 mod kick;
 pub(crate) mod native;
 mod object;
-mod power;
+pub(crate) mod power;
 mod preparation;
 mod qos;
 mod queue;
@@ -655,6 +655,7 @@ struct Firmware {
     rings: channel::Rings,
     recovery: recovery::State,
     effort: power::Effort,
+    hold: power::Hold,
     registration_power_release_pending: bool,
     queues: runtime::Registry,
     pool: Arc<object::Pool>,
@@ -707,6 +708,11 @@ impl Firmware {
     }
 
     fn release_registration_power(&mut self) -> Result {
+        // An idle hold keeps the cores powered past registration; it releases them itself.
+        if self.hold.active() {
+            self.registration_power_release_pending = false;
+            return Ok(());
+        }
         power::release(self)
     }
 
@@ -736,14 +742,49 @@ impl Firmware {
     /// Returns the delay in ns for a follow-up idle check. Queue owners report only submitted,
     /// unretired work; quarantined work retaining mappings is excluded.
     fn idle_check(&mut self, now_ns: u64, in_flight: bool) -> Result<Option<u64>> {
-        match self.effort.idle(now_ns, in_flight) {
-            power::IdleAction::None => Ok(None),
+        let effort = match self.effort.idle(now_ns, in_flight) {
+            power::IdleAction::None => None,
             power::IdleAction::Clear => {
                 self.apply_effort(0)?;
-                Ok(None)
+                None
             }
-            power::IdleAction::Recheck(delay) => Ok(Some(delay)),
+            power::IdleAction::Recheck(delay) => Some(delay),
+        };
+        Ok(match (effort, self.idle_hold(now_ns, in_flight)) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        })
+    }
+
+    /// Drives the idle hold (see power::Hold); returns the delay in ns for its next check. A
+    /// refused control (recovery in progress) is retried on a later check.
+    fn idle_hold(&mut self, now_ns: u64, in_flight: bool) -> Option<u64> {
+        const RETRY_NS: u64 = 1_000_000;
+        let hold_ms = power::IDLE_HOLD_MS.load(Ordering::Relaxed);
+        for _ in 0..2 {
+            match self.hold.step(now_ns, in_flight, self.effort.submissions(), hold_ms) {
+                power::HoldAction::None => return None,
+                power::HoldAction::Recheck(delay) => return Some(delay),
+                power::HoldAction::Assert => {
+                    if self.set_idle_control(false).is_err() {
+                        return None;
+                    }
+                    self.hold.asserted();
+                }
+                power::HoldAction::Release => {
+                    if self.set_idle_control(true).is_err() {
+                        return Some(RETRY_NS);
+                    }
+                    self.hold.released();
+                    return None;
+                }
+            }
         }
+        None
+    }
+
+    fn set_idle_control(&mut self, enabled: bool) -> Result<u32> {
+        power::Control::set_idle(self, enabled)
     }
 }
 
@@ -1217,6 +1258,7 @@ impl Gpu {
                 rings: channel::Rings::new(),
                 recovery: recovery::State::new(),
                 effort: power::Effort::new(),
+                hold: power::Hold::new(),
                 registration_power_release_pending: false,
                 queues <- runtime::Registry::new(shared.clusters, shared.descriptor_flags),
                 pool: object::Pool::new()?,
