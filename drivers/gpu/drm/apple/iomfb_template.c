@@ -202,6 +202,7 @@ DCP_THUNK_OUT(iomfb_a358_vi_set_temperature_hint, iomfbep_a358_vi_set_temperatur
 IOMFB_THUNK_INOUT(set_matrix);
 #if DCP_FW_VER >= DCP_FW_VERSION(26, 6, 0)
 IOMFB_THUNK_INOUT(get_gamma_table);
+IOMFB_THUNK_INOUT(set_gamma_table);
 #endif
 IOMFB_THUNK_INOUT(get_color_remap_mode);
 IOMFB_THUNK_INOUT(last_client_close);
@@ -271,50 +272,6 @@ static u32 dcpep_cb_zero(struct apple_dcp *dcp)
 	return 0;
 }
 
-#if DCP_FW_VER >= DCP_FW_VERSION(26, 6, 0)
-static void dcp_gamma_probe_done(struct apple_dcp *dcp, void *out, void *cookie)
-{
-	struct iomfb_gamma_table_resp *resp = out;
-	u32 max = 0, ch, i;
-	bool mono = true;
-
-	for (ch = 0; ch < 3; ch++) {
-		u32 prev = 0;
-
-		for (i = 0; i < IOMFB_GAMMA_ENTRIES; i++) {
-			u32 v = le32_to_cpu(resp->table[ch][i]);
-
-			if (v > max)
-				max = v;
-			if (v < prev)
-				mono = false;
-			prev = v;
-		}
-	}
-	dev_info(dcp->dev,
-		 "M4_DCP_GAMMA_TABLE null=%u max=0x%x monotonic=%d r[0,1,2,128,255,256]=%x,%x,%x,%x,%x,%x g[1,128,256]=%x,%x,%x b[1,128,256]=%x,%x,%x\n",
-		 resp->table_null, max, mono,
-		 le32_to_cpu(resp->table[0][0]), le32_to_cpu(resp->table[0][1]), le32_to_cpu(resp->table[0][2]),
-		 le32_to_cpu(resp->table[0][128]), le32_to_cpu(resp->table[0][255]), le32_to_cpu(resp->table[0][256]),
-		 le32_to_cpu(resp->table[1][1]), le32_to_cpu(resp->table[1][128]), le32_to_cpu(resp->table[1][256]),
-		 le32_to_cpu(resp->table[2][1]), le32_to_cpu(resp->table[2][128]), le32_to_cpu(resp->table[2][256]));
-}
-
-static void dcp_gamma_probe_start(struct apple_dcp *dcp)
-{
-	static struct iomfb_gamma_table_req req;
-
-	if (!dcp_gamma_probe || dcp->m4_gamma_probed || !dcp->main_display || !dcp_has_panel(dcp))
-		return;
-	dcp->m4_gamma_probed = true;
-	memset(&req, 0, sizeof(req));
-	if (!iomfb_get_gamma_table(dcp, false, &req, dcp_gamma_probe_done, NULL))
-		dev_warn(dcp->dev, "M4_DCP_GAMMA_TABLE request publication refused\n");
-}
-#else
-static void dcp_gamma_probe_start(struct apple_dcp *dcp) {}
-#endif
-
 static void dcpep_cb_swap_complete(struct apple_dcp *dcp,
 				   struct DCP_FW_NAME(dc_swap_complete_resp) *resp)
 {
@@ -325,8 +282,6 @@ static void dcpep_cb_swap_complete(struct apple_dcp *dcp,
 		dcp->m4_swaps_complete++;
 		dev_info(dcp->dev, "M4_DCP_SWAP_COMPLETE n=%u swap_id=%u\n",
 			 dcp->m4_swaps_complete, resp->swap_id);
-		if (dcp->m4_swaps_complete == 3)
-			dcp_gamma_probe_start(dcp);
 	}
 
 	if (dcp_swap_stats) {
@@ -1911,6 +1866,115 @@ static void do_swap(struct apple_dcp *dcp, void *data, void *cookie)
 }
 
 #if DCP_FW_VER >= DCP_FW_VERSION(26, 6, 0)
+/*
+ * GAMMA_LUT. The scale of the firmware's table is not documented, so the
+ * LUT is applied through the firmware's own table, read once: entry i of
+ * the result is that table at LUT[i]. This keeps whatever the firmware's
+ * table does on top, and a NULL LUT restores it unchanged.
+ */
+static u32 dcp_gamma_lookup(const __le32 *fw, u16 v)
+{
+	u32 pos = v * (IOMFB_GAMMA_ENTRIES - 1), i = pos / 0xffff;
+	s64 a = le32_to_cpu(fw[i]);
+
+	if (i == IOMFB_GAMMA_ENTRIES - 1)
+		return a;
+	return a + div_s64((le32_to_cpu(fw[i + 1]) - a) * (pos % 0xffff), 0xffff);
+}
+
+static void dcp_gamma_set_done(struct apple_dcp *dcp, void *out, void *cookie)
+{
+	do_swap(dcp, NULL, NULL);
+}
+
+static void dcp_gamma_set(struct apple_dcp *dcp)
+{
+	struct iomfb_gamma_table_req *req = dcp->gamma_out;
+	u32 i;
+
+	*req = *dcp->gamma_fw;
+	for (i = 0; dcp->gamma_user && i < IOMFB_GAMMA_ENTRIES; i++) {
+		req->table[0][i] = cpu_to_le32(dcp_gamma_lookup(dcp->gamma_fw->table[0],
+								dcp->gamma_lut[i].red));
+		req->table[1][i] = cpu_to_le32(dcp_gamma_lookup(dcp->gamma_fw->table[1],
+								dcp->gamma_lut[i].green));
+		req->table[2][i] = cpu_to_le32(dcp_gamma_lookup(dcp->gamma_fw->table[2],
+								dcp->gamma_lut[i].blue));
+	}
+	if (!iomfb_set_gamma_table(dcp, false, req, dcp_gamma_set_done, NULL))
+		dcp_swap_refused(dcp);
+}
+
+static void dcp_gamma_read(struct apple_dcp *dcp, void *out, void *cookie)
+{
+	struct iomfb_gamma_table_resp *resp = out;
+	u32 ch, i;
+
+	dev_info(dcp->dev,
+		 "gamma table null=%u r[0,128,256]=%x,%x,%x g[0,128,256]=%x,%x,%x b[0,128,256]=%x,%x,%x\n",
+		 resp->table_null,
+		 le32_to_cpu(resp->table[0][0]), le32_to_cpu(resp->table[0][128]),
+		 le32_to_cpu(resp->table[0][256]),
+		 le32_to_cpu(resp->table[1][0]), le32_to_cpu(resp->table[1][128]),
+		 le32_to_cpu(resp->table[1][256]),
+		 le32_to_cpu(resp->table[2][0]), le32_to_cpu(resp->table[2][128]),
+		 le32_to_cpu(resp->table[2][256]));
+	/* A table to compose with rises from its first to its last entry. */
+	for (ch = 0; ch < 3; ch++) {
+		for (i = 1; i < IOMFB_GAMMA_ENTRIES; i++)
+			if (le32_to_cpu(resp->table[ch][i]) < le32_to_cpu(resp->table[ch][i - 1]))
+				break;
+		if (resp->table_null || i < IOMFB_GAMMA_ENTRIES ||
+		    !le32_to_cpu(resp->table[ch][IOMFB_GAMMA_ENTRIES - 1])) {
+			dev_warn(dcp->dev, "unusable firmware gamma table, GAMMA_LUT ignored\n");
+			dcp->gamma_unusable = true;
+			do_swap(dcp, NULL, NULL);
+			return;
+		}
+	}
+	memcpy(dcp->gamma_fw, resp, sizeof(*dcp->gamma_fw));
+	dcp->gamma_fw_read = true;
+	dcp_gamma_set(dcp);
+}
+
+/* After the colour matrix: send a changed gamma table, then the swap. */
+static void dcp_gamma_then_swap(struct apple_dcp *dcp, void *out, void *cookie)
+{
+	static struct iomfb_gamma_table_req empty;
+
+	if (!dcp->gamma_pending || dcp->gamma_unusable) {
+		do_swap(dcp, NULL, NULL);
+		return;
+	}
+	dcp->gamma_pending = false;
+	if (dcp->gamma_fw_read)
+		dcp_gamma_set(dcp);
+	else if (!iomfb_get_gamma_table(dcp, false, &empty, dcp_gamma_read, NULL))
+		dcp_swap_refused(dcp);
+}
+
+/* Takes a GAMMA_LUT change from the CRTC state; false if there is nothing to send. */
+static bool dcp_gamma_update(struct apple_dcp *dcp, struct drm_crtc_state *crtc_state)
+{
+	bool user = crtc_state->gamma_lut;
+
+	if (!crtc_state->color_mgmt_changed || dcp->gamma_unusable ||
+	    (!user && !dcp->gamma_user))
+		return false;
+	if (!dcp->gamma_fw) {
+		dcp->gamma_fw = devm_kzalloc(dcp->dev, 2 * sizeof(*dcp->gamma_fw), GFP_KERNEL);
+		if (!dcp->gamma_fw)
+			return false;
+		dcp->gamma_out = dcp->gamma_fw + 1;
+	}
+	if (user)
+		memcpy(dcp->gamma_lut, crtc_state->gamma_lut->data, sizeof(dcp->gamma_lut));
+	dcp->gamma_user = user;
+	return true;
+}
+#endif
+
+#if DCP_FW_VER >= DCP_FW_VERSION(26, 6, 0)
 struct dcp_modeset_cookie {
 	/* Must be first: release_wait_cookie() frees this allocation. */
 	struct dcp_wait_cookie wait;
@@ -2386,8 +2450,14 @@ void DCP_FW_NAME(iomfb_flush)(struct apple_dcp *dcp, struct drm_crtc *crtc, stru
 			mat.matrix[0] = mat.matrix[4] = mat.matrix[8] = 1LLU << 32;
 		}
 
+#if DCP_FW_VER >= DCP_FW_VERSION(26, 6, 0)
+		dcp->gamma_pending = dcp_gamma_update(dcp, crtc_state);
+		if (!iomfb_set_matrix(dcp, false, &mat, dcp_gamma_then_swap, NULL))
+			dcp_swap_refused(dcp);
+#else
 		if (!iomfb_set_matrix(dcp, false, &mat, do_swap, NULL))
 			dcp_swap_refused(dcp);
+#endif
 	} else
 		do_swap(dcp, NULL, NULL);
 }
