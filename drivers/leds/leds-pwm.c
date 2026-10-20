@@ -14,6 +14,7 @@
 #include <linux/kernel.h>
 #include <linux/leds.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/pwm.h>
@@ -32,6 +33,10 @@ struct led_pwm_data {
 	struct pwm_device	*pwm;
 	struct pwm_state	pwmstate;
 	unsigned int		active_low;
+	struct mutex		completion_lock;
+	u64			completed_sequence;
+	unsigned int		completed_brightness;
+	int			completed_error;
 };
 
 struct led_pwm_priv {
@@ -45,7 +50,11 @@ static int led_pwm_set(struct led_classdev *led_cdev,
 	struct led_pwm_data *led_dat =
 		container_of(led_cdev, struct led_pwm_data, cdev);
 	unsigned int max = led_dat->cdev.max_brightness;
-	unsigned long long duty = led_dat->pwmstate.period;
+	unsigned long long duty;
+	int ret;
+
+	mutex_lock(&led_dat->completion_lock);
+	duty = led_dat->pwmstate.period;
 
 	duty *= brightness;
 	do_div(duty, max);
@@ -63,8 +72,79 @@ static int led_pwm_set(struct led_classdev *led_cdev,
 	 * LED might stay (or even go) on.
 	 */
 	led_dat->pwmstate.enabled = !(led_cdev->flags & LED_SUSPENDED);
-	return pwm_apply_might_sleep(led_dat->pwm, &led_dat->pwmstate);
+	ret = pwm_apply_might_sleep(led_dat->pwm, &led_dat->pwmstate);
+	led_dat->completed_brightness = brightness;
+	led_dat->completed_error = ret;
+	led_dat->completed_sequence++;
+	mutex_unlock(&led_dat->completion_lock);
+	return ret;
 }
+
+/*
+ * Read-only qualification boundary for the private keyboard LED consumer.
+ * LED metadata is cached before its work runs. Hold the same sysfs lock as
+ * brightness_store, drain that work without applying any new state, then read
+ * the provider through its existing guarded hardware callback. The separate
+ * completion lock also excludes a callback while collecting its result.
+ */
+static ssize_t m4_pwm_state_show(struct device *dev,
+			       struct device_attribute *attr, char *buf)
+{
+	struct led_classdev *led_cdev = dev_get_drvdata(dev);
+	struct led_pwm_data *led_dat =
+		container_of(led_cdev, struct led_pwm_data, cdev);
+	struct pwm_state state = { 0 };
+	ssize_t result;
+	int ret;
+
+	mutex_lock(&led_cdev->led_access);
+	if (led_cdev->blink_delay_on || led_cdev->blink_delay_off ||
+	    led_cdev->flags & (LED_SUSPENDED | LED_UNREGISTERING)) {
+		result = -EBUSY;
+		goto unlock;
+	}
+#ifdef CONFIG_LEDS_TRIGGERS
+	if (led_cdev->trigger) {
+		result = -EBUSY;
+		goto unlock;
+	}
+#endif
+	flush_work(&led_cdev->set_brightness_work);
+	mutex_lock(&led_dat->completion_lock);
+	ret = pwm_get_state_hw(led_dat->pwm, &state);
+	/* A producer outside sysfs must not race this settled witness. */
+	if (work_busy(&led_cdev->set_brightness_work) ||
+	    READ_ONCE(led_cdev->work_flags) ||
+	    led_cdev->blink_delay_on || led_cdev->blink_delay_off ||
+	    led_cdev->flags & (LED_SUSPENDED | LED_UNREGISTERING)) {
+		result = -EBUSY;
+		goto unlock_completion;
+	}
+#ifdef CONFIG_LEDS_TRIGGERS
+	if (led_cdev->trigger) {
+		result = -EBUSY;
+		goto unlock_completion;
+	}
+#endif
+	result = sysfs_emit(buf, "1 %llu %u %d %d %llu %llu %u %u\n",
+			    led_dat->completed_sequence,
+			    led_dat->completed_brightness,
+			    led_dat->completed_error, ret,
+			    state.period, state.duty_cycle,
+			    state.enabled, state.polarity);
+unlock_completion:
+	mutex_unlock(&led_dat->completion_lock);
+unlock:
+	mutex_unlock(&led_cdev->led_access);
+	return result;
+}
+static DEVICE_ATTR_RO(m4_pwm_state);
+
+static struct attribute *m4_pwm_attrs[] = {
+	&dev_attr_m4_pwm_state.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(m4_pwm);
 
 static int led_pwm_default_brightness_get(struct fwnode_handle *fwnode,
 					  int max_brightness)
@@ -88,11 +168,13 @@ static int led_pwm_add(struct device *dev, struct led_pwm_priv *priv,
 	struct led_init_data init_data = { .fwnode = fwnode };
 	int ret;
 
+	mutex_init(&led_data->completion_lock);
 	led_data->active_low = led->active_low;
 	led_data->cdev.name = led->name;
 	led_data->cdev.brightness = LED_OFF;
 	led_data->cdev.max_brightness = led->max_brightness;
 	led_data->cdev.flags = LED_CORE_SUSPENDRESUME;
+	led_data->cdev.groups = m4_pwm_groups;
 
 	led_data->pwm = devm_fwnode_pwm_get(dev, fwnode, NULL);
 	if (IS_ERR(led_data->pwm))
