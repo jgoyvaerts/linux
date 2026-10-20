@@ -43,7 +43,10 @@ properties:
           - const: apple,t8110-dart
 
   reg:
-    maxItems: 1
+    minItems: 1
+    items:
+      - description: DART registers
+      - description: Address filter (DAPF) registers
 
   interrupts:
     maxItems: 1
@@ -106,6 +109,20 @@ properties:
       T8110 stream remaps. A source uses the destination stream's translation
       and filtering state without a separate page-table root. Source and
       destination must differ, and both must exist on the controller.
+
+  apple,dapf-entries:
+    $ref: /schemas/types.yaml#/definitions/uint64-matrix
+    minItems: 1
+    items:
+      items:
+        - description: First physical address the streams may reach
+        - description: Last physical address the streams may reach
+        - description: Entry configuration word (DAPF register 0x00)
+        - description: Entry register 0x04
+        - description: Entry register 0x20
+    description:
+      Address filter entries copied from Apple's device tree, programmed into
+      the DAPF block (the second reg) before any stream behind the DART runs.
 
 required:
   - compatible

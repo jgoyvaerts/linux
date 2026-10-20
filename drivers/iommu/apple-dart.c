@@ -1223,6 +1223,57 @@ static int apple_dart_read_remaps(struct apple_dart *dart)
 	return 0;
 }
 
+/*
+ * The DART's address filter (DAPF), the block of the second reg: one 0x40-byte
+ * entry per "apple,dapf-entries" tuple <start end r0 r4 r20> (64-bit cells, as
+ * the ADT's filter data). The T6040 AOP firmware stops on a fault storm without it.
+ */
+#define DART_DAPF_ENTRY_SIZE	0x40
+
+static int apple_dart_program_dapf(struct platform_device *pdev)
+{
+	struct device_node *np = pdev->dev.of_node;
+	const char *prop = "apple,dapf-entries";
+	struct resource *res;
+	void __iomem *dapf;
+	int count, i, k, bad = 0;
+	u64 e[5];
+
+	count = of_property_count_u64_elems(np, prop);
+	if (count <= 0)
+		return 0;
+	if (count % 5)
+		return -EINVAL;
+	dapf = devm_platform_get_and_ioremap_resource(pdev, 1, &res);
+	if (IS_ERR(dapf))
+		return PTR_ERR(dapf);
+	if (count / 5 * DART_DAPF_ENTRY_SIZE > resource_size(res))
+		return -ERANGE;
+
+	for (i = 0; i < count / 5; i++) {
+		void __iomem *r = dapf + i * DART_DAPF_ENTRY_SIZE;
+
+		for (k = 0; k < 5; k++)
+			of_property_read_u64_index(np, prop, i * 5 + k, &e[k]);
+		writel(e[3], r + 0x04);
+		writeq(e[0], r + 0x08);
+		writeq(e[1], r + 0x10);
+		writel(e[2], r + 0x00);
+		writel(e[4], r + 0x20);
+		/* the end address keeps only word granularity: its low two bits read back set */
+		if (readl(r + 0x04) != e[3] || readq(r + 0x08) != e[0] ||
+		    (readq(r + 0x10) | 3) != (e[1] | 3) ||
+		    (readl(r + 0x00) & 0xff) != e[2] || readl(r + 0x20) != e[4])
+			bad++;
+	}
+	if (bad) {
+		dev_err(&pdev->dev, "DAPF: %d of %d entries did not read back\n", bad, count / 5);
+		return -EIO;
+	}
+	dev_info(&pdev->dev, "DAPF: %d entries programmed\n", count / 5);
+	return 0;
+}
+
 static void apple_dart_hw_apply_remaps(struct apple_dart *dart)
 {
 	int sid;
@@ -2814,6 +2865,10 @@ params_done:
 	}
 
 	ret = apple_dart_read_remaps(dart);
+	if (ret)
+		goto err_clk_disable;
+
+	ret = apple_dart_program_dapf(pdev);
 	if (ret)
 		goto err_clk_disable;
 
