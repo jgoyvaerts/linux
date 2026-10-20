@@ -198,6 +198,12 @@ struct apple_nvme_hw {
 	bool has_queue_count;
 	bool has_separate_nvmmu;
 	bool needs_ioq_registers;
+	/*
+	 * T6040: the linear submission queue doorbells are in the NVMMU block
+	 * (the "nvme" block ends at 0x10000), and LINEAR_SQ_CTRL is left as the
+	 * firmware set it.
+	 */
+	bool lsq_in_nvmmu;
 	u32 max_queue_depth;
 	unsigned long quirks;
 };
@@ -1708,20 +1714,23 @@ rtkit_ready:
 	if (anv->hw->has_lsq_nvmmu) {
 		/*
 		 * Enable NVMMU and linear submission queues which is required
-		 * since T6000.
+		 * since T6000. Where the linear SQ registers live in the NVMMU
+		 * block, the firmware has already enabled them.
 		 */
-		writel(APPLE_ANS_LINEAR_SQ_EN,
-			anv->mmio_nvme + APPLE_ANS_LINEAR_SQ_CTRL);
-		if (anv->hw->needs_ioq_registers) {
-			u32 lsq_ctrl = readl(anv->mmio_nvme +
-					     APPLE_ANS_LINEAR_SQ_CTRL);
+		if (!anv->hw->lsq_in_nvmmu) {
+			writel(APPLE_ANS_LINEAR_SQ_EN,
+			       anv->mmio_nvme + APPLE_ANS_LINEAR_SQ_CTRL);
+			if (anv->hw->needs_ioq_registers) {
+				u32 lsq_ctrl = readl(anv->mmio_nvme +
+						     APPLE_ANS_LINEAR_SQ_CTRL);
 
-			if (!(lsq_ctrl & APPLE_ANS_LINEAR_SQ_EN)) {
-				dev_err(anv->dev,
-					"failed to enable linear submission queues: LSQ_CTRL=0x%08x\n",
-					lsq_ctrl);
-				ret = -EIO;
-				goto out;
+				if (!(lsq_ctrl & APPLE_ANS_LINEAR_SQ_EN)) {
+					dev_err(anv->dev,
+						"failed to enable linear submission queues: LSQ_CTRL=0x%08x\n",
+						lsq_ctrl);
+					ret = -EIO;
+					goto out;
+				}
 			}
 		}
 
@@ -2291,9 +2300,11 @@ static struct apple_nvme *apple_nvme_alloc(struct platform_device *pdev)
 	}
 
 	if (anv->hw->has_lsq_nvmmu) {
-		anv->adminq.sq_db = anv->mmio_nvme + APPLE_ANS_LINEAR_ASQ_DB;
+		void __iomem *lsq = anv->hw->lsq_in_nvmmu ? anv->mmio_nvmmu : anv->mmio_nvme;
+
+		anv->adminq.sq_db = lsq + APPLE_ANS_LINEAR_ASQ_DB;
 		anv->adminq.cq_db = anv->mmio_nvme + APPLE_ANS_ACQ_DB;
-		anv->ioq.sq_db = anv->mmio_nvme + APPLE_ANS_LINEAR_IOSQ_DB;
+		anv->ioq.sq_db = lsq + APPLE_ANS_LINEAR_IOSQ_DB;
 		anv->ioq.cq_db = anv->mmio_nvme + APPLE_ANS_IOCQ_DB;
 	} else {
 		anv->adminq.sq_db = anv->mmio_nvme + NVME_REG_DBS;
@@ -2642,7 +2653,22 @@ static const struct apple_nvme_hw apple_nvme_t8140_hw = {
 	.quirks = NVME_QUIRK_BROKEN_FUA,
 };
 
+/*
+ * T6040 (M4 Pro) with the 26.x ANS firmware: the T8132 controller, but the
+ * "nvme" register block ends at 0x10000 and the linear submission queue
+ * doorbells are in the NVMMU block. APST has never been run on it.
+ */
+static const struct apple_nvme_hw apple_nvme_t6040_hw = {
+	.has_lsq_nvmmu = true,
+	.has_separate_nvmmu = true,
+	.needs_ioq_registers = true,
+	.lsq_in_nvmmu = true,
+	.max_queue_depth = 64,
+	.quirks = NVME_QUIRK_NO_APST,
+};
+
 static const struct of_device_id apple_nvme_of_match[] = {
+	{ .compatible = "apple,t6040-nvme-ans2", .data = &apple_nvme_t6040_hw },
 	{ .compatible = "apple,t8015-nvme-ans2", .data = &apple_nvme_t8015_hw },
 	{ .compatible = "apple,t8103-nvme-ans2", .data = &apple_nvme_t8103_hw },
 	{ .compatible = "apple,t8132-nvme-ans2", .data = &apple_nvme_t8132_hw },
