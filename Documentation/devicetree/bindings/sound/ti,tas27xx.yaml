@@ -18,6 +18,12 @@ description: |
 
 allOf:
   - $ref: dai-common.yaml#
+  - if:
+      required:
+        - apple,sdz-group-fail-closed
+    then:
+      properties:
+        shutdown-gpios: false
 
 properties:
   compatible:
@@ -42,6 +48,20 @@ properties:
   interrupts:
     maxItems: 1
 
+  SDZ-supply:
+    description:
+      Regulator that drives the SDZ (shutdown) pin, an alternative to
+      shutdown-gpios for a line that several amplifiers share.
+
+  apple,sdz-group-fail-closed:
+    type: boolean
+    description:
+      The amplifier belongs to the group of amplifiers that share its
+      SDZ-supply. An over-temperature or over-current fault on any member
+      turns the shared supply off, which shuts every amplifier of the group
+      down, and no member enables it again until the driver is reloaded.
+      A member needs its fault interrupt.
+
   ti,imon-slot-no:
     $ref: /schemas/types.yaml#/definitions/uint32
     description: TDM TX current sense time slot.
@@ -58,6 +78,10 @@ properties:
 required:
   - compatible
   - reg
+
+dependencies:
+  apple,sdz-group-fail-closed:
+    - SDZ-supply
 
 unevaluatedProperties: false
 
