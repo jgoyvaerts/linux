@@ -17,12 +17,16 @@ description:
 
 properties:
   compatible:
-    const: apple,t8140-mcc
+    oneOf:
+      - const: apple,t8140-mcc
+      - items:
+          - const: apple,t6041-mcc
+          - const: apple,t8140-mcc
 
   reg:
     description: The register block of each cache plane.
     minItems: 1
-    maxItems: 8
+    maxItems: 16
 
   apple,boot-dma-devices:
     $ref: /schemas/types.yaml#/definitions/phandle-array
