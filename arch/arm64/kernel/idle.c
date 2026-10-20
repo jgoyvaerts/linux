@@ -41,14 +41,16 @@ early_param("idle", setup_idle);
 
 #ifdef CONFIG_ARCH_APPLE
 /*
- * Apple T8140 (A18 Pro), T8142 (M5), and T8152 (M6) CPUs can return from
- * WFI with general-purpose registers cleared. T8140 also loses FP/SIMD
- * state; conservatively preserve it on all three parts. The key is enabled once
+ * Apple T6040 (M4 Pro), T8140 (A18 Pro), T8142 (M5), and T8152 (M6) CPUs
+ * can return from WFI with general-purpose registers cleared. T6040 and
+ * T8140 also lose FP/SIMD state; conservatively preserve it on all parts. The key is enabled once
  * at boot on those parts; everywhere else the check is a patched-out branch.
  */
 static DEFINE_STATIC_KEY_FALSE(apple_wfi_loses_regs);
 
 static const struct midr_range apple_wfi_loses_regs_cpus[] __initconst = {
+	MIDR_ALL_VERSIONS(MIDR_APPLE_T6040_E),
+	MIDR_ALL_VERSIONS(MIDR_APPLE_T6040_P),
 	MIDR_ALL_VERSIONS(MIDR_APPLE_TAHITI_E),
 	MIDR_ALL_VERSIONS(MIDR_APPLE_TAHITI_P),
 	MIDR_ALL_VERSIONS(MIDR_APPLE_T8142_E),
