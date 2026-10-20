@@ -37,6 +37,7 @@
 #include <linux/nmi.h>
 
 #include <asm/alternative.h>
+#include <asm/apple-idle.h>
 #include <asm/atomic.h>
 #include <asm/cacheflush.h>
 #include <asm/cpu.h>
@@ -455,6 +456,7 @@ void __init smp_prepare_boot_cpu(void)
 
 	cpuinfo_store_boot_cpu();
 	setup_boot_cpu_features();
+	apple_wfi_quirk_init();
 
 	/* Conditionally switch to GIC PMR for interrupt masking */
 	if (system_uses_irq_prio_masking())
