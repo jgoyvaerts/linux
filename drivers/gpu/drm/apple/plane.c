@@ -15,16 +15,41 @@
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_gem.h>
 #include <drm/drm_gem_dma_helper.h>
+#include <drm/drm_gem_framebuffer_helper.h>
+#include <drm/drm_managed.h>
 #include <drm/drm_plane.h>
 
 #define FRAC_16_16(mult, div)    (((mult) << 16) / (div))
+
+/*
+ * DCP crashes on a surface smaller than 32x32, and a cursor clipped at the
+ * screen edge gets that small. Grow such a side to 32 pixels on the screen
+ * side; the padding buffer makes the added pixels transparent. Returns
+ * whether @dst needs padding.
+ */
+static bool apple_cursor_pad(const struct drm_rect *dst,
+			     const struct drm_display_mode *mode,
+			     struct drm_rect *pad)
+{
+	*pad = *dst;
+	if (drm_rect_width(dst) < 32) {
+		pad->x1 = min(dst->x1, mode->hdisplay - 32);
+		pad->x2 = pad->x1 + 32;
+	}
+	if (drm_rect_height(dst) < 32) {
+		pad->y1 = min(dst->y1, mode->vdisplay - 32);
+		pad->y2 = pad->y1 + 32;
+	}
+	return !drm_rect_equals(pad, dst);
+}
 
 static int apple_plane_atomic_check(struct drm_plane *plane,
 				    struct drm_atomic_state *state)
 {
 	struct drm_plane_state *new_plane_state;
 	struct drm_crtc_state *crtc_state;
-	struct drm_rect *dst;
+	struct drm_rect *dst, pad;
+	bool cursor = plane->type == DRM_PLANE_TYPE_CURSOR;
 	int ret;
 
 	new_plane_state = drm_atomic_get_new_plane_state(state, plane);
@@ -49,8 +74,8 @@ static int apple_plane_atomic_check(struct drm_plane *plane,
 	 * hardware will fill in zeroes (black).
 	 */
 	ret = drm_atomic_helper_check_plane_state(new_plane_state, crtc_state,
-						  FRAC_16_16(1, 2),
-						  FRAC_16_16(4, 1),
+						  cursor ? DRM_PLANE_NO_SCALING : FRAC_16_16(1, 2),
+						  cursor ? DRM_PLANE_NO_SCALING : FRAC_16_16(4, 1),
 						  true, true);
 	if (ret < 0)
 		return ret;
@@ -63,11 +88,17 @@ static int apple_plane_atomic_check(struct drm_plane *plane,
 	 * if any blended surface is smaller than 32x32. Reject the atomic op
 	 * if the plane will crash DCP.
 	 *
-	 * This is most pertinent to cursors. Userspace should fall back to
-	 * software cursors if the plane check is rejected.
+	 * This is most pertinent to cursors. The cursor plane pads such a
+	 * surface (apple_cursor_pad()); on other planes userspace should fall
+	 * back to composition when the plane check is rejected.
 	 */
 	dst = &new_plane_state->dst;
-	if (drm_rect_width(dst) < 32 || drm_rect_height(dst) < 32) {
+	if (cursor) {
+		if (apple_cursor_pad(dst, &crtc_state->mode, &pad) &&
+		    (drm_rect_width(&pad) > APPLE_CURSOR_SIZE ||
+		     drm_rect_height(&pad) > APPLE_CURSOR_SIZE))
+			return -EINVAL;
+	} else if (drm_rect_width(dst) < 32 || drm_rect_height(dst) < 32) {
 		dev_err_once(state->dev->dev,
 			"Plane operation would have crashed DCP! Rejected!\n\
 			DCP requires 32x32 of every plane to be within screen space.\n\
@@ -206,6 +237,53 @@ static enum dcp_colorspace get_colorspace(bool is_yuv,
 	}
 }
 
+/* Copies the visible part of an edge-clipped cursor into a padding buffer and shows that instead. */
+static void apple_cursor_pad_update(struct apple_plane *plane,
+				    struct drm_plane_state *base,
+				    const struct drm_display_mode *mode)
+{
+	struct apple_plane_state *new_state = to_apple_plane_state(base);
+	struct drm_gem_dma_object *buf = plane->pad[plane->pad_next];
+	struct iosys_map map[DRM_FORMAT_MAX_PLANES], data[DRM_FORMAT_MAX_PLANES];
+	struct drm_framebuffer *fb = base->fb;
+	const u32 pitch = APPLE_CURSOR_SIZE * 4;
+	struct dcp_surface *surf = &new_state->surf;
+	struct drm_rect src, pad;
+	u32 x, y, row;
+
+	if (!apple_cursor_pad(&base->dst, mode, &pad))
+		return;
+
+	if (drm_gem_fb_vmap(fb, map, data)) {
+		base->visible = false;
+		return;
+	}
+	drm_rect_fp_to_int(&src, &base->src);
+	x = base->dst.x1 - pad.x1;
+	y = base->dst.y1 - pad.y1;
+	drm_gem_fb_begin_cpu_access(fb, DMA_FROM_DEVICE);
+	memset(buf->vaddr, 0, pitch * APPLE_CURSOR_SIZE);
+	for (row = 0; row < drm_rect_height(&src); row++)
+		iosys_map_memcpy_from(buf->vaddr + (y + row) * pitch + x * 4, &data[0],
+				      (src.y1 + row) * fb->pitches[0] + src.x1 * 4,
+				      drm_rect_width(&src) * 4);
+	drm_gem_fb_end_cpu_access(fb, DMA_FROM_DEVICE);
+	drm_gem_fb_vunmap(fb, map);
+	/* The write-combined copy is complete before the swap reaches DCP. */
+	wmb();
+
+	surf->width = surf->planes[0].width = APPLE_CURSOR_SIZE;
+	surf->height = surf->planes[0].height = APPLE_CURSOR_SIZE;
+	surf->stride = surf->planes[0].stride = pitch;
+	surf->buf_size = surf->planes[0].size = pitch * APPLE_CURSOR_SIZE;
+	new_state->src_rect = (struct dcp_rect){ .w = drm_rect_width(&pad),
+						 .h = drm_rect_height(&pad) };
+	new_state->dst_rect = drm_to_dcp_rect(&pad);
+	new_state->iova = buf->dma_addr;
+	/* The other buffer may still be on screen until this swap completes. */
+	plane->pad_next ^= 1;
+}
+
 static void apple_plane_atomic_update(struct drm_plane *plane,
 				      struct drm_atomic_state *state)
 {
@@ -293,6 +371,10 @@ static void apple_plane_atomic_update(struct drm_plane *plane,
 	obj = drm_fb_dma_get_gem_obj(base->fb, 0);
 	if (obj)
 		new_state->iova = obj->dma_addr + base->fb->offsets[0];
+
+	if (plane->type == DRM_PLANE_TYPE_CURSOR && base->visible)
+		apple_cursor_pad_update(to_apple_plane(plane), base,
+					&drm_atomic_get_new_crtc_state(state, base->crtc)->mode);
 }
 
 static const struct drm_plane_helper_funcs apple_primary_plane_helper_funcs = {
@@ -400,6 +482,12 @@ static const u32 dcp_overlay_formats[] = {
 #endif
 };
 
+/* The cursor padding copies 32-bit pixels. */
+static const u32 dcp_cursor_formats[] = {
+	DRM_FORMAT_ARGB8888,
+	DRM_FORMAT_ABGR8888,
+};
+
 /*
  * Formats for the 12.x firmware which does not support "l10r" / ARGB2101010
  */
@@ -436,6 +524,11 @@ u64 apple_format_modifiers[] = {
 	DRM_FORMAT_MOD_INVALID
 };
 
+static void apple_plane_put_pad(struct drm_device *dev, void *obj)
+{
+	drm_gem_object_put(obj);
+}
+
 struct drm_plane *apple_plane_init(struct drm_device *dev,
 				   unsigned long possible_crtcs,
 				   u32 iomfb_surf,
@@ -445,6 +538,7 @@ struct drm_plane *apple_plane_init(struct drm_device *dev,
 	struct apple_plane *plane;
 	const u32 *fmts;
 	u32 num_fmts;
+	int i, ret;
 
 	switch (type) {
 	case DRM_PLANE_TYPE_PRIMARY:
@@ -459,8 +553,13 @@ struct drm_plane *apple_plane_init(struct drm_device *dev,
 				       &apple_plane_funcs, fmts, num_fmts,
 				       apple_format_modifiers, type, NULL);
 		break;
-	case DRM_PLANE_TYPE_OVERLAY:
 	case DRM_PLANE_TYPE_CURSOR:
+		plane = drmm_universal_plane_alloc(dev, struct apple_plane, base, possible_crtcs,
+				       &apple_plane_funcs, dcp_cursor_formats,
+				       ARRAY_SIZE(dcp_cursor_formats),
+				       apple_format_modifiers, type, NULL);
+		break;
+	case DRM_PLANE_TYPE_OVERLAY:
 		if (supports_l10r) {
 			fmts = dcp_overlay_formats;
 			num_fmts = ARRAY_SIZE(dcp_overlay_formats);
@@ -478,6 +577,17 @@ struct drm_plane *apple_plane_init(struct drm_device *dev,
 
 	if (IS_ERR(plane))
 		return ERR_PTR(PTR_ERR(plane));
+
+	for (i = 0; type == DRM_PLANE_TYPE_CURSOR && i < ARRAY_SIZE(plane->pad); i++) {
+		plane->pad[i] = apple_drm_gem_create_scanout(dev,
+				APPLE_CURSOR_SIZE * APPLE_CURSOR_SIZE * 4);
+		if (IS_ERR(plane->pad[i]))
+			return ERR_CAST(plane->pad[i]);
+		ret = drmm_add_action_or_reset(dev, apple_plane_put_pad,
+					       &plane->pad[i]->base);
+		if (ret)
+			return ERR_PTR(ret);
+	}
 
 	drm_plane_create_color_properties(&plane->base,
 					  (1 << DRM_COLOR_ENCODING_MAX) - 1,
