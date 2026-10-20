@@ -4,6 +4,7 @@
  * Copyright The Asahi Linux Contributors
  */
 
+#include <clocksource/arm_arch_timer.h>
 #include <linux/align.h>
 #include <linux/bitmap.h>
 #include <linux/clk.h>
@@ -1334,20 +1335,6 @@ static void dcp_on_set_parameter(struct apple_dcp *dcp, void *out, void *cookie)
 	param.param = IOMFBPARAM_ADAPTIVE_SYNC;
 	memset(param.value, 0, count * sizeof(param.value[0]));
 	param.count = count;
-#if DCP_FW_VER >= DCP_FW_VERSION(26, 6, 0)
-	if (dcp_adaptive_sync_min_hz) {
-		if (dcp_adaptive_sync_min_hz == 24 && dcp->main_display && dcp_has_panel(dcp)) {
-			/* value[0] minRR (16.16 Hz), value[1] mediaTargetRate = 0 (no media mode), value[2] fractional = 0 */
-			param.value[0] = (u64)dcp_adaptive_sync_min_hz << 16;
-			dev_info(dcp->dev, "M4_DCP_ADAPTIVE_SYNC min_rr=0x%llx media_rate=0 fractional=0\n",
-				 param.value[0]);
-		} else {
-			dev_warn(dcp->dev,
-				 "M4_DCP_ADAPTIVE_SYNC_IGNORED value=%u main_display=%d panel=%d (accepted: 0, 24 on the internal panel)\n",
-				 dcp_adaptive_sync_min_hz, dcp->main_display, dcp_has_panel(dcp));
-		}
-	}
-#endif
 
 	if (!dcp_set_parameter_dcp(dcp, false, &param,
 #if DCP_FW_VER >= DCP_FW_VERSION(26, 6, 0)
@@ -1884,6 +1871,7 @@ static void dcp_swapped(struct apple_dcp *dcp, void *data, void *cookie)
 		dev_info(dcp->dev, "M4_DCP_SWAP_SUBMIT_OK n=%u\n", dcp->m4_swaps_ok);
 	}
 	dcp->swap_start = ktime_get();
+	dcp->swap_submit_timestamp = arch_timer_read_counter();
 
 	while (!list_empty(&dcp->swapped_out_fbs)) {
 		struct dcp_fb_reference *entry;
@@ -1928,6 +1916,7 @@ struct dcp_modeset_cookie {
 	struct dcp_wait_cookie wait;
 	struct dcp_set_digital_out_mode_req actual;
 	struct dcp_set_digital_out_mode_req bootstrap;
+	bool use_bootstrap;
 	u32 result;
 };
 #endif
@@ -2007,6 +1996,59 @@ static void dcp_modeset_after_bootstrap_info(struct apple_dcp *dcp, void *data,
 }
 #endif
 
+/* Selects the mode in dcp->mode (26.6: the cookie's bootstrap, then actual mode). */
+static void dcp_modeset_select(struct apple_dcp *dcp, void *out, void *cookie)
+{
+#if DCP_FW_VER >= DCP_FW_VERSION(26, 6, 0)
+	struct dcp_modeset_cookie *modeset = cookie;
+	bool sent = !dcp->crashed &&
+		(modeset->use_bootstrap ?
+		 dcp_get_mode_info(dcp, &modeset->bootstrap,
+				   dcp_modeset_after_bootstrap_info, cookie) :
+		 dcp_get_mode_info(dcp, &modeset->actual,
+				   dcp_modeset_after_actual_info, cookie));
+#else
+	bool sent = !dcp->crashed &&
+		dcp_set_digital_out_mode(dcp, false, &dcp->mode,
+					 complete_set_digital_out_mode, cookie);
+#endif
+
+	if (!sent)
+		dcp_wait_refused(dcp, cookie);
+}
+
+/* DCP applies IOMFBParameter 14 (adaptive sync) when the mode is selected next. */
+static void dcp_modeset_after_adaptive_sync(struct apple_dcp *dcp, void *out,
+					    void *cookie)
+{
+	u32 ret = get_unaligned_le32(out);
+
+	if (ret)
+		dev_warn(dcp->dev, "adaptive sync parameter returned 0x%x\n", ret);
+	dcp_modeset_select(dcp, out, cookie);
+}
+
+static void dcp_modeset_set_adaptive_sync(struct apple_dcp *dcp, u32 min_vrr,
+					  void *cookie)
+{
+	struct dcp_set_parameter_dcp param;
+
+	memset(&param, 0xaa, sizeof(param));
+	param.param = IOMFBPARAM_ADAPTIVE_SYNC;
+#if DCP_FW_VER >= DCP_FW_VERSION(13, 2, 0)
+	param.count = 3;
+#else
+	param.count = 1;
+#endif
+	/* minRR (0: fixed refresh), mediaTargetRate, fractional rate; 16.16 Hz */
+	memset(param.value, 0, param.count * sizeof(param.value[0]));
+	param.value[0] = min_vrr;
+	dev_info(dcp->dev, "adaptive sync min_rr=0x%x\n", min_vrr);
+	if (dcp->crashed || !dcp_set_parameter_dcp(dcp, false, &param,
+				dcp_modeset_after_adaptive_sync, cookie))
+		dcp_wait_refused(dcp, cookie);
+}
+
 int DCP_FW_NAME(iomfb_modeset)(struct apple_dcp *dcp,
 			       struct drm_crtc_state *crtc_state)
 {
@@ -2018,6 +2060,7 @@ int DCP_FW_NAME(iomfb_modeset)(struct apple_dcp *dcp,
 #if DCP_FW_VER >= DCP_FW_VERSION(26, 6, 0)
 	struct dcp_modeset_cookie *modeset_cookie;
 #endif
+	bool vrr;
 	int ret;
 
 	if (dcp->crashed)
@@ -2058,6 +2101,8 @@ int DCP_FW_NAME(iomfb_modeset)(struct apple_dcp *dcp,
 
 	/* Keep track of suspected vrr modes */
 	dcp->use_timestamps = mode->vrr;
+	dcp->swap_submit_timestamp = 0;
+	vrr = mode->vrr && crtc_state->vrr_enabled;
 	/* M4 (R51): frame period for the flip_event_mode vblank clock; a new mode restarts the sequence epoch */
 	if (crtc_state->mode.clock && crtc_state->mode.htotal && crtc_state->mode.vtotal)
 		dcp->m4_frame_ns = div64_u64(1000000000ULL * crtc_state->mode.htotal * crtc_state->mode.vtotal,
@@ -2072,7 +2117,7 @@ int DCP_FW_NAME(iomfb_modeset)(struct apple_dcp *dcp,
 	 * single firmware-advertised non-VRR timing, already matched above.
 	 */
 	if (dcp_has_panel(dcp) && dcp->main_display &&
-	    nr_modes == 1 && !mode->vrr) {
+	    nr_modes == 1 && !mode->vrr && !dcp->vrr_enabled) {
 		dcp->valid_mode = true;
 		return 0;
 	}
@@ -2098,6 +2143,7 @@ int DCP_FW_NAME(iomfb_modeset)(struct apple_dcp *dcp,
 
 #if DCP_FW_VER >= DCP_FW_VERSION(26, 6, 0)
 	if (!dcp->valid_mode && mode->bootstrap.score >= 0) {
+		modeset_cookie->use_bootstrap = true;
 		modeset_cookie->bootstrap =
 			(struct dcp_set_digital_out_mode_req) {
 				.color_mode_id = mode->bootstrap.id,
@@ -2107,21 +2153,14 @@ int DCP_FW_NAME(iomfb_modeset)(struct apple_dcp *dcp,
 			 "bootstrapping generic pipe (color:%u timing:%u)\n",
 			 modeset_cookie->bootstrap.color_mode_id,
 			 modeset_cookie->bootstrap.timing_mode_id);
-		if (dcp->crashed || !dcp_get_mode_info(dcp, &modeset_cookie->bootstrap,
-				  dcp_modeset_after_bootstrap_info,
-				  modeset_cookie))
-			dcp_wait_refused(dcp, cookie);
-	} else {
-		if (dcp->crashed || !dcp_get_mode_info(dcp, &modeset_cookie->actual,
-				  dcp_modeset_after_actual_info,
-				  modeset_cookie))
-			dcp_wait_refused(dcp, cookie);
 	}
-#else
-	if (dcp->crashed || !dcp_set_digital_out_mode(dcp, false, &dcp->mode,
-				 complete_set_digital_out_mode, cookie))
-		dcp_wait_refused(dcp, cookie);
 #endif
+	/* The firmware starts with adaptive sync off: send it when it turns on, or off again. */
+	if (vrr || dcp->vrr_enabled)
+		dcp_modeset_set_adaptive_sync(dcp, vrr ? dcp_mode_min_vrr(mode) : 0,
+					      cookie);
+	else
+		dcp_modeset_select(dcp, NULL, cookie);
 
 	/*
 	 * The DCP firmware has an internal timeout of ~8 seconds for
@@ -2160,6 +2199,7 @@ int DCP_FW_NAME(iomfb_modeset)(struct apple_dcp *dcp,
 			jiffies_to_msecs(ret));
 	}
 	dcp->valid_mode = true;
+	dcp->vrr_enabled = vrr;
 
 	return 0;
 }
@@ -2279,7 +2319,18 @@ void DCP_FW_NAME(iomfb_flush)(struct apple_dcp *dcp, struct drm_crtc *crtc, stru
 		req->clear = 1;
 	}
 
-	if (has_surface && dcp->use_timestamps && dcp_swap_timestamps) {
+	if (has_surface && dcp->vrr_enabled) {
+		/*
+		 * Adaptive sync: the target is the submission time (the arch
+		 * counter is the firmware's mach time) and the previous swap's,
+		 * so DCP refreshes at the swap rate instead of the fixed one.
+		 */
+		u64 now = arch_timer_read_counter();
+
+		req->swap.ts1 = now;
+		req->swap.ts2 = dcp->swap_submit_timestamp ?: now;
+		req->swap.ts3 = now;
+	} else if (has_surface && dcp->use_timestamps && dcp_swap_timestamps) {
 		/*
 		 * Fake timstamps to get 120hz refresh rate. It looks
 		 * like the actual value does not matter, as long  as it is non zero.
