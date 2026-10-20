@@ -290,6 +290,11 @@ struct apple_dart {
 	DECLARE_BITMAP(remapped, DART_MAX_STREAMS);
 	u8 remap_target[DART_MAX_STREAMS];
 
+	/* address filter window and its "apple,dapf-entries" tuples */
+	void __iomem *dapf;
+	u64 *dapf_entries;
+	unsigned int dapf_count;
+
 	dma_addr_t dma_min;
 	dma_addr_t dma_max;
 	dma_addr_t dma_offset;
@@ -1230,31 +1235,14 @@ static int apple_dart_read_remaps(struct apple_dart *dart)
  */
 #define DART_DAPF_ENTRY_SIZE	0x40
 
-static int apple_dart_program_dapf(struct platform_device *pdev)
+static int apple_dart_write_dapf(struct apple_dart *dart)
 {
-	struct device_node *np = pdev->dev.of_node;
-	const char *prop = "apple,dapf-entries";
-	struct resource *res;
-	void __iomem *dapf;
-	int count, i, k, bad = 0;
-	u64 e[5];
+	unsigned int i, bad = 0;
 
-	count = of_property_count_u64_elems(np, prop);
-	if (count <= 0)
-		return 0;
-	if (count % 5)
-		return -EINVAL;
-	dapf = devm_platform_get_and_ioremap_resource(pdev, 1, &res);
-	if (IS_ERR(dapf))
-		return PTR_ERR(dapf);
-	if (count / 5 * DART_DAPF_ENTRY_SIZE > resource_size(res))
-		return -ERANGE;
+	for (i = 0; i < dart->dapf_count; i++) {
+		void __iomem *r = dart->dapf + i * DART_DAPF_ENTRY_SIZE;
+		const u64 *e = &dart->dapf_entries[i * 5];
 
-	for (i = 0; i < count / 5; i++) {
-		void __iomem *r = dapf + i * DART_DAPF_ENTRY_SIZE;
-
-		for (k = 0; k < 5; k++)
-			of_property_read_u64_index(np, prop, i * 5 + k, &e[k]);
 		writel(e[3], r + 0x04);
 		writeq(e[0], r + 0x08);
 		writeq(e[1], r + 0x10);
@@ -1267,11 +1255,44 @@ static int apple_dart_program_dapf(struct platform_device *pdev)
 			bad++;
 	}
 	if (bad) {
-		dev_err(&pdev->dev, "DAPF: %d of %d entries did not read back\n", bad, count / 5);
+		dev_err(dart->dev, "DAPF: %u of %u entries did not read back\n", bad,
+			dart->dapf_count);
 		return -EIO;
 	}
-	dev_info(&pdev->dev, "DAPF: %d entries programmed\n", count / 5);
 	return 0;
+}
+
+/* Keep the entries: a DART that loses power loses them, see apple_dart_resume(). */
+static int apple_dart_init_dapf(struct platform_device *pdev, struct apple_dart *dart)
+{
+	struct device_node *np = pdev->dev.of_node;
+	const char *prop = "apple,dapf-entries";
+	struct resource *res;
+	int count, ret;
+
+	count = of_property_count_u64_elems(np, prop);
+	if (count <= 0)
+		return 0;
+	if (count % 5)
+		return -EINVAL;
+	dart->dapf = devm_platform_get_and_ioremap_resource(pdev, 1, &res);
+	if (IS_ERR(dart->dapf))
+		return PTR_ERR(dart->dapf);
+	if (count / 5 * DART_DAPF_ENTRY_SIZE > resource_size(res))
+		return -ERANGE;
+
+	dart->dapf_entries = devm_kmalloc_array(&pdev->dev, count, sizeof(u64), GFP_KERNEL);
+	if (!dart->dapf_entries)
+		return -ENOMEM;
+	ret = of_property_read_u64_array(np, prop, dart->dapf_entries, count);
+	if (ret)
+		return ret;
+	dart->dapf_count = count / 5;
+
+	ret = apple_dart_write_dapf(dart);
+	if (!ret)
+		dev_info(&pdev->dev, "DAPF: %u entries programmed\n", dart->dapf_count);
+	return ret;
 }
 
 static void apple_dart_hw_apply_remaps(struct apple_dart *dart)
@@ -2868,7 +2889,7 @@ params_done:
 	if (ret)
 		goto err_clk_disable;
 
-	ret = apple_dart_program_dapf(pdev);
+	ret = apple_dart_init_dapf(pdev, dart);
 	if (ret)
 		goto err_clk_disable;
 
@@ -3239,7 +3260,7 @@ static __maybe_unused int apple_dart_resume(struct device *dev)
 {
 	struct apple_dart *dart = dev_get_drvdata(dev);
 	unsigned int sid, idx;
-	int ret;
+	int ret, dapf_ret;
 
 	/* PCIe-C restored these mappings before starting its downstream link. */
 	if (dart->tunnel_state_restored) {
@@ -3270,6 +3291,9 @@ static __maybe_unused int apple_dart_resume(struct device *dev)
 		return ret;
 	}
 
+	/* The address filter lost its entries with the translations. */
+	dapf_ret = apple_dart_write_dapf(dart);
+
 	ret = apple_dart_hw_reset(dart);
 
 	/*
@@ -3298,6 +3322,9 @@ static __maybe_unused int apple_dart_resume(struct device *dev)
 
 	/* Should they fail again, the next resume repeats them. */
 	dart->reset_incomplete = ret;
+	/* Not a runtime PM error: that would fail every later resume of the DART. */
+	if (dapf_ret)
+		dev_err(dev, "address filter not restored on resume: %d\n", dapf_ret);
 	return ret;
 }
 
