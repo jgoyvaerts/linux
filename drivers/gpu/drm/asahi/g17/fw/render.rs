@@ -73,6 +73,10 @@ const FRAGMENT_CHECKPOINTS_25G83: [u16; 3] = [87, 88, 88];
 const TA_SLOT_INDEX_25G83: u8 = 79;
 /// Index of the free-list slot register (0x14048) in the 25G83 fragment array.
 const FRAGMENT_SLOT_INDEX_25G83: u8 = 84;
+/// A 25G83 stage with shader-context scratch (ray queries) also writes the SCS enable 0x017d9 = 1,
+/// which the compute program and both A18 Pro render programs carry for such work: first in the
+/// tiling array, after 0x01739 in the fragment array. Every count and index after it moves by one.
+const SCS_ENABLE: u32 = 0x017d9;
 
 const TA_REGISTERS: usize = 73;
 const TA_REGISTERS_MAX: usize = TA_REGISTERS + 1;
@@ -610,13 +614,14 @@ fn ta_registers(
     ])
 }
 
-/// The 25G83 tiling array: the A18 Pro's without 0x1748, 0x17d9 and 0x1740, with the M4
-/// Pro's tiler parameter sub-buffer registers and 0x10131 = 0x88, in the G16 driver's order.
+/// The 25G83 tiling array: the A18 Pro's without 0x1748 and 0x1740 (and 0x17d9 unless the stage
+/// has SCS), with the M4 Pro's tiler parameter sub-buffer registers and 0x10131 = 0x88, in the
+/// G16 driver's order. Returns the array and its used entry count.
 fn ta_registers_25g83(
     args: &RenderArgs<'_>,
     g: &Geometry,
     w: &PassWords,
-) -> Result<[RegisterWrite; TA_REGISTERS_25G83]> {
+) -> Result<([RegisterWrite; TA_REGISTERS_25G83 + 1], usize)> {
     let a = ta_registers(args, g, w)?;
     let r = args.resources;
     let gtp = |index: usize| -> Result<u64> {
@@ -635,12 +640,16 @@ fn ta_registers_25g83(
     let gtp1 = gtp(1)?;
     let gtp2 = gtp(2)?;
     let gtp6 = gtp(6)? & !127;
-    let mut out = [RegisterWrite::new(0, 0); TA_REGISTERS_25G83];
+    let scs = usize::from(args.ray_query[0].scratch.enabled());
+    let mut out = [RegisterWrite::new(0, 0); TA_REGISTERS_25G83 + 1];
     let mut n = 0;
     let mut push = |write: RegisterWrite| {
         out[n] = write;
         n += 1;
     };
+    if scs != 0 {
+        push(find(SCS_ENABLE, 0)?);
+    }
     for reg in [0x10141, 0x1c039, 0x1c9c8] {
         push(find(reg, 0)?);
     }
@@ -685,25 +694,27 @@ fn ta_registers_25g83(
     }
     push(find(0x1c880, 1)?);
     push(find(0x1c898, 1)?);
-    if n != TA_REGISTERS_25G83 || out[TA_SLOT_INDEX_25G83 as usize].reg != 0x14308 {
+    if n != TA_REGISTERS_25G83 + scs || out[TA_SLOT_INDEX_25G83 as usize + scs].reg != 0x14308 {
         return Err(EINVAL);
     }
-    Ok(out)
+    Ok((out, n))
 }
 
-/// The 25G83 main fragment array: the A18 Pro's without 0x17d9, with 0x160b8 = 0 after the
-/// tile state and 0x160a8 = 0x20 before the closing 0x16068, as the G16 driver writes it.
+/// The 25G83 main fragment array: the A18 Pro's (without 0x17d9 unless the stage has SCS), with
+/// 0x160b8 = 0 after the tile state and 0x160a8 = 0x20 before the closing 0x16068, as the G16
+/// driver writes it. Returns the array and its used entry count.
 fn fragment_registers_25g83(
     args: &RenderArgs<'_>,
     g: &Geometry,
     w: &PassWords,
-) -> Result<[RegisterWrite; FRAGMENT_REGISTERS_25G83]> {
+) -> Result<([RegisterWrite; FRAGMENT_REGISTERS_25G83 + 1], usize)> {
     let a = fragment_registers(args, g, w);
-    let mut out = [RegisterWrite::new(0, 0); FRAGMENT_REGISTERS_25G83];
+    let scs = usize::from(args.ray_query[1].scratch.enabled());
+    let mut out = [RegisterWrite::new(0, 0); FRAGMENT_REGISTERS_25G83 + 1];
     let mut n = 0;
     let mut tile_state = false;
     for (index, write) in a.iter().enumerate() {
-        if write.reg == 0x017d9 {
+        if write.reg == SCS_ENABLE && scs == 0 {
             continue;
         }
         if index == a.len() - 1 {
@@ -718,10 +729,12 @@ fn fragment_registers_25g83(
             n += 1;
         }
     }
-    if n != FRAGMENT_REGISTERS_25G83 || out[FRAGMENT_SLOT_INDEX_25G83 as usize].reg != 0x14048 {
+    if n != FRAGMENT_REGISTERS_25G83 + scs
+        || out[FRAGMENT_SLOT_INDEX_25G83 as usize + scs].reg != 0x14048
+    {
         return Err(EINVAL);
     }
-    Ok(out)
+    Ok((out, n))
 }
 
 fn fragment_registers(
@@ -1069,9 +1082,9 @@ impl TaDescriptor {
         self.checkpoints = TA_CHECKPOINTS.map(|count| count + u16::from(scs_register));
         self.unk_48 = (args.ordinal as u32).wrapping_add((args.ordinal / 2) as u32);
         if super::is_25g83() {
-            self.checkpoints = TA_CHECKPOINTS_25G83;
-            self.registers
-                .set(array_va, &ta_registers_25g83(args, &geometry, &words)?)?;
+            self.checkpoints = TA_CHECKPOINTS_25G83.map(|count| count + u16::from(scs_register));
+            let (registers, count) = ta_registers_25g83(args, &geometry, &words)?;
+            self.registers.set(array_va, &registers[..count])?;
         } else if scs_register {
             self.registers.set(array_va, &registers)?;
         } else {
@@ -1099,7 +1112,7 @@ impl TaDescriptor {
         self.ordinal = args.ordinal as u32;
         self.timestamp_start_va = resources.timestamp_va;
         self.unk_932 = match super::is_25g83() {
-            true => TA_SLOT_INDEX_25G83,
+            true => TA_SLOT_INDEX_25G83 + u8::from(scs_register),
             false => Self::UNK_932,
         };
         self.free_list_control_va = resources.free_list_control_va;
@@ -1139,8 +1152,8 @@ impl TaDescriptor {
     ) -> Result<[Option<RegisterArrayBinding>; 4]> {
         let checkpoint = match super::is_25g83() {
             true => TA_CHECKPOINTS_25G83[0] as u8,
-            false => TA_CHECKPOINTS[0] as u8 + u8::from(scs_register),
-        };
+            false => TA_CHECKPOINTS[0] as u8,
+        } + u8::from(scs_register);
         let array =
             RegisterArrayBinding::new(offset_va(descriptor_va, Self::ARRAY_OFFSET)?, checkpoint)?;
         Ok([Some(array), None, None, None])
@@ -1336,8 +1349,8 @@ impl FragmentDescriptor {
         };
         let checkpoint = match super::is_25g83() {
             true => FRAGMENT_CHECKPOINTS_25G83[0] as usize,
-            false => FRAGMENT_CHECKPOINTS[0] as usize + usize::from(scs_register),
-        };
+            false => FRAGMENT_CHECKPOINTS[0] as usize,
+        } + usize::from(scs_register);
         Ok([
             array(0, checkpoint)?,
             array(1, PARTIAL_STORE_REGISTERS)?,
@@ -1412,9 +1425,10 @@ impl FragmentSlot {
         desc.entries = FRAGMENT_REGISTERS as u16 + extra;
         let registers = fragment_registers(args, &geometry, &words);
         if super::is_25g83() {
-            desc.checkpoints = FRAGMENT_CHECKPOINTS_25G83;
-            desc.entries = FRAGMENT_REGISTERS_25G83 as u16;
-            desc.arrays[0].set(arrays[0], &fragment_registers_25g83(args, &geometry, &words)?)?;
+            desc.checkpoints = FRAGMENT_CHECKPOINTS_25G83.map(|count| count + extra);
+            desc.entries = FRAGMENT_REGISTERS_25G83 as u16 + extra;
+            let (registers, count) = fragment_registers_25g83(args, &geometry, &words)?;
+            desc.arrays[0].set(arrays[0], &registers[..count])?;
         } else if scs_register {
             desc.arrays[0].set(arrays[0], &registers)?;
         } else {
@@ -1461,7 +1475,7 @@ impl FragmentSlot {
         desc.timestamp_start_va = resources.timestamp_va;
         desc.timestamp_end_va = timestamp_end_va;
         desc.unk_21cc = match super::is_25g83() {
-            true => FRAGMENT_SLOT_INDEX_25G83,
+            true => FRAGMENT_SLOT_INDEX_25G83 + u8::from(args.ray_query[1].scratch.enabled()),
             false => Self::UNK_21CC,
         };
         desc.free_list_control_va = resources.free_list_control_va;
