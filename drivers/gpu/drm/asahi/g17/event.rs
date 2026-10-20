@@ -63,7 +63,9 @@ fn batch<H: Host>(host: &mut H, role: Role, masks: &mut [u64; 2]) -> Result {
                 }
             }
             Event::TvbGrow(request) => {
-                if request.halt_count == host.recovery().generation() {
+                let generation = host.recovery().generation();
+                note_tvb_grow(&request, generation);
+                if request.halt_count == generation {
                     host.queue_tvb_grow(request)?;
                 }
                 if host.control_backpressured() {
@@ -76,6 +78,35 @@ fn batch<H: Host>(host: &mut H, role: Role, masks: &mut [u64; 2]) -> Result {
         }
         Ok(true)
     })
+}
+
+static TVB_GROW_REQUESTS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static TVB_GROW_DROPPED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Logs the first firmware parameter-buffer growth request and the first one dropped for a stale
+/// halt count: nothing else shows whether the firmware asked for tiler heap before a render hang.
+/// The TVBStats debug class logs every request.
+fn note_tvb_grow(request: &TvbGrowRequest, generation: u64) {
+    let count = TVB_GROW_REQUESTS.fetch_add(1, core::sync::atomic::Ordering::Relaxed) + 1;
+    let stale = request.halt_count != generation;
+    let first_stale =
+        stale && TVB_GROW_DROPPED.fetch_add(1, core::sync::atomic::Ordering::Relaxed) == 0;
+    if count == 1
+        || first_stale
+        || crate::debug::debug_enabled(crate::debug::DebugFlags::TVBStats)
+    {
+        pr_info!(
+            "G17: parameter-buffer growth request {} (slot {} vm {} counter {} subpipe {} halt {} generation {}){}\n",
+            count,
+            request.buffer_slot,
+            request.vm_slot,
+            request.counter,
+            request.subpipe,
+            request.halt_count,
+            generation,
+            if stale { ", dropped: stale halt count" } else { "" }
+        );
+    }
 }
 
 pub(super) fn service<H: Host>(host: &mut H) -> Result<Pending> {
