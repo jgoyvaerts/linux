@@ -78,10 +78,10 @@ static bool unstable_edid = true;
 module_param(unstable_edid, bool, 0644);
 MODULE_PARM_DESC(unstable_edid, "Enable unstable EDID retrival support");
 
-bool dcp_takeover;
+bool dcp_takeover = true;
 module_param_named(takeover, dcp_takeover, bool, 0444);
 MODULE_PARM_DESC(takeover,
-		 "Bind the display DRM master, evict the boot framebuffer and drive fbcon (default 0: only run the DCP RTKit/IOMFB start handshake, no DRM, no modeset)");
+		 "Bind the display DRM master, evict the boot framebuffer and drive fbcon (default 1; 0: only run the DCP RTKit/IOMFB start handshake, no DRM, no modeset)");
 
 /*
  * M4 (R37): the J616s panel node is disabled and carries no apple,max-brightness,
