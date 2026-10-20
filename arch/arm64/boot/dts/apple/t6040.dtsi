@@ -802,7 +802,7 @@
 	 * gates on and the pins muxed to I2C; at 24 MHz in, 100 kHz is divider 15.
 	 */
 	i2c1: i2c@429014000 {
-		compatible = "apple,t6040-i2c", "apple,t8103-i2c";
+		compatible = "apple,t6041-i2c", "apple,t8103-i2c";
 		reg = <4 0x29014000 0 0x4000>;
 		clocks = <&clkref>;
 		interrupt-parent = <&aic>;
@@ -816,7 +816,7 @@
 	};
 
 	i2c3: i2c@42901c000 {
-		compatible = "apple,t6040-i2c", "apple,t8103-i2c";
+		compatible = "apple,t6041-i2c", "apple,t8103-i2c";
 		reg = <4 0x2901c000 0 0x4000>;
 		clocks = <&clkref>;
 		interrupt-parent = <&aic>;
