@@ -4,6 +4,7 @@
  * Copyright The Asahi Linux Contributors
  */
 
+#include <asm/arch_timer.h>
 #include <clocksource/arm_arch_timer.h>
 #include <linux/align.h>
 #include <linux/bitmap.h>
@@ -272,6 +273,36 @@ static u32 dcpep_cb_zero(struct apple_dcp *dcp)
 	return 0;
 }
 
+#if DCP_FW_VER >= DCP_FW_VERSION(26, 6, 0)
+/*
+ * M4: the 26.6 swap-complete payload is undecoded. Log every word in it that
+ * reads as an arch-counter (mach) time from the last second, with its age at
+ * the callback: the scanout time of the swap, if the firmware reports one,
+ * is what page-flip events and frame pacing need.
+ */
+static void dcp_log_swap_times(struct apple_dcp *dcp,
+			       struct DCP_FW_NAME(dc_swap_complete_resp) *resp)
+{
+	u64 now = arch_timer_read_counter(), rate = arch_timer_get_cntfrq();
+	unsigned int off, hits = 0;
+
+	for (off = 0; off + 8 <= sizeof(resp->opaque) && hits < 8; off++) {
+		u64 t = get_unaligned_le64(resp->opaque + off);
+
+		if (t && t <= now && now - t < rate) {
+			dev_info(dcp->dev, "M4_DCP_SWAP_TIME swap_id=%u off=0x%x age_us=%llu\n",
+				 resp->swap_id, off + 4, div64_u64((now - t) * 1000000, rate));
+			hits++;
+		}
+	}
+}
+#else
+static void dcp_log_swap_times(struct apple_dcp *dcp,
+			       struct DCP_FW_NAME(dc_swap_complete_resp) *resp)
+{
+}
+#endif
+
 static void dcpep_cb_swap_complete(struct apple_dcp *dcp,
 				   struct DCP_FW_NAME(dc_swap_complete_resp) *resp)
 {
@@ -282,6 +313,7 @@ static void dcpep_cb_swap_complete(struct apple_dcp *dcp,
 		dcp->m4_swaps_complete++;
 		dev_info(dcp->dev, "M4_DCP_SWAP_COMPLETE n=%u swap_id=%u\n",
 			 dcp->m4_swaps_complete, resp->swap_id);
+		dcp_log_swap_times(dcp, resp);
 	}
 
 	if (dcp_swap_stats) {
@@ -323,6 +355,7 @@ static void dcpep_cb_swap_complete(struct apple_dcp *dcp,
 			}
 			dcp->m4_stats_n++;
 			if (span >= 2000000 && dcp->m4_stats_n) {
+				dcp_log_swap_times(dcp, resp);
 				dev_info(dcp->dev,
 					 "M4_DCP_SWAP_STATS window_ms=%lld swaps=%u rate_x10=%llu gap_us_avg=%llu gap_us_max=%u lat_us_avg=%llu lat_us_max=%u vrr_timestamps=%d commit_us_avg=%llu commit_us_max=%u flush_masks=%u/%u/%u intent_n=%u intent_lead_us_avg=%llu intent_lead_us_max=%u frame_ns=%llu\n",
 					 span / 1000, dcp->m4_stats_n,
