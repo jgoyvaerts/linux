@@ -42,6 +42,7 @@ mod preparation;
 mod qos;
 mod queue;
 mod recovery;
+mod replay;
 mod runtime;
 pub(crate) mod status;
 mod teardown;
