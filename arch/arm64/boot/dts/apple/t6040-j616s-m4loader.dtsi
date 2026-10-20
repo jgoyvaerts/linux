@@ -1,0 +1,215 @@
+// SPDX-License-Identifier: GPL-2.0+ OR MIT
+/*
+ * Not for upstream: the M4 boot loader's contract with the J616s device tree (loader rev 11 and later).
+ *
+ * The loader edits the tree by node path; a missing placeholder makes it boot the rescue set
+ * (bad-board-dtb). Everything here only exists for it. Filled in at boot from the ADT and its own layout
+ * (src/standalone/fixups.c):
+ *   /memory: reg (single multi-range node), /memreserve map
+ *   /chosen: bootargs, linux,initrd-*, rng-seed, m4,* records, lab,* descriptor; framebuffer node
+ *     reg/format/size/stride/status
+ *   /reserved-memory: reg of direct-smp-*, direct-desktop-*, aop-*; dcp-map pool (name, reg, compatible,
+ *     iommu-addresses); memory-region lists
+ *   dcp/display-subsystem/mailbox@402e08000/iommu@402340000/iommu@402300000: status okay once the display
+ *     capture is accepted
+ *   /cpus/cpu@*: cpu-release-addr from the SMP peer records
+ *   bluetooth@0,1: local-bd-address, brcm,taurus-bf-cal-blob; wifi@0,0: brcm,cal-blob, apple,antenna-sku (ADT)
+ *   headphone-codec-probe: status, lab,admission-result, lab,current-adt-validated (ADT contract)
+ *   keyboard: hid-country-code (ADT)
+ *
+ * No kernel driver reads headphone-codec-probe, apple,m4-bt-otp-probe or apple,m4-bt-admission-policy any
+ * more, but the loader's media fix-ups and Bluetooth admission run on this tree and their source is not
+ * available to prove they ignore them, so they stay until the loader is checked.
+ * The NVMe node is the partition-guarded driver binding (lab,write-lba-range limits writes to the Linux
+ * partition).
+ *
+ * Declared differences from the rev 10 final tree: atc2_usb_aon is apple,always-on; the memory ranges are one
+ * multi-range node; no m4,* diagnostic records.
+ */
+
+/ {
+	reserved-memory {
+		ranges;
+		#address-cells = <2>;
+		#size-cells = <2>;
+
+		aop-oslog {
+			no-map;
+		};
+
+		aop-etext {
+			no-map;
+		};
+
+		direct-desktop-host1 {
+			no-map;
+		};
+
+		direct-desktop-host0 {
+			no-map;
+		};
+
+		direct-desktop-capture {
+			no-map;
+		};
+
+		direct-smp-peers {
+			no-map;
+		};
+
+		direct-smp-stacks {
+			no-map;
+		};
+
+		direct-smp-records {
+			no-map;
+		};
+
+		direct-smp-code {
+			no-map;
+		};
+
+		direct-smp-vector {
+			no-map;
+		};
+
+		dcp-map-pool0 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool1 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool2 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool3 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool4 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool5 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool6 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool7 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool8 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool9 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool10 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool11 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool12 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool13 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool14 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool15 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+	};
+
+	headphone-codec-probe {
+		compatible = "lab,j616s-headphone-control-v1";
+		reg = <4 0x29018000 0 0x4000 5 0x81e4000 0 0x4000>;
+		clock-frequency = <0x16e3600>;
+		codec-address = <0x4b>;
+		status = "disabled";
+	};
+
+	chosen {
+		ranges;
+		#size-cells = <2>;
+		#address-cells = <2>;
+
+		framebuffer@0 {
+			compatible = "apple,simple-framebuffer", "simple-framebuffer";
+			status = "disabled";
+		};
+	};
+
+	memory@0 {
+		reg = <0 0 0 0>;
+		device_type = "memory";
+	};
+
+	nvme@44dcc0000 {
+		compatible = "lab,j616-nvme-partition-25g83";
+		reg = <4 0x4dcc0000 0 0x10000 4 0x9600000 0 0x4000 4 0xdcc0000 0 0x60000>;
+		reg-names = "nvme", "ans", "nvmmu";
+		resets = <&ps_ssd_ans>;
+		power-domain-names = "ans", "apcie0", "apcie1";
+		power-domains = <&ps_ssd_ans &ps_ssd_apcie_sys_st0 &ps_ssd_apcie_sys_st1>;
+		apple,sart = <&ans_sart>;
+		mboxes = <&ans_mbox>;
+		interrupts = <0 0xa17 4>;
+		interrupt-parent = <&aic>;
+		lab,write-lba-range = <0 0xd9bd800 0 0xe7b5c00>;
+	};
+};
+
+&{/pcie@1cb0000000/pci@0,0/bluetooth@0,1} {
+	apple,m4-bt-otp-probe;
+	apple,m4-bt-admission-policy = "runtime-after-cold-reset-v1";
+};

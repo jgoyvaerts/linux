@@ -1113,9 +1113,7 @@
 			bluetooth@0,1 {
 				compatible = "pci14e4,5f72";
 				reg = <0x100 0 0 0 0>;
-				apple,m4-bt-otp-probe;
 				brcm,board-type = "apple,hostomel";
-				apple,m4-bt-admission-policy = "runtime-after-cold-reset-v1";
 				status = "okay";
 			};
 
@@ -1306,19 +1304,5 @@
 		compatible = "apple,t6041-sart", "apple,t6000-sart";
 		reg = <4 0xdc50000 0 0xc000>;
 		power-domains = <&ps_ssd_ans>;
-	};
-
-	nvme@44dcc0000 {
-		compatible = "lab,j616-nvme-partition-25g83";
-		reg = <4 0x4dcc0000 0 0x10000 4 0x9600000 0 0x4000 4 0xdcc0000 0 0x60000>;
-		reg-names = "nvme", "ans", "nvmmu";
-		resets = <&ps_ssd_ans>;
-		power-domain-names = "ans", "apcie0", "apcie1";
-		power-domains = <&ps_ssd_ans &ps_ssd_apcie_sys_st0 &ps_ssd_apcie_sys_st1>;
-		apple,sart = <&ans_sart>;
-		mboxes = <&ans_mbox>;
-		interrupts = <0 0xa17 4>;
-		interrupt-parent = <&aic>;
-		lab,write-lba-range = <0 0xd9bd800 0 0xe7b5c00>;
 	};
 };
