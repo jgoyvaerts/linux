@@ -19,7 +19,9 @@ description: |
 
 properties:
   compatible:
-    const: apple,t8140-pmp-v2-report
+    enum:
+      - apple,t6040-pmp-v2-report
+      - apple,t8140-pmp-v2-report
 
   reg:
     maxItems: 1
@@ -46,7 +48,9 @@ patternProperties:
     properties:
       compatible:
         items:
-          - const: apple,t8140-pmp-v2-report-entry
+          - enum:
+              - apple,t6040-pmp-v2-report-entry
+              - apple,t8140-pmp-v2-report-entry
           - const: apple,t6000-pmp-v2-report-entry
 
       reg:
