@@ -22,7 +22,6 @@
 		led-0 {
 			color = <0>;
 			function = "kbd_backlight";
-			default-state = "keep";
 			label = "apple::kbd_backlight";
 			max-brightness = <0xff>;
 			pwms = <&kbd_pwm 0 0x9c40>;
