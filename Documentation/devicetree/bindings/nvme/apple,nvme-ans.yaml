@@ -13,6 +13,7 @@ properties:
   compatible:
     oneOf:
       - const: apple,t8015-nvme-ans2
+      - const: apple,t6040-nvme-ans2
       - items:
           - enum:
               - apple,t6020-nvme-ans2
@@ -36,7 +37,8 @@ properties:
       - description: NVMe controller registers, including the NVMMU
           registers on SoCs without a separate NVMMU region
       - description: ANS2 co-processor control registers
-      - description: NVMMU registers, a separate region since T8132
+      - description: NVMMU registers, a separate region since T8132 (and
+          on T6040)
 
   reg-names:
     minItems: 2
@@ -52,7 +54,7 @@ properties:
       SError, so it cannot be used to restart the co-processor there.
 
   power-domains:
-    # two domains for t8103, three for t6000, t6020 and t8140
+    # two domains for t8103, three for t6000, t6020, t6040 and t8140
     minItems: 2
     items:
       - description: power domain for the NVMe controller.
@@ -93,6 +95,7 @@ allOf:
             enum:
               - apple,t6000-nvme-ans2
               - apple,t6020-nvme-ans2
+              - apple,t6040-nvme-ans2
               - apple,t8140-nvme-ans2
     then:
       properties:
@@ -111,7 +114,9 @@ allOf:
       properties:
         compatible:
           contains:
-            const: apple,t8132-nvme-ans2
+            enum:
+              - apple,t6040-nvme-ans2
+              - apple,t8132-nvme-ans2
     then:
       properties:
         reg:
