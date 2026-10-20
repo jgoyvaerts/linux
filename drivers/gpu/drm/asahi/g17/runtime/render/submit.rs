@@ -90,6 +90,12 @@ impl Backend {
             }
             match self.ensure_render(packet, slot) {
                 Err(error) if error == EAGAIN => continue,
+                // As long as the closed owner's last render; cancellation, a crash or a
+                // failed status (checked above) ends the wait.
+                Err(error) if error == super::prepare::awaiting_park() => {
+                    fsleep(Delta::from_millis(1));
+                    continue;
+                }
                 Err(error) if error == EBUSY => {
                     if takeover_polls == 5000 {
                         return Err(ETIMEDOUT);

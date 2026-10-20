@@ -71,6 +71,12 @@ struct BuildContext<'a> {
     first: &'a Arc<Packet>,
 }
 
+/// build_render_pair() on 25G83: a closed owner of the same VM still holds the pair. It parks
+/// only after its last render retires, so the submit path waits for it without a budget.
+pub(super) fn awaiting_park() -> Error {
+    Error::from_errno(-(kernel::bindings::EINPROGRESS as i32))
+}
+
 impl super::super::Backend {
     fn build_render_pair(&self, slot: u8, first: &Arc<Packet>, optional: bool) -> Result {
         let lease = self.shared.preparations.enter(false)?;
@@ -130,10 +136,19 @@ impl super::super::Backend {
                             };
                             return pool.ensure_backing(&alloc, &resources.global, self.context.vm());
                         }
+                        let foreign = !Arc::ptr_eq(pair.context().status(), self.context.status());
+                        // 25G83 binds a PB state to the UAT context named by its
+                        // InitBufferManager. A same-VM rebinding keeps that state under
+                        // the new context without one, and the firmware crashes ("PBState
+                        // must be unbind, before being rebound to different PB state").
+                        // Wait until the closed owner parks; the parked build then gets
+                        // a fresh PB state, buffer slot and InitBufferManager.
+                        if !foreign && pair.owner().is_none() && crate::g17::fw::is_25g83() {
+                            return Err(awaiting_park());
+                        }
                         if !pair.reusable()? {
                             return Err(EBUSY);
                         }
-                        let foreign = !Arc::ptr_eq(pair.context().status(), self.context.status());
                         if foreign {
                             firmware
                                 .queues
@@ -571,7 +586,7 @@ impl super::super::Backend {
             // An optional sibling may be borrowed or waiting for recovery.
             // The selected pair is revalidated by prepare_render before publication.
             match self.build_render_pair(sibling, packet, true) {
-                Err(error) if error == EBUSY || error == EAGAIN => {}
+                Err(error) if error == EBUSY || error == EAGAIN || error == awaiting_park() => {}
                 result => result?,
             }
         }
