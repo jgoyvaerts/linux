@@ -2771,11 +2771,36 @@ static void bcm4377_hci_unregister_dev(void *data)
 	cancel_delayed_work_sync(&bcm4377->setup_retry_work);
 }
 
+/*
+ * BCM4388: the Bluetooth function may only start once the Wi-Fi function
+ * (function 0 of the same device) is bound and has brought the chip up.
+ * Defer until then; a deferred probe is retried whenever a driver binds.
+ */
+static int bcm4377_wait_for_wlan(struct pci_dev *pdev, const struct bcm4377_hw *hw)
+{
+	struct pci_dev *wlan;
+	bool bound;
+
+	if (hw->id != 0x4388)
+		return 0;
+	wlan = pci_get_slot(pdev->bus, PCI_DEVFN(PCI_SLOT(pdev->devfn), 0));
+	if (!wlan)
+		return 0;
+	bound = device_is_bound(&wlan->dev);
+	pci_dev_put(wlan);
+	return bound ? 0 : dev_err_probe(&pdev->dev, -EPROBE_DEFER,
+					 "waiting for the Wi-Fi function to bind\n");
+}
+
 static int bcm4377_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
 	struct bcm4377_data *bcm4377;
 	struct hci_dev *hdev;
 	int ret, irq;
+
+	ret = bcm4377_wait_for_wlan(pdev, &bcm4377_hw_variants[id->driver_data]);
+	if (ret)
+		return ret;
 
 	ret = dma_set_mask_and_coherent(&pdev->dev, BCM4377_DMA_MASK);
 	if (ret)
