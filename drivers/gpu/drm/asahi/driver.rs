@@ -345,6 +345,11 @@ impl AsahiPlatformDriver {
                 return Err(error);
             }
         };
+        if let Err(error) =
+            crate::sysfs_exports::register_idle(raw_dev, crate::g17::power::IDLE_HOLD_MS.as_ptr())
+        {
+            dev_warn!(pdev.as_ref(), "idle_off_delay_ms not registered: {:?}\n", error);
+        }
         Ok(AsahiPlatformDriverData {
             _device: reg.device().into(),
             _reg: reg,
