@@ -440,10 +440,16 @@ int dcp_get_modes(struct drm_connector *connector)
 	struct drm_display_mode *mode;
 	int i;
 	unsigned int nr_modes;
+	u32 min_vrr = 0, max_vrr = 0;
 
 	mutex_lock(&dcp->modes_lock);
 	nr_modes = dcp->nr_modes;
 	for (i = 0; i < nr_modes; ++i) {
+		if (dcp->modes[i].vrr) {
+			min_vrr = dcp_mode_min_vrr(&dcp->modes[i]) >> 16;
+			max_vrr = max(max_vrr, dcp->modes[i].max_vrr >> 16 ?:
+				      drm_mode_vrefresh(&dcp->modes[i].mode));
+		}
 		mode = drm_mode_duplicate(dev, &dcp->modes[i].mode);
 
 		if (!mode) {
@@ -469,6 +475,13 @@ int dcp_get_modes(struct drm_connector *connector)
 	}
 	if (nr_modes && apple_connector->drm_edid)
 		drm_edid_connector_update(connector, apple_connector->drm_edid);
+
+	drm_connector_set_vrr_capable_property(connector, max_vrr);
+	/* The panel has no EDID to carry the range; set it after the EDID update, which resets it. */
+	if (max_vrr && !connector->display_info.monitor_range.max_vfreq) {
+		connector->display_info.monitor_range.min_vfreq = min_vrr;
+		connector->display_info.monitor_range.max_vfreq = max_vrr;
+	}
 
 	return nr_modes;
 }
@@ -598,6 +611,16 @@ void dcp_flush(struct drm_crtc *crtc, struct drm_atomic_state *state)
 {
 	struct platform_device *pdev = to_apple_crtc(crtc)->dcp;
 	struct apple_dcp *dcp = platform_get_drvdata(pdev);
+	struct drm_crtc_state *crtc_state = drm_atomic_get_new_crtc_state(state, crtc);
+
+	/*
+	 * Compositors toggle VRR_ENABLED without a modeset, but DCP only applies
+	 * adaptive sync when the mode is selected again.
+	 */
+	if (crtc_state->active && !drm_atomic_crtc_needs_modeset(crtc_state) &&
+	    dcp->valid_mode && dcp->use_timestamps &&
+	    crtc_state->vrr_enabled != dcp->vrr_enabled)
+		dcp_modeset_fw(dcp, crtc_state);
 
 	if (dcp_channel_busy(&dcp->ch_cmd))
 	{

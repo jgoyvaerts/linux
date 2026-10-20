@@ -134,18 +134,8 @@ module_param_named(swap_timestamps, dcp_swap_timestamps, bool, 0644);
 MODULE_PARM_DESC(swap_timestamps,
 		 "Send the fake non-zero swap timestamps in VRR-marked modes (default 1)");
 
-/*
- * M4 (R52): ProMotion / adaptive sync. The firmware (t604xdcp) takes IOMFBParameter 14 = {minRR, mediaTargetRate,
- * fractional}, all 16.16 Hz; the driver has always sent zeros, which keeps the panel at its fixed rate. The internal
- * panel's own range is 24..120 Hz in 4.1667 ms subframes (macOS IOMFBDisplayRefresh). Only 0 (off, default) and 24
- * (the panel minimum) are accepted; anything else is ignored with a log line. Load-time only.
- */
-unsigned int dcp_adaptive_sync_min_hz;
-module_param_named(adaptive_sync_min_hz, dcp_adaptive_sync_min_hz, uint, 0444);
-MODULE_PARM_DESC(adaptive_sync_min_hz,
-		 "Internal panel: minimum refresh rate in Hz for adaptive sync, 0 = fixed rate (default), 24 = the panel's minimum");
 /* what the runtime may apply (read from the .ko before it passes a load parameter): see /reports/r52/display */
-MODULE_INFO(m4_opt_in, "cursor_plane:0,1;adaptive_sync_min_hz:0,24;gamma_probe:0,1");
+MODULE_INFO(m4_opt_in, "cursor_plane:0,1;gamma_probe:0,1");
 
 /* M4 (R52): read-only probe of the DCP gamma table (A420): shows the value scale and the default curve. */
 bool dcp_gamma_probe;
