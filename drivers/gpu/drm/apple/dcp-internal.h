@@ -34,8 +34,6 @@ extern bool dcp_swap_stats;
 /* M4 (R39 prep): page-flip event policy (bit0 raw completion time, bit1 running sequence) and fake swap timestamps */
 extern unsigned int dcp_flip_event_mode;
 extern bool dcp_swap_timestamps;
-/* M4 (R52): minimum refresh rate (Hz) sent in IOMFBParameter 14 (adaptive sync); 0 = off */
-extern unsigned int dcp_adaptive_sync_min_hz;
 /* M4 (R52): 1 = read the DCP gamma table once (A420) after the first swaps and log its shape; read-only */
 extern bool dcp_gamma_probe;
 extern unsigned int dcp_backlight_default_nits;
@@ -251,6 +249,10 @@ struct apple_dcp {
 	u64 m4_stats_intent_sum_us;
 	bool m4_gamma_probed;
 	bool use_timestamps;
+	/* IOMFBParameter 14 carried a minimum refresh rate at the last modeset: the panel runs adaptive sync */
+	bool vrr_enabled;
+	/* arch counter at the last accepted swap, for the adaptive-sync swap timestamps */
+	u64 swap_submit_timestamp;
 	struct dcp_set_digital_out_mode_req mode;
 
 	/* completion for active turning true */
