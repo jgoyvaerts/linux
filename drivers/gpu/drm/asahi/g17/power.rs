@@ -3,8 +3,17 @@
 //! Work-based firmware performance effort. Idle power gating is managed separately by the
 //! device-control ring; this input never keeps an otherwise idle GPU powered.
 
+use core::sync::atomic::AtomicU32;
+
 pub(super) const FULL_EFFORT: u32 = 0x10000;
 const IDLE_HOLD_NS: u64 = 16_000_000;
+
+/// The firmware's own idle power-off delay (region C +0x9b8), which it reads only at boot.
+pub(crate) const FIRMWARE_IDLE_OFF_MS: u32 = 2;
+
+/// The `idle_off_delay_ms` sysfs knob. Above [`FIRMWARE_IDLE_OFF_MS`] the driver keeps the GPU
+/// cores powered until the GPU has been idle this long ([`Hold`]).
+pub(crate) static IDLE_HOLD_MS: AtomicU32 = AtomicU32::new(FIRMWARE_IDLE_OFF_MS);
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(super) enum IdleAction {
@@ -17,6 +26,7 @@ pub(super) struct Effort {
     streaming: bool,
     idle_since: Option<u64>,
     applied: u32,
+    submissions: u64,
 }
 
 impl Effort {
@@ -25,12 +35,19 @@ impl Effort {
             streaming: false,
             idle_since: None,
             applied: 0,
+            submissions: 0,
         }
     }
 
     pub(super) fn submit(&mut self) {
         self.streaming = true;
         self.idle_since = None;
+        self.submissions = self.submissions.wrapping_add(1);
+    }
+
+    /// Count of published submissions, for [`Hold::step`].
+    pub(super) fn submissions(&self) -> u64 {
+        self.submissions
     }
 
     pub(super) fn applied(&self) -> u32 {
@@ -59,6 +76,77 @@ impl Effort {
         } else {
             IdleAction::Recheck(IDLE_HOLD_NS - idle)
         }
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(super) enum HoldAction {
+    None,
+    /// Send the keep-powered idle policy.
+    Assert,
+    /// Send the power-off idle policy again.
+    Release,
+    Recheck(u64),
+}
+
+/// Host-side idle hold. The firmware powers the cores off 2 ms after the last job and reads that
+/// delay only at boot; every wake-up then costs about 1 ms. With a longer [`IDLE_HOLD_MS`] the
+/// host sends the keep-powered idle policy once work appears and the power-off policy once no
+/// work has been submitted or in flight for that long. Checked from the event worker, which runs
+/// on every completion, well inside the firmware's 2 ms.
+pub(super) struct Hold {
+    active: bool,
+    seen: u64,
+    since: Option<u64>,
+}
+
+impl Hold {
+    pub(super) const fn new() -> Self {
+        Self {
+            active: false,
+            seen: 0,
+            since: None,
+        }
+    }
+
+    pub(super) fn active(&self) -> bool {
+        self.active
+    }
+
+    pub(super) fn step(&mut self, now_ns: u64, in_flight: bool, submissions: u64, hold_ms: u32) -> HoldAction {
+        let enabled = hold_ms > FIRMWARE_IDLE_OFF_MS;
+        let fresh = submissions != self.seen;
+        self.seen = submissions;
+        if in_flight || fresh {
+            self.since = None;
+        }
+        if !self.active {
+            return if enabled && (in_flight || fresh) {
+                HoldAction::Assert
+            } else {
+                HoldAction::None
+            };
+        }
+        if in_flight {
+            return HoldAction::None;
+        }
+        let hold_ns = if enabled { u64::from(hold_ms) * 1_000_000 } else { 0 };
+        let since = *self.since.get_or_insert(now_ns.max(1));
+        let idle = now_ns.saturating_sub(since);
+        if idle >= hold_ns {
+            HoldAction::Release
+        } else {
+            HoldAction::Recheck(hold_ns - idle)
+        }
+    }
+
+    pub(super) fn asserted(&mut self) {
+        self.active = true;
+    }
+
+    pub(super) fn released(&mut self) {
+        self.active = false;
+        self.since = None;
     }
 }
 
