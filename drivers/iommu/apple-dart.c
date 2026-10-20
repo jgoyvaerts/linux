@@ -260,6 +260,7 @@ struct apple_dart {
 	const struct apple_dart_hw *hw;
 
 	void __iomem *regs;
+	resource_size_t regs_size;
 
 	int irq;
 	struct clk_bulk_data *clks;
@@ -1107,11 +1108,22 @@ apple_dart_t8110_hw_invalidate_tlb(struct apple_dart_stream_map *stream_map)
 
 static const char *apple_dart_t8110_v2_fault_name(u32 exception);
 
+/*
+ * The v2 exception registers sit at 0x4000 and 0x8000 + 0x40 * SID. Some
+ * T8110-format DARTs with a v2 version (the M4 Pro's USB and PCIe DARTs)
+ * have a 0x4000 register window and none of them.
+ */
+static bool apple_dart_t8110_v2_exceptions(struct apple_dart *dart)
+{
+	return dart->hw->type == DART_T8110 && dart->version >= 0x0202 &&
+	       dart->regs_size >= DART_T8110_ERR_SID(dart->num_streams);
+}
+
 static void apple_dart_drain_stale_exceptions(struct apple_dart *dart)
 {
 	unsigned int i, drained = 0;
 
-	if (dart->hw->type != DART_T8110 || dart->version < 0x0202)
+	if (!apple_dart_t8110_v2_exceptions(dart))
 		return;
 
 	for (i = 0; i < DIV_ROUND_UP(dart->num_streams, 32) && i < 8; i++) {
@@ -2502,7 +2514,7 @@ static irqreturn_t apple_dart_t8110_irq(int irq, void *dev)
 {
 	struct apple_dart *dart = dev;
 
-	if (dart->version >= 0x0202)
+	if (apple_dart_t8110_v2_exceptions(dart))
 		return apple_dart_t8110_v2_irq(irq, dev);
 
 	return apple_dart_t8110_legacy_irq(irq, dev);
@@ -2612,6 +2624,7 @@ static int apple_dart_probe(struct platform_device *pdev)
 							     &res);
 	if (IS_ERR(dart->regs))
 		return PTR_ERR(dart->regs);
+	dart->regs_size = resource_size(res);
 
 	if (resource_size(res) < 0x4000) {
 		dev_err(dev, "MMIO region too small (%pr)\n", res);
