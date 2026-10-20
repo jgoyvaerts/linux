@@ -17,11 +17,8 @@ mod float;
 mod fw;
 mod gem;
 // The G16 driver's encoders for the T6040 hardware data, power configuration and region C.
-#[allow(dead_code)]
 mod g16_fw;
-#[allow(dead_code)]
 mod g16_platform;
-#[allow(dead_code)]
 mod g16_power;
 mod g17;
 mod gpu;

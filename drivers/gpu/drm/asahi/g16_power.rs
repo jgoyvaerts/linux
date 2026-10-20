@@ -7,7 +7,7 @@
 use crate::{
     f32,
     float::F32,
-    g16_platform::{adt_word, put32, put64, zeroed, Platform},
+    g16_platform::{adt_word, put32, put64, Platform},
 };
 use kernel::{c_str, prelude::*};
 
@@ -55,17 +55,6 @@ fn filter(count: u32, period: u32, request: Option<u32>) -> Result<Filter> {
 }
 
 impl Platform {
-    /// Entire source-built bundle, including the firmware's power controllers.
-    pub(crate) fn bundle(&self, entropy: u32) -> Result<KVec<u8>> {
-        let mut out = zeroed(crate::g16_fw::BUNDLE_SIZE)?;
-        let layout = crate::g16_fw::MainConfig::bootstrap(crate::g16_fw::BUNDLE_ADDRESS);
-        let main = if self.t6040 { layout.encode_t6040() } else { layout.encode() };
-        out[crate::g16_fw::MAIN_OFFSET..crate::g16_fw::MAIN_OFFSET + main.len()]
-            .copy_from_slice(&main);
-        self.power_bundle(&mut out, 0xffff_fc20_000f_3440, 0xffff_fc20_c050_0000, entropy)?;
-        Ok(out)
-    }
-
     /// The hardware data and the power configuration of a bundle at `out`, with the role
     /// configuration object at `config_va` (its status follows at +0x80) and the AON table at
     /// `aon_va`. Everything but the main configuration and the rings.
