@@ -464,7 +464,6 @@
 		iommus = <&aop_dart 0>;
 		#address-cells = <2>;
 		#size-cells = <2>;
-		status = "disabled";
 
 		/*
 		 * "dma" is the microphones' leap ADMAC channel. "spkr" and "sense" are the speaker
@@ -478,47 +477,66 @@
 			dma-names = "dma", "spkr", "sense";
 			#sound-dai-cells = <1>;
 		};
+
+		aop_als: als {
+			compatible = "apple,t6040-aop-als", "apple,aop-als";
+		};
+
+		las {
+			compatible = "apple,t6040-aop-las", "apple,aop-las";
+		};
 	};
 
 	admac1: dma-controller@513800000 {
-		compatible = "apple,t6040-admac";
+		compatible = "apple,t6040-admac", "apple,t8132-admac";
 		reg = <5 0x13800000 0 0x34000>;
 		#dma-cells = <1>;
 		dma-channels = <0xd>;
 		interrupt-parent = <&aic>;
 		interrupts = <0 0x2f2 4>;
 		iommus = <&aop_dart 8>;
-		status = "disabled";
 	};
 
 	admac0: dma-controller@513300000 {
-		compatible = "apple,t6040-admac";
+		compatible = "apple,t6040-admac", "apple,t8132-admac";
 		reg = <5 0x13300000 0 0x34000>;
 		#dma-cells = <1>;
 		dma-channels = <0x12>;
 		interrupt-parent = <&aic>;
 		interrupts = <0 0x2f5 4>;
 		iommus = <&aop_dart 0xa>;
-		status = "disabled";
 	};
 
 	aop_mbox: mailbox@510608000 {
-		compatible = "apple,t6040-asc-mailbox";
+		compatible = "apple,t6040-asc-mailbox", "apple,asc-mailbox-v4";
 		reg = <5 0x10608000 0 0x4000>;
 		interrupt-parent = <&aic>;
 		interrupts = <0 0x2c6 4 0 0x2c7 4 0 0x2c8 4 0 0x2c9 4>;
 		interrupt-names = "send-empty", "send-not-empty", "recv-empty", "recv-not-empty";
 		#mbox-cells = <0>;
-		status = "disabled";
 	};
 
 	aop_dart: iommu@510f00000 {
-		compatible = "apple,t6040-dart";
-		reg = <5 0x10f00000 0 0xc000>;
+		compatible = "apple,t6040-dart", "apple,t8110-dart";
+		reg = <5 0x10f00000 0 0xc000>, <5 0x10f10000 0 0x4000>;
 		#iommu-cells = <1>;
 		interrupt-parent = <&aic>;
 		interrupts = <0 0x2de 4>;
-		status = "disabled";
+		/* the J616s ADT's filter data for this DART: <start end r0 r4 r20> */
+		apple,dapf-entries = /bits/ 64 <
+			0x5081e4020 0x5081e4043 0x31 0x0 0x1
+			0x5081e4880 0x5081e4c50 0x31 0x0 0x1
+			0x508240004 0x508240373 0x31 0x0 0x1
+			0x508304000 0x50830416b 0x31 0x0 0x1
+			0x508320280 0x50832048b 0x31 0x0 0x1
+			0x508370000 0x5083709a3 0x31 0x0 0x1
+			0x508900014 0x508900017 0x31 0x0 0x1
+			0x50c618110 0x50c61881f 0x31 0x0 0x1
+			0x50c634000 0x50c634003 0x31 0x0 0x1
+			0x50de00000 0x50defffff 0x31 0x0 0x1
+			0x508018000 0x50801bfff 0x31 0x0 0x1
+			0x50801c000 0x50801ffff 0x31 0x0 0x1
+		>;
 	};
 
 	display: display-subsystem {
