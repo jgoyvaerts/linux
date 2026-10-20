@@ -7,6 +7,10 @@
 	#address-cells = <2>;
 	#size-cells = <2>;
 
+	cpuidle {
+		compatible = "apple,t6040-cpuidle";
+	};
+
 	/*
 	 * The right-hand USB-C port (ATC2): the PD controller on its own SPMI bus, the ATC2 power states, both DARTs,
 	 * the USB2 PHY and the dwc3 (USB2 host with hotplug). The two left ports below are the same stack.
