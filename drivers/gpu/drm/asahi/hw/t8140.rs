@@ -397,6 +397,9 @@ pub(crate) mod qos {
 pub(crate) mod scheduling {
     use crate::g17::fw::queue::Policy;
 
+    /// `DRM_ASAHI_PRIORITY_HIGH`: class 1, as the G13 tables map HIGH; the
+    /// policy word of the user classes is kept (no macOS trace of class 1 yet).
+    pub(crate) const HIGH: Policy = Policy::new(1, 2, super::qos::CLASS, super::qos::SHARE);
     /// `DRM_ASAHI_PRIORITY_MEDIUM`.
     pub(crate) const MEDIUM: Policy = Policy::new(2, 2, super::qos::CLASS, super::qos::SHARE);
     /// `DRM_ASAHI_PRIORITY_LOW`.

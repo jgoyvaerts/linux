@@ -1558,10 +1558,11 @@ impl gpu::Gpu for Gpu {
 }
 
 /// Scheduling profile of a new logical queue. `file.rs` passes
-/// `DRM_ASAHI_PRIORITY_REALTIME - priority` and refuses HIGH and REALTIME, so
-/// MEDIUM arrives as 2 and LOW as 3.
+/// `DRM_ASAHI_PRIORITY_REALTIME - priority` and refuses REALTIME, so HIGH
+/// arrives as 1, MEDIUM as 2 and LOW as 3.
 fn scheduling_policy(priority: u32) -> Result<fw::queue::Policy> {
     match priority {
+        1 => Ok(hw::t8140::scheduling::HIGH),
         2 => Ok(hw::t8140::scheduling::MEDIUM),
         3 => Ok(hw::t8140::scheduling::LOW),
         _ => Err(EINVAL),
