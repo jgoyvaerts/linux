@@ -166,6 +166,9 @@ impl ComputeTimestamps {
     }
 }
 
+/// Republications of one command whose earlier publications firmware dropped unexecuted.
+pub(crate) const MAX_REPLAYS: u8 = 3;
+
 #[pin_data]
 pub(crate) struct Completion {
     status: Arc<VmStatus>,
@@ -305,7 +308,7 @@ impl Completion {
         let accepted = self
             .replays
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                (count < 3).then_some(count + 1)
+                (count < MAX_REPLAYS).then_some(count + 1)
             })
             .is_ok();
         if accepted {
@@ -382,6 +385,10 @@ impl Completion {
 
     pub(crate) fn spared(&self) -> bool {
         self.class.load(Ordering::Acquire) == 1
+    }
+
+    pub(crate) fn guilty(&self) -> bool {
+        self.class.load(Ordering::Acquire) == 2
     }
 
     /// Installed before the first firmware-visible prefix. Cancellation takes
