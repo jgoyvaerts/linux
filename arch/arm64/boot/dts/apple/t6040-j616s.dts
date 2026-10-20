@@ -265,3 +265,12 @@
 &isp_dart2 {
 	status = "disabled";
 };
+
+/*
+ * Nothing uses the nub GPIO bank yet, and its built-in driver reads the
+ * whole register bank during kernel boot: keep it off until a consumer
+ * (jack, HDMI) comes with an attended test.
+ */
+&pinctrl_nub {
+	status = "disabled";
+};
