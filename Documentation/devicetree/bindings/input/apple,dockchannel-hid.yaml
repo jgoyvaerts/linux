@@ -92,6 +92,14 @@ properties:
     description:
       Reset line of the STM interface, pulsed on the coprocessor's request.
 
+  apple,afe-smc:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      The SMC whose gp1c key powers the trackpad analog front end. With it
+      the host drives the key low to power the multi-touch interface on
+      and high to power it off, between the coprocessor's power transition
+      notifications.
+
   apple,no-stm:
     type: boolean
     description:
@@ -198,6 +206,15 @@ required:
 additionalProperties: false
 
 allOf:
+  - if:
+      properties:
+        compatible:
+          not:
+            contains:
+              const: apple,t6041-dockchannel-hid
+    then:
+      properties:
+        apple,afe-smc: false
   - if:
       properties:
         multi-touch:
