@@ -24,19 +24,28 @@ description: |
 
 properties:
   compatible:
-    const: apple,t8140-pmc
+    enum:
+      - apple,t6041-pmc
+      - apple,t8140-pmc
 
   reg:
-    items:
-      - description: Perf-state floor words of the voter agents
-      - description: |
-          Per-agent words holding the floor the PMC honours for each agent,
-          and per-rail interface enable words
+    maxItems: 2
+    description: |
+      The perf-state floor words of the voter agents ("voters"), and the
+      per-agent words holding the floor the PMC honours for each agent with
+      the per-rail interface enable words ("rails").
 
   reg-names:
-    items:
-      - const: voters
-      - const: rails
+    description: |
+      The rails block may come first, so that the node's unit address does
+      not collide with a node covering the voters block.
+    oneOf:
+      - items:
+          - const: voters
+          - const: rails
+      - items:
+          - const: rails
+          - const: voters
 
   power-domains:
     maxItems: 1
@@ -103,7 +112,9 @@ patternProperties:
 
     properties:
       compatible:
-        const: apple,t8140-clpc
+        enum:
+          - apple,t6041-clpc
+          - apple,t8140-clpc
 
       reg:
         maxItems: 1
