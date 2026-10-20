@@ -244,7 +244,7 @@ impl ParkedPair {
             terminal: None,
             previous: self.previous.take(),
             displaced: None,
-            replay: None,
+            replay: Tracker::new(),
             replay_since: None,
             context_update: true,
             executed: self.executed,
