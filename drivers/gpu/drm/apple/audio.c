@@ -33,13 +33,6 @@
 #define DCPAUD_ELEMENTS_MAXSIZE		16384
 #define DCPAUD_PRODUCTATTRS_MAXSIZE	1024
 
-/*
- * SIO takes one of its 64 descriptor slots per period, shared by all its
- * channels, and up to three DP audio outputs use one SIO. A stream with
- * more periods fails START with -ENOMEM.
- */
-#define DCPAUD_PERIODS_MAX		16
-
 struct dcp_audio {
 	struct device *dev;
 	struct device *dcp_dev;
@@ -50,7 +43,6 @@ struct dcp_audio {
 	struct snd_jack *jack;
 	struct snd_pcm_substream *substream;
 	unsigned int open_cookie;
-	bool open_unplugged;
 
 	struct mutex data_lock;
 	bool dcp_connected; /// dcp status keep for delayed initialization
@@ -59,11 +51,6 @@ struct dcp_audio {
 
 	struct snd_pcm_chmap_elem selected_chmap;
 	struct dcp_sound_cookie selected_cookie;
-	/* stream runs without a sink, see dcpaud_void_start() */
-	bool void_running;
-	ktime_t void_start;
-	u64 void_periods;
-	struct delayed_work void_work;
 	void *elements;
 	void *productattrs;
 
@@ -84,33 +71,7 @@ static const struct snd_pcm_hardware dcp_pcm_hw = {
 	.period_bytes_min	= 4096, /* TODO */
 	.period_bytes_max	= SIZE_MAX,
 	.periods_min		= 2,
-	.periods_max		= DCPAUD_PERIODS_MAX,
-};
-
-/*
- * Without a sink the DCP has no audio elements to derive constraints from.
- * Offer a plain stereo format so that the PCM can still be opened and
- * configured, as HDMI PCMs on other platforms can. Userspace (PipeWire,
- * PulseAudio) probes the PCM once when the card appears and drops the
- * output for good if that fails, so a monitor attached later would never
- * show up. The stream then plays into the void, see dcpaud_void_start().
- */
-static const struct snd_pcm_hardware dcp_pcm_hw_unplugged = {
-	.info	 = SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_MMAP_VALID |
-		   SNDRV_PCM_INFO_INTERLEAVED,
-	.formats = SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S24_LE |
-		   SNDRV_PCM_FMTBIT_S32_LE,
-	.rates			= SNDRV_PCM_RATE_32000 | SNDRV_PCM_RATE_44100 |
-				  SNDRV_PCM_RATE_48000,
-	.rate_min		= 32000,
-	.rate_max		= 48000,
-	.channels_min		= 2,
-	.channels_max		= 2,
-	.buffer_bytes_max	= SIZE_MAX,
-	.period_bytes_min	= 4096,
-	.period_bytes_max	= SIZE_MAX,
-	.periods_min		= 2,
-	.periods_max		= DCPAUD_PERIODS_MAX,
+	.periods_max		= UINT_MAX,
 };
 
 static int dcpaud_read_remote_info(struct dcp_audio *dcpaud)
@@ -290,19 +251,15 @@ static int dcp_pcm_open(struct snd_pcm_substream *substream)
 
 	mutex_lock(&dcpaud->data_lock);
 	ret = dcpaud_init_dma(dcpaud);
-	if (ret < 0) {
-		mutex_unlock(&dcpaud->data_lock);
+	if (ret < 0)
 		return ret;
-	}
 
-	dcpaud->open_unplugged = !dcpaud->connected;
+	if (!dcpaud->connected) {
+		mutex_unlock(&dcpaud->data_lock);
+		return -ENXIO;
+	}
 	dcpaud->open_cookie = dcpaud->connection_cookie;
 	mutex_unlock(&dcpaud->data_lock);
-
-	if (dcpaud->open_unplugged) {
-		hw = dcp_pcm_hw_unplugged;
-		goto refine;
-	}
 
 	ret = dcpaud_read_remote_info(dcpaud);
 	if (ret < 0)
@@ -319,11 +276,10 @@ static int dcp_pcm_open(struct snd_pcm_substream *substream)
 			    SNDRV_PCM_HW_PARAM_FORMAT, SNDRV_PCM_HW_PARAM_CHANNELS, -1);
 
 	hw = dcp_pcm_hw;
-refine:
 	hw.info = SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_MMAP_VALID |
 			  SNDRV_PCM_INFO_INTERLEAVED;
 	hw.periods_min = 2;
-	hw.periods_max = DCPAUD_PERIODS_MAX;
+	hw.periods_max = UINT_MAX;
 	hw.period_bytes_min = 256;
 	hw.period_bytes_max = SIZE_MAX; // TODO dma_get_max_seg_size(dma_dev);
 	hw.buffer_bytes_max = SIZE_MAX;
@@ -341,7 +297,6 @@ static int dcp_pcm_close(struct snd_pcm_substream *substream)
 {
 	struct dcp_audio *dcpaud = substream->pcm->private_data;
 	dcpaud->selected_chmap.channels = 0;
-	dcpaud->open_unplugged = false;
 
 	return snd_dmaengine_pcm_close(substream);
 }
@@ -364,9 +319,8 @@ static int dcp_pcm_hw_params(struct snd_pcm_substream *substream,
 	struct dma_chan *chan = snd_dmaengine_pcm_get_chan(substream);
 	int ret;
 
-	/* no sink: the stream runs without DMA, see dcpaud_void_start() */
-	if (dcpaud->open_unplugged || !dcpaud_connection_up(dcpaud))
-		return 0;
+	if (!dcpaud_connection_up(dcpaud))
+		return -ENXIO;
 
 	ret = dcpaud_select_cookie(dcpaud, params);
 	if (ret < 0)
@@ -406,78 +360,11 @@ static int dcp_pcm_prepare(struct snd_pcm_substream *substream)
 {
 	struct dcp_audio *dcpaud = substream->pcm->private_data;
 
-	/* alsa-lib prepares right after hw_params; see dcp_pcm_hw_unplugged */
-	if (dcpaud->open_unplugged || !dcpaud_connection_up(dcpaud))
-		return 0;
+	if (!dcpaud_connection_up(dcpaud))
+		return -ENXIO;
 
 	return dcp_audiosrv_prepare(dcpaud->dcp_dev,
 				    &dcpaud->selected_cookie);
-}
-
-static u64 dcpaud_void_period_ns(struct snd_pcm_runtime *runtime)
-{
-	return div_u64((u64)runtime->period_size * NSEC_PER_SEC, runtime->rate);
-}
-
-static void dcpaud_void_work(struct work_struct *work)
-{
-	struct dcp_audio *dcpaud = container_of(to_delayed_work(work),
-						struct dcp_audio, void_work);
-	struct snd_pcm_substream *substream = dcpaud->substream;
-	ktime_t next;
-	s64 delay;
-
-	snd_pcm_period_elapsed(substream);
-
-	snd_pcm_stream_lock_irq(substream);
-	if (dcpaud->void_running) {
-		/* the next period boundary, so that periods do not drift */
-		next = ktime_add_ns(dcpaud->void_start,
-				    ++dcpaud->void_periods *
-				    dcpaud_void_period_ns(substream->runtime));
-		delay = ktime_to_ns(ktime_sub(next, ktime_get()));
-		schedule_delayed_work(&dcpaud->void_work,
-				      delay > 0 ? nsecs_to_jiffies(delay) : 0);
-	}
-	snd_pcm_stream_unlock_irq(substream);
-}
-
-/*
- * Without a sink, DCP has no audio link to start. Failing START does not
- * stop userspace from trying: PipeWire retries it on every wakeup, and a
- * stream that never starts never makes it wait, so it retries at about
- * 130000 times a second for as long as something plays (a monitor
- * without audio, or none attached). Play into the void instead, as HDMI
- * PCMs elsewhere do: the stream runs on the clock, without DMA, and its
- * samples are dropped. A sink attached later gets the next stream opened.
- */
-static int dcpaud_void_start(struct snd_pcm_substream *substream)
-{
-	struct dcp_audio *dcpaud = substream->pcm->private_data;
-	u64 period_ns = dcpaud_void_period_ns(substream->runtime);
-
-	dev_dbg(dcpaud->dev, "no sink, playing into the void\n");
-	dcpaud->void_running = true;
-	dcpaud->void_start = ktime_get();
-	dcpaud->void_periods = 0;
-	schedule_delayed_work(&dcpaud->void_work, nsecs_to_jiffies(period_ns));
-
-	return 0;
-}
-
-static snd_pcm_uframes_t dcp_pcm_pointer(struct snd_pcm_substream *substream)
-{
-	struct dcp_audio *dcpaud = substream->pcm->private_data;
-	struct snd_pcm_runtime *runtime = substream->runtime;
-	u64 frames;
-
-	if (!dcpaud->void_running)
-		return snd_dmaengine_pcm_pointer(substream);
-
-	frames = mul_u64_u32_div(ktime_to_ns(ktime_sub(ktime_get(),
-						       dcpaud->void_start)),
-				 runtime->rate, NSEC_PER_SEC);
-	return do_div(frames, runtime->buffer_size);
 }
 
 static int dcp_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
@@ -488,8 +375,8 @@ static int dcp_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_RESUME:
-		if (dcpaud->open_unplugged || !dcpaud_connection_up(dcpaud))
-			return dcpaud_void_start(substream);
+		if (!dcpaud_connection_up(dcpaud))
+			return -ENXIO;
 
 		WARN_ON(pm_runtime_get_sync(dcpaud->dev) < 0);
 		ret = dcp_audiosrv_startlink(dcpaud->dcp_dev,
@@ -500,11 +387,6 @@ static int dcp_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
 
 	case SNDRV_PCM_TRIGGER_STOP:
 	case SNDRV_PCM_TRIGGER_SUSPEND:
-		if (dcpaud->void_running) {
-			/* sync_stop waits for the work */
-			dcpaud->void_running = false;
-			return 0;
-		}
 		break;
 
 	default:
@@ -533,19 +415,6 @@ static int dcp_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
 	return 0;
 }
 
-/*
- * ALSA calls this once a stream has stopped, outside the stream lock, before
- * the next hw_params, prepare or hw_free and at close.
- */
-static int dcp_pcm_sync_stop(struct snd_pcm_substream *substream)
-{
-	struct dcp_audio *dcpaud = substream->pcm->private_data;
-
-	cancel_delayed_work_sync(&dcpaud->void_work);
-
-	return 0;
-}
-
 struct snd_pcm_ops dcp_playback_ops = {
 	.open = dcp_pcm_open,
 	.close = dcp_pcm_close,
@@ -553,8 +422,7 @@ struct snd_pcm_ops dcp_playback_ops = {
 	.hw_free = dcp_pcm_hw_free,
 	.prepare = dcp_pcm_prepare,
 	.trigger = dcp_pcm_trigger,
-	.sync_stop = dcp_pcm_sync_stop,
-	.pointer = dcp_pcm_pointer,
+	.pointer = snd_dmaengine_pcm_pointer,
 };
 
 // Transitional workaround: for the chmap control TLV, advertise options
@@ -636,8 +504,7 @@ static void dcpaud_report_hotplug(struct dcp_audio *dcpaud, bool connected)
 
 	if (!connected) {
 		snd_pcm_stream_lock(substream);
-		/* a stream without a sink plays on, see dcpaud_void_start() */
-		if (substream->runtime && !dcpaud->void_running)
+		if (substream->runtime)
 			snd_pcm_stop(substream, SNDRV_PCM_STATE_DISCONNECTED);
 		snd_pcm_stream_unlock(substream);
 	}
@@ -849,7 +716,6 @@ static int dcpaud_probe(struct platform_device *pdev)
 
 	dcpaud->dev = &pdev->dev;
 	mutex_init(&dcpaud->data_lock);
-	INIT_DELAYED_WORK(&dcpaud->void_work, dcpaud_void_work);
 	platform_set_drvdata(pdev, dcpaud);
 
 	return component_add(&pdev->dev, &dcpaud_comp_ops);
@@ -898,12 +764,12 @@ static struct platform_driver dcpaud_driver = {
 	.shutdown	= dcpaud_shutdown,
 };
 
-int __init dcp_audio_register(void)
+void __init dcp_audio_register(void)
 {
-	return platform_driver_register(&dcpaud_driver);
+        platform_driver_register(&dcpaud_driver);
 }
 
-void dcp_audio_unregister(void)
+void __exit dcp_audio_unregister(void)
 {
         platform_driver_unregister(&dcpaud_driver);
 }
