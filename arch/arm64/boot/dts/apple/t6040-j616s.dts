@@ -8,6 +8,7 @@
 /include/ "t6040.dtsi"
 /include/ "t6040-j616s-m4loader.dtsi"
 /include/ "t6040-j616s-gpu.dtsi"
+/include/ "t6040-j616s-isp.dtsi"
 /include/ "t6040-cpufreq.dtsi"
 /include/ "t6040-pmc-mcc.dtsi"
 /include/ "t6040-pmp.dtsi"
