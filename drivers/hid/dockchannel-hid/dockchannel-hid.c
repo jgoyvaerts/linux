@@ -1387,8 +1387,11 @@ static int dchid_drain_ring(struct dockchannel_hid *dchid)
 	u32 producer, consumer, available;
 	int size;
 
-	if (!READ_ONCE(dchid->ring_registered))
-		return -EPROTO;
+	if (!READ_ONCE(dchid->ring_registered)) {
+		/* The firmware can notify before it has the ring address: nothing to read. */
+		dev_dbg(dchid->dev, "Ring notification before registration\n");
+		return 0;
+	}
 
 	while (1) {
 		producer = READ_ONCE(indices[0]);
