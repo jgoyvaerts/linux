@@ -4,79 +4,34 @@
  */
 
 #include "plane.h"
-#include "dcp.h"
 
-#include "dcp-internal.h"
 #include "iomfb_internal.h"
 
-#include "iomfb_plane.h"
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_fb_dma_helper.h>
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_gem.h>
-#include <drm/drm_gem_atomic_helper.h>
 #include <drm/drm_gem_dma_helper.h>
 #include <drm/drm_plane.h>
 
-#include <linux/math.h>
-#include <linux/types.h>
-
-#define APPLE_GPU_CACHELINE	16
 #define FRAC_16_16(mult, div)    (((mult) << 16) / (div))
 
-static struct dcp_image_layout
-apple_get_ix_layout(u32 width, u32 height, u32 bpp, u32 plane,  bool yuv)
-{
-	u32 meta_tile_w, meta_tile_h;
-	struct dcp_image_layout layout;
-
-	/*
-	 * Compression subtiles are always 16x16 with 8 bytes of metadata,
-	 * but IOMFB requires its structs to be populated with values
-	 * relative to the image tile dimensions.
-	 */
-	if (yuv && plane == 0) {
-		/* Luma image tiles are 32x32... */
-		layout.tile_w = layout.tile_h = 32;
-		/* ...and therefore have 4x 8-byte compression subtiles */
-		layout.meta_tile_bytes = 32;
-	} else {
-		layout.tile_w = layout.tile_h = 16;
-		layout.meta_tile_bytes = 8;
-	}
-
-	layout.width_tiles = DIV_ROUND_UP(width, layout.tile_w);
-	layout.height_tiles = DIV_ROUND_UP(height, layout.tile_h);
-	layout.tile_bytes = DIV_ROUND_UP(layout.tile_w * layout.tile_h * bpp, 8);
-	layout.meta_offset = ALIGN(layout.width_tiles * layout.height_tiles * layout.tile_bytes,
-				   APPLE_GPU_CACHELINE);
-
-	meta_tile_w = DIV_ROUND_UP(roundup_pow_of_two(width), layout.tile_w);
-	meta_tile_h = DIV_ROUND_UP(roundup_pow_of_two(height), layout.tile_h);
-
-	layout.meta_size = ALIGN(meta_tile_w * meta_tile_h * layout.meta_tile_bytes,
-				  APPLE_GPU_CACHELINE);
-
-	return layout;
-}
-
 static int apple_plane_atomic_check(struct drm_plane *plane,
-				    struct drm_atomic_commit *commit)
+				    struct drm_atomic_state *state)
 {
 	struct drm_plane_state *new_plane_state;
 	struct drm_crtc_state *crtc_state;
 	struct drm_rect *dst;
-	struct drm_framebuffer *fb;
 	int ret;
 
-	new_plane_state = drm_atomic_get_new_plane_state(commit, plane);
+	new_plane_state = drm_atomic_get_new_plane_state(state, plane);
 
 	if (!new_plane_state->crtc)
 		return 0;
 
-	crtc_state = drm_atomic_get_crtc_state(commit, new_plane_state->crtc);
+	crtc_state = drm_atomic_get_crtc_state(state, new_plane_state->crtc);
 	if (IS_ERR(crtc_state))
 		return PTR_ERR(crtc_state);
 
@@ -112,7 +67,7 @@ static int apple_plane_atomic_check(struct drm_plane *plane,
 	 */
 	dst = &new_plane_state->dst;
 	if (drm_rect_width(dst) < 32 || drm_rect_height(dst) < 32) {
-		dev_err_once(commit->dev->dev,
+		dev_err_once(state->dev->dev,
 			"Plane operation would have crashed DCP! Rejected!\n\
 			DCP requires 32x32 of every plane to be within screen space.\n\
 			Your compositor asked to overlay [%dx%d, %dx%d] on %dx%d.\n\
@@ -128,6 +83,13 @@ static int apple_plane_atomic_check(struct drm_plane *plane,
 	}
 
 	/*
+	 * Pitches have to be 64-byte aligned.
+	 */
+	for (u32 i = 0; i < new_plane_state->fb->format->num_planes; i++)
+		if (new_plane_state->fb->pitches[i] & 63)
+			return -EINVAL;
+
+	/*
 	 * FIXME: dcp can currently only use multi-planar buffers using the same
 	 *        object for all planes. It has a mandatory iommu so it should
 	 *        be no problem to map multiple objects "linearly" into DCP
@@ -141,48 +103,6 @@ static int apple_plane_atomic_check(struct drm_plane *plane,
 			if (new_plane_state->fb->obj[i] != NULL &&
 			    new_plane_state->fb->obj[i] != first)
 				return -EINVAL;
-	}
-
-	fb = new_plane_state->fb;
-	switch (fb->modifier) {
-	case DRM_FORMAT_MOD_APPLE_INTERCHANGE:
-		/*
-		 * The GEM object must be big enough for the framebuffer and metadata
-		 */
-		for (u32 i = 0; i < fb->format->num_planes; i++) {
-			struct dcp_image_layout layout;
-			struct drm_gem_dma_object *obj;
-			u32 req_size;
-
-			u32 width = drm_format_info_plane_width(fb->format, fb->width, i);
-			u32 height = drm_format_info_plane_height(fb->format, fb->height, i);
-			u32 bpp = drm_format_info_bpp(fb->format, i);
-
-			layout = apple_get_ix_layout(width, height, bpp, i,
-						     fb->format->is_yuv);
-			obj = drm_fb_dma_get_gem_obj(fb, i);
-
-			req_size = fb->offsets[i] + layout.meta_offset + layout.meta_size;
-
-			if (req_size > obj->base.size) {
-				dev_err_ratelimited(commit->dev->dev,
-						    "plane_atomic_check: required size of %u > %zu\n",
-						    req_size, obj->base.size);
-				return -EINVAL;
-			}
-		}
-		break;
-	case DRM_FORMAT_MOD_INVALID:
-	case DRM_FORMAT_MOD_LINEAR:
-		/*
-		 * Pitches have to be 64-byte aligned for linear images.
-		 */
-		for (u32 i = 0; i < fb->format->num_planes; i++)
-			if (fb->pitches[i] & 63)
-				return -EINVAL;
-		break;
-	default:
-		return -EINVAL;
 	}
 
 	return 0;
@@ -225,9 +145,6 @@ static u32 drm_format_to_dcp(u32 drm, enum drm_color_range range)
 	case DRM_FORMAT_ARGB2101010:
 		return DCP_FORMAT_L10R;
 
-	case DRM_FORMAT_ABGR16161616F:
-		return DCP_FORMAT_AhGR;
-
 	/* semi planar YCbCr formats, limited and full range */
 	case DRM_FORMAT_NV12:
 		return fr ? DCP_FORMAT_420F : DCP_FORMAT_420V;
@@ -241,21 +158,12 @@ static u32 drm_format_to_dcp(u32 drm, enum drm_color_range range)
 		return fr ? DCP_FORMAT_XF20 : DCP_FORMAT_X420;
 	case DRM_FORMAT_P210:
 		return fr ? DCP_FORMAT_XF22 : DCP_FORMAT_X422;
-	/* semi planar 10-bit YCbCr formats, 3x1 blocks, limited and full range */
-	case DRM_FORMAT_P030:
-		return fr ? DCP_FORMAT_PF20 : DCP_FORMAT_P420;
-	case DRM_FORMAT_P230:
-		return fr ? DCP_FORMAT_PF22 : DCP_FORMAT_P422;
 	/*
-	 * TODO: missing DRM fourccs for P410 / P430
+	 * TODO: missing DRM fourcc for P410
 	 */
 #if defined(DRM_FORMAT_P410)
 	case DRM_FORMAT_P410:
 		return fr ? DCP_FORMAT_XF44 : DCP_FORMAT_X444;
-#endif
-#if defined(DRM_FORMAT_P430)
-	case DRM_FORMAT_P430:
-		return fr ? DCP_FORMAT_PF44 : DCP_FORMAT_P444;
 #endif
 	}
 
@@ -298,9 +206,9 @@ static enum dcp_colorspace get_colorspace(bool is_yuv,
 }
 
 static void apple_plane_atomic_update(struct drm_plane *plane,
-				      struct drm_atomic_commit *commit)
+				      struct drm_atomic_state *state)
 {
-	struct drm_plane_state *base = drm_atomic_get_new_plane_state(commit, plane);
+	struct drm_plane_state *base = drm_atomic_get_new_plane_state(state, plane);
 	struct apple_plane_state *new_state;
 	struct drm_gem_dma_object *obj;
 	bool is_premultiplied = false;
@@ -340,7 +248,8 @@ static void apple_plane_atomic_update(struct drm_plane *plane,
 		.stride = fb->pitches[0],
 		.width = fb->width,
 		.height = fb->height,
-		.surface_id = plane->base.id,
+		.buf_size = fb->height * fb->pitches[0],
+		// .surface_id = req->swap.surf_ids[l],
 
 		/* Only used for compressed or multiplanar surfaces */
 		.pix_size = 1,
@@ -348,7 +257,6 @@ static void apple_plane_atomic_update(struct drm_plane *plane,
 		.pel_h = 1,
 		.has_comp = 1,
 		.has_planes = 1,
-		.has_compr_info = 1,
 	};
 
 	/* Populate plane information for planar formats */
@@ -356,59 +264,23 @@ static void apple_plane_atomic_update(struct drm_plane *plane,
 	for (int i = 0; fb->format->num_planes && i < fb->format->num_planes; i++) {
 		u32 width = drm_format_info_plane_width(fb->format, fb->width, i);
 		u32 height = drm_format_info_plane_height(fb->format, fb->height, i);
-		u32 bw = drm_format_info_block_width(fb->format, i);
 		u32 bh = drm_format_info_block_height(fb->format, i);
-		u32 bpp;
-
+		u32 bw = drm_format_info_block_width(fb->format, i);
 
 		surf->planes[i] = (struct dcp_plane_info){
 			.width = width,
 			.height = height,
 			.base = fb->offsets[i] - fb->offsets[0],
 			.offset = fb->offsets[i] - fb->offsets[0],
+			.stride = fb->pitches[i],
+			.size = height * fb->pitches[i],
+			.tile_size = bw * bh,
+			.tile_w = bw,
+			.tile_h = bh,
 		};
 
-		switch (fb->modifier) {
-		case DRM_FORMAT_MOD_APPLE_INTERCHANGE:
-			struct dcp_image_layout layout;
-
-			bpp = fmt->char_per_block[i] * 8 / (bw * bh);
-			layout = apple_get_ix_layout(width, height, bpp, i, fmt->is_yuv);
-
-			surf->planes[i].tile_w = layout.tile_w;
-			surf->planes[i].tile_h = layout.tile_h;
-			surf->planes[i].stride = layout.width_tiles * layout.tile_bytes;
-			surf->planes[i].size = layout.meta_offset + layout.meta_size;
-			surf->planes[i].tile_size = layout.tile_bytes;
-			surf->planes[i].address_fmt = DCP_ADDR_FMT_INTERCHANGE_TILED;
-
-			surf->compression_info[i] = (struct dcp_compression_info) {
-				.tile_w = layout.tile_w,
-				.tile_h = layout.tile_h,
-				.data_offset = surf->planes[i].offset,
-				.metadata_offset = surf->planes[i].offset + layout.meta_offset,
-				.meta_bytes = layout.meta_tile_bytes,
-				.tiles_w = layout.width_tiles,
-				.tiles_h = layout.height_tiles,
-				.tile_bytes = layout.tile_bytes,
-				.row_stride = layout.width_tiles * layout.tile_bytes,
-				.compression_type = DCP_COMPRESSION_INTERCHANGE,
-			};
-			break;
-		case DRM_FORMAT_MOD_INVALID:
-		case DRM_FORMAT_MOD_LINEAR:
-			surf->planes[i].tile_w = bw;
-			surf->planes[i].tile_h = bh;
-			surf->planes[i].stride = fb->pitches[i];
-			surf->planes[i].size = height * fb->pitches[i];
-			surf->planes[i].tile_size = bw * bh;
-			surf->planes[i].address_fmt = DCP_ADDR_FMT_LINEAR;
-			break;
-		default:
-			break;
-		}
-
-		surf->buf_size += surf->planes[i].size;
+		if (i > 0)
+			surf->buf_size += surf->planes[i].size;
 	}
 
 	/* the obvious helper call drm_fb_dma_get_gem_addr() adjusts
@@ -420,60 +292,13 @@ static void apple_plane_atomic_update(struct drm_plane *plane,
 		new_state->iova = obj->dma_addr + base->fb->offsets[0];
 }
 
-static void apple_plane_cleanup_fb(struct drm_plane *plane,
-				   struct drm_plane_state *state)
-{
-	struct apple_plane_state *apple_state = to_apple_plane_state(state);
-	struct dcp_fb_reference *entry = apple_state->retirement;
-
-	if (!entry)
-		return;
-
-	apple_state->retirement = NULL;
-	drm_framebuffer_put(entry->fb);
-	kfree(entry);
-}
-
-static int apple_plane_prepare_fb(struct drm_plane *plane,
-				  struct drm_plane_state *state)
-{
-	struct drm_plane_state *old;
-	struct dcp_fb_reference *entry;
-	int ret;
-
-	ret = drm_gem_plane_helper_prepare_fb(plane, state);
-	if (ret)
-		return ret;
-
-	old = drm_atomic_get_old_plane_state(state->state, plane);
-	if (!old || !old->crtc || !old->fb || old->fb == state->fb)
-		return 0;
-
-	/* The M4 backend retains accepted and uncertain scanout itself. */
-	if (iomfb_is_m4(platform_get_drvdata(to_apple_crtc(old->crtc)->dcp)))
-		return 0;
-
-	entry = kzalloc_obj(*entry);
-	if (!entry)
-		return -ENOMEM;
-
-	drm_framebuffer_get(old->fb);
-	entry->fb = old->fb;
-	to_apple_plane_state(state)->retirement = entry;
-	return 0;
-}
-
 static const struct drm_plane_helper_funcs apple_primary_plane_helper_funcs = {
-	.prepare_fb	= apple_plane_prepare_fb,
-	.cleanup_fb	= apple_plane_cleanup_fb,
 	.atomic_check	= apple_plane_atomic_check,
 	.atomic_update	= apple_plane_atomic_update,
 	.get_scanout_buffer = drm_fb_dma_get_scanout_buffer,
 };
 
 static const struct drm_plane_helper_funcs apple_plane_helper_funcs = {
-	.prepare_fb	= apple_plane_prepare_fb,
-	.cleanup_fb	= apple_plane_cleanup_fb,
 	.atomic_check	= apple_plane_atomic_check,
 	.atomic_update	= apple_plane_atomic_update,
 };
@@ -482,10 +307,8 @@ static const struct drm_plane_helper_funcs apple_plane_helper_funcs = {
 static void apple_plane_reset(struct drm_plane *plane)
 {
         struct apple_plane_state *state = to_apple_plane_state(plane->state);
-	if (state) {
-		apple_plane_cleanup_fb(plane, &state->base);
+	if (state)
 		__drm_atomic_helper_plane_destroy_state(&state->base);
-	}
 
 	kfree(state);
 	plane->state = NULL;
@@ -510,26 +333,23 @@ apple_plane_duplicate_state(struct drm_plane *plane)
         __drm_atomic_helper_plane_duplicate_state(plane, &apple_plane_state->base);
 
 	apple_plane_state->surf = old_apple_plane_state->surf;
-	apple_plane_state->src_rect = old_apple_plane_state->src_rect;
-	apple_plane_state->dst_rect = old_apple_plane_state->dst_rect;
-	apple_plane_state->iova = old_apple_plane_state->iova;
 
 	return &apple_plane_state->base;
 }
 
-static void apple_plane_destroy_state(struct drm_plane *plane,
-				      struct drm_plane_state *state)
-{
-	apple_plane_cleanup_fb(plane, state);
-	drm_atomic_helper_plane_destroy_state(plane, state);
-}
+// void apple_plane_destroy_state(struct drm_plane *plane,
+//                                      struct drm_plane_state *state)
+// {
+// 	drm_atomic_helper_plane_destroy_state(plane, state);
+// }
 
 static const struct drm_plane_funcs apple_plane_funcs = {
 	.update_plane		= drm_atomic_helper_update_plane,
 	.disable_plane		= drm_atomic_helper_disable_plane,
 	.reset			= apple_plane_reset,
 	.atomic_duplicate_state = apple_plane_duplicate_state,
-	.atomic_destroy_state	= apple_plane_destroy_state,
+	// .atomic_destroy_state	= apple_plane_destroy_state,
+	.atomic_destroy_state	= drm_atomic_helper_plane_destroy_state,
 };
 
 /*
@@ -544,30 +364,7 @@ static const struct drm_plane_funcs apple_plane_funcs = {
  * advertise formats without alpha.
  */
 static const u32 dcp_primary_formats[] = {
-	DRM_FORMAT_ABGR16161616F,
 	DRM_FORMAT_XRGB2101010,
-	DRM_FORMAT_ARGB2101010,
-	DRM_FORMAT_XRGB8888,
-	DRM_FORMAT_ARGB8888,
-	DRM_FORMAT_XBGR8888,
-	DRM_FORMAT_ABGR8888,
-	DRM_FORMAT_NV12,
-	DRM_FORMAT_NV16,
-	DRM_FORMAT_NV24,
-	DRM_FORMAT_P010,
-	DRM_FORMAT_P210,
-#if defined(DRM_FORMAT_P410)
-	DRM_FORMAT_P410,
-#endif
-	DRM_FORMAT_P030,
-	DRM_FORMAT_P230,
-#if defined(DRM_FORMAT_P430)
-	DRM_FORMAT_P430,
-#endif
-};
-
-/* The H17P alpha semantics of 10-bit XRGB are unknown. */
-static const u32 dcp_primary_formats_h17p[] = {
 	DRM_FORMAT_ARGB2101010,
 	DRM_FORMAT_XRGB8888,
 	DRM_FORMAT_ARGB8888,
@@ -584,7 +381,6 @@ static const u32 dcp_primary_formats_h17p[] = {
 };
 
 static const u32 dcp_overlay_formats[] = {
-	DRM_FORMAT_ABGR16161616F,
 	DRM_FORMAT_ARGB2101010,
 	DRM_FORMAT_ARGB8888,
 	DRM_FORMAT_ABGR8888,
@@ -595,11 +391,6 @@ static const u32 dcp_overlay_formats[] = {
 	DRM_FORMAT_P210,
 #if defined(DRM_FORMAT_P410)
 	DRM_FORMAT_P410,
-#endif
-	DRM_FORMAT_P030,
-	DRM_FORMAT_P230,
-#if defined(DRM_FORMAT_P430)
-	DRM_FORMAT_P430,
 #endif
 };
 
@@ -634,13 +425,7 @@ static const u32 dcp_overlay_formats_12_x[] = {
 #endif
 };
 
-static u64 format_modifiers[] = {
-	DRM_FORMAT_MOD_APPLE_INTERCHANGE,
-	DRM_FORMAT_MOD_LINEAR,
-	DRM_FORMAT_MOD_INVALID
-};
-
-static u64 format_modifiers_no_ix[] = {
+u64 apple_format_modifiers[] = {
 	DRM_FORMAT_MOD_LINEAR,
 	DRM_FORMAT_MOD_INVALID
 };
@@ -649,9 +434,7 @@ struct drm_plane *apple_plane_init(struct drm_device *dev,
 				   unsigned long possible_crtcs,
 				   u32 iomfb_surf,
 				   bool supports_l10r,
-				   bool supports_xrgb2101010,
-				   enum drm_plane_type type,
-				   bool interchange)
+				   enum drm_plane_type type)
 {
 	struct apple_plane *plane;
 	const u32 *fmts;
@@ -659,20 +442,16 @@ struct drm_plane *apple_plane_init(struct drm_device *dev,
 
 	switch (type) {
 	case DRM_PLANE_TYPE_PRIMARY:
-		if (supports_l10r && supports_xrgb2101010) {
+		if (supports_l10r) {
 			fmts = dcp_primary_formats;
 			num_fmts = ARRAY_SIZE(dcp_primary_formats);
-		} else if (supports_l10r) {
-			fmts = dcp_primary_formats_h17p;
-			num_fmts = ARRAY_SIZE(dcp_primary_formats_h17p);
 		} else {
 			fmts = dcp_primary_formats_12_x;
 			num_fmts = ARRAY_SIZE(dcp_primary_formats_12_x);
 		}
 		plane = drmm_universal_plane_alloc(dev, struct apple_plane, base, possible_crtcs,
 				       &apple_plane_funcs, fmts, num_fmts,
-				       interchange ? format_modifiers : format_modifiers_no_ix,
-				       type, NULL);
+				       apple_format_modifiers, type, NULL);
 		break;
 	case DRM_PLANE_TYPE_OVERLAY:
 	case DRM_PLANE_TYPE_CURSOR:
@@ -685,8 +464,7 @@ struct drm_plane *apple_plane_init(struct drm_device *dev,
 		}
 		plane = drmm_universal_plane_alloc(dev, struct apple_plane, base, possible_crtcs,
 				       &apple_plane_funcs, fmts, num_fmts,
-				       interchange ? format_modifiers : format_modifiers_no_ix,
-				       type, NULL);
+				       apple_format_modifiers, type, NULL);
 		break;
 	default:
 		return ERR_PTR(-EINVAL);
@@ -710,91 +488,3 @@ struct drm_plane *apple_plane_init(struct drm_device *dev,
 
 	return &plane->base;
 }
-
-/* The formats the T6030 (14.x firmware) scanout was qualified with. */
-static const u32 dcp_primary_formats_14_7[] = {
-	DRM_FORMAT_XRGB8888,
-	DRM_FORMAT_ARGB8888,
-};
-
-struct drm_plane *apple_plane_init_v14_7(struct drm_device *dev,
-					 unsigned long possible_crtcs,
-					 u32 iomfb_surf,
-					 enum drm_plane_type type)
-{
-	struct apple_plane *plane;
-
-	if (type != DRM_PLANE_TYPE_PRIMARY)
-		return ERR_PTR(-EINVAL);
-
-	plane = drmm_universal_plane_alloc(dev, struct apple_plane, base, possible_crtcs,
-					   &apple_plane_funcs, dcp_primary_formats_14_7,
-					   ARRAY_SIZE(dcp_primary_formats_14_7),
-					   format_modifiers_no_ix, type, NULL);
-	if (IS_ERR(plane))
-		return ERR_CAST(plane);
-
-	drm_plane_helper_add(&plane->base, &apple_primary_plane_helper_funcs);
-	plane->iomfb_surf = iomfb_surf;
-
-	return &plane->base;
-}
-
-#if IS_ENABLED(CONFIG_DRM_APPLE_DCP_T8132)
-#include "iomfb_m4_present.h"
-
-static const u32 dcp_primary_formats_v26_6[] = {
-	DRM_FORMAT_XRGB8888,
-	DRM_FORMAT_ARGB8888,
-};
-
-static int apple_plane_atomic_check_v26_6(struct drm_plane *plane,
-					struct drm_atomic_commit *commit)
-{
-	struct drm_plane_state *new = drm_atomic_get_new_plane_state(commit, plane);
-	struct drm_crtc_state *crtc_state;
-	struct dcp_m4_frame frame;
-	int ret;
-
-	if (!new->crtc)
-		return 0;
-	crtc_state = drm_atomic_get_crtc_state(commit, new->crtc);
-	if (IS_ERR(crtc_state))
-		return PTR_ERR(crtc_state);
-	ret = drm_atomic_helper_check_plane_state(new, crtc_state,
-						DRM_PLANE_NO_SCALING,
-						DRM_PLANE_NO_SCALING, false, true);
-	if (ret)
-		return ret;
-	if (!new->visible)
-		return crtc_state->active ? -EINVAL : 0;
-	return iomfb_m4_plane_frame(new, crtc_state->mode.hdisplay,
-				     crtc_state->mode.vdisplay, &frame);
-}
-
-static const struct drm_plane_helper_funcs apple_primary_plane_helper_funcs_v26_6 = {
-	.prepare_fb = apple_plane_prepare_fb,
-	.cleanup_fb = apple_plane_cleanup_fb,
-	.atomic_check = apple_plane_atomic_check_v26_6,
-	.atomic_update = apple_plane_atomic_update,
-	.get_scanout_buffer = drm_fb_dma_get_scanout_buffer,
-};
-
-struct drm_plane *apple_plane_init_v26_6(struct drm_device *dev,
-				      unsigned long possible_crtcs, u32 iomfb_surf)
-{
-	struct apple_plane *plane;
-
-	plane = drmm_universal_plane_alloc(dev, struct apple_plane, base,
-					   possible_crtcs, &apple_plane_funcs,
-					   dcp_primary_formats_v26_6,
-					   ARRAY_SIZE(dcp_primary_formats_v26_6),
-					   format_modifiers_no_ix,
-					   DRM_PLANE_TYPE_PRIMARY, NULL);
-	if (IS_ERR(plane))
-		return ERR_CAST(plane);
-	drm_plane_helper_add(&plane->base, &apple_primary_plane_helper_funcs_v26_6);
-	plane->iomfb_surf = iomfb_surf;
-	return &plane->base;
-}
-#endif
