@@ -43,7 +43,8 @@
 
 /*
  * CPU die temperature: SMC key TCMz (CPU die max) as thermal sensor 0 (method from Kb2uka/Omarchy-M4-Native's
- * J713 overlays). It is the only temperature child, so a missing key gives no zone instead of another sensor.
+ * J713 overlays). It must stay the first temperature child: the zone names the sensor by its index among the
+ * temperature-* nodes, so the shared hwmon includes below only append after it.
  * The PMP's fast die-temperature limit regulates (TCMz settles near 111 C); this zone is the backstop above it:
  * passive at 113 C, critical (orderly shutdown) at 118 C, 1 s polling as the SMC refreshes TCMz about once a
  * second. The cpufreq cooling device sits on a cluster's policy CPU, so each map lists every CPU of its cluster.
@@ -59,6 +60,11 @@
 		};
 	};
 };
+
+/* Read-only fan speeds and more SMC sensors; every key exists on this machine's SMC. Fan writes stay off. */
+#include "hwmon-common.dtsi"
+#include "hwmon-fan-dual.dtsi"
+#include "hwmon-laptop.dtsi"
 
 / {
 	thermal-zones {
