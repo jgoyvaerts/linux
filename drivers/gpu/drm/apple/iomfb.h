@@ -167,6 +167,7 @@ enum dcpep_method {
 	iomfbep_abort_swaps_dcp,
 	iomfbep_set_matrix,
 	iomfbep_get_gamma_table,
+	iomfbep_set_gamma_table,
 	dcpep_num_methods
 };
 
@@ -475,6 +476,8 @@ static_assert(sizeof(struct iomfb_gamma_table_req) == 3088, "A420/A421 wire size
 static_assert(sizeof(struct iomfb_gamma_table_resp) == 3088, "A420/A421 wire size");
 #define iomfb_get_gamma_table_req iomfb_gamma_table_req
 #define iomfb_get_gamma_table_resp iomfb_gamma_table_resp
+#define iomfb_set_gamma_table_req iomfb_gamma_table_req
+#define iomfb_set_gamma_table_resp iomfb_gamma_table_resp
 
 struct dcpep_get_tiling_state_req {
 	u32 event;
