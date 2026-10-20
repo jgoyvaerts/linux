@@ -486,6 +486,18 @@
 	};
 
 	/*
+	 * The SoC watchdog (ADT /arm-io/wdt, "wdt,t8101"). Its driver only arms the reset when userspace opens
+	 * /dev/watchdog or the firmware left it running; it also provides a restart handler.
+	 */
+	wdt: watchdog@50836c000 {
+		compatible = "apple,t6041-wdt", "apple,t8103-wdt";
+		reg = <5 0x836c000 0 0x4000>;
+		clocks = <&clkref>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x33b 4>;
+	};
+
+	/*
 	 * The video decoder: the MCU firmware programs the t8122/t8132 register family, so apple-avd binds through
 	 * its t8132 entry; the DART and the AVD_SYS power state bind through the generic drivers.
 	 */
@@ -767,21 +779,22 @@
 		status = "okay";
 	};
 
-	/*
-	 * The speaker-amp buses: i2c1 carries the left amps, i2c3 the right ones (t6040-j616s.dts). iBoot leaves both
-	 * gates on and the pins muxed to I2C; the 24 MHz reference is the controllers' input clock (100 kHz = divider 15).
-	 */
-	clk_i2c_ref: clock-i2c-ref {
+	/* The SoC's 24 MHz reference clock (ADT clock-ids 4): the input clock of the I2C controllers and the watchdog. */
+	clkref: clock-ref {
 		compatible = "fixed-clock";
 		#clock-cells = <0>;
 		clock-frequency = <24000000>;
-		clock-output-names = "i2c_ref";
+		clock-output-names = "clkref";
 	};
 
+	/*
+	 * The speaker-amp buses: i2c1 carries the left amps, i2c3 the right ones (t6040-j616s.dts). iBoot leaves both
+	 * gates on and the pins muxed to I2C; at 24 MHz in, 100 kHz is divider 15.
+	 */
 	i2c1: i2c@429014000 {
 		compatible = "apple,t6040-i2c", "apple,t8103-i2c";
 		reg = <4 0x29014000 0 0x4000>;
-		clocks = <&clk_i2c_ref>;
+		clocks = <&clkref>;
 		interrupt-parent = <&aic>;
 		interrupts = <0 0x628 4>;
 		pinctrl-0 = <&i2c1_pins>;
@@ -795,7 +808,7 @@
 	i2c3: i2c@42901c000 {
 		compatible = "apple,t6040-i2c", "apple,t8103-i2c";
 		reg = <4 0x2901c000 0 0x4000>;
-		clocks = <&clk_i2c_ref>;
+		clocks = <&clkref>;
 		interrupt-parent = <&aic>;
 		interrupts = <0 0x62a 4>;
 		pinctrl-0 = <&i2c3_pins>;
