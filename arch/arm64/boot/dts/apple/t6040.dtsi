@@ -509,6 +509,79 @@
 		power-domains = <&ps_avd_sys>;
 	};
 
+	/*
+	 * The camera ISP (ADT isp0, firmware loaded by iBoot). "coproc" is the
+	 * coprocessor up to its control block, "mbox", "gpio" and "mbox2" are the
+	 * interrupt words, the firmware handshake words and the doorbell of its
+	 * mailbox at +0x2924000; the first of the ADT's four interrupts.
+	 */
+	isp: isp@580000000 {
+		compatible = "apple,t6040-isp", "apple,isp";
+		reg = <5 0x80000000 0 0x1604000>, <5 0x82924000 0 0x40>,
+		      <5 0x829241d0 0 0x20>, <5 0x82924464 0 0x10>;
+		reg-names = "coproc", "mbox", "gpio", "mbox2";
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x286 4>;
+		iommus = <&isp_dart0 0>, <&isp_dart1 0>, <&isp_dart2 0>;
+		power-domains = <&ps_isp_sys>, <&ps_isp_cpu>, <&ps_isp_fe>, <&ps_ispsens0>;
+		/* the shared memory window above the firmware's 32 MiB */
+		apple,dart-vm-size = /bits/ 64 <0xde600000>;
+		apple,platform-id = <5>;
+		status = "disabled";
+	};
+
+	/*
+	 * ADT dart-isp0: three DART instances with one interrupt; streams 1, 6, 7,
+	 * 10 and 11 are aliases of stream 0 (ADT "remap"). The address filter
+	 * (DAPF0) lets the firmware reach the PMGR, PMP and DSID-clear registers.
+	 */
+	isp_dart0: iommu@5828c0000 {
+		compatible = "apple,t6040-dart", "apple,t8110-dart";
+		reg = <5 0x828c0000 0 0xc000>, <5 0x828d0000 0 0x4000>;
+		#iommu-cells = <1>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x298 4>;
+		power-domains = <&ps_isp_sys>;
+		apple,remap-streams = <1 0>, <6 0>, <7 0>, <10 0>, <11 0>;
+		/* the J616s ADT's filter data for this DART: <start end r0 r4 r20> */
+		apple,dapf-entries = /bits/ 64 <
+			0x502284000 0x50228402b 0x31 0x0 0x1
+			0x502880000 0x502887fff 0x31 0x0 0x1
+			0x500e3c000 0x500e3c003 0x31 0x0 0x1
+			0x51062c000 0x510648003 0x31 0x0 0x1
+			0x485660000 0x485660003 0x31 0x0 0x1
+			0x220004000 0x2201d62fc 0x31 0x0 0x1
+			0x222004000 0x2221d62fc 0x31 0x0 0x1
+			0x224004000 0x2241d62fc 0x31 0x0 0x1
+			0x226004000 0x2261d62fc 0x31 0x0 0x1
+			0x504824000 0x504824004 0x31 0x0 0x1
+			0x5003c0000 0x5003e4000 0x31 0x0 0x1
+		>;
+		status = "disabled";
+	};
+
+	isp_dart1: iommu@5828e0000 {
+		compatible = "apple,t6040-dart", "apple,t8110-dart";
+		reg = <5 0x828e0000 0 0xc000>;
+		#iommu-cells = <1>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x298 4>;
+		power-domains = <&ps_isp_sys>;
+		apple,remap-streams = <1 0>, <6 0>, <7 0>, <10 0>, <11 0>;
+		status = "disabled";
+	};
+
+	isp_dart2: iommu@582900000 {
+		compatible = "apple,t6040-dart", "apple,t8110-dart";
+		reg = <5 0x82900000 0 0xc000>;
+		#iommu-cells = <1>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x298 4>;
+		power-domains = <&ps_isp_sys>;
+		apple,remap-streams = <1 0>, <6 0>, <7 0>, <10 0>, <11 0>;
+		status = "disabled";
+	};
+
 	aop@510600000 {
 		compatible = "apple,t6040-aop";
 		reg = <5 0x10c10000 0 0x2e0000 5 0x10600000 0 0x88000 5 0x10050000 0 0x4000 5 0x8328000 0 0x24>;
@@ -1196,6 +1269,23 @@
 		#size-cells = <1>;
 		#address-cells = <1>;
 
+		ps_ispsens0: power-controller@0 {
+			compatible = "apple,t6041-pmgr-pwrstate", "apple,t8103-pmgr-pwrstate";
+			reg = <0x0 4>;
+			label = "ispsens0";
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+		};
+
+		ps_isp_sys: power-controller@378 {
+			compatible = "apple,t6041-pmgr-pwrstate", "apple,t8103-pmgr-pwrstate";
+			reg = <0x378 4>;
+			label = "isp_sys";
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			power-domains = <&ps_fab6_soc>;
+		};
+
 		ps_kbd_fpwm0: power-controller@138 {
 			compatible = "apple,t6041-pmgr-pwrstate", "apple,t8103-pmgr-pwrstate";
 			reg = <0x138 4>;
@@ -1293,11 +1383,57 @@
 		};
 	};
 
+	/* the ISP's own power states, at PMGR +0x4000 (ADT isp0 reg[1]) */
+	power-management@502284000 {
+		compatible = "apple,t6041-pmgr", "apple,t8103-pmgr", "syscon", "simple-mfd";
+		reg = <5 0x2284000 0 0x4000>;
+		#size-cells = <1>;
+		#address-cells = <1>;
+
+		ps_isp_cpu: power-controller@0 {
+			compatible = "apple,t6041-pmgr-pwrstate", "apple,t8103-pmgr-pwrstate";
+			reg = <0x0 4>;
+			label = "isp_cpu";
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			power-domains = <&ps_isp_sys>;
+		};
+
+		ps_isp_fe: power-controller@8 {
+			compatible = "apple,t6041-pmgr-pwrstate", "apple,t8103-pmgr-pwrstate";
+			reg = <0x8 4>;
+			label = "isp_fe";
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			power-domains = <&ps_isp_sys>;
+		};
+	};
+
 	power-management@502800000 {
 		compatible = "apple,t6041-pmgr", "apple,t8103-pmgr", "syscon", "simple-mfd";
 		reg = <5 0x2800000 0 0x4000>;
 		#size-cells = <1>;
 		#address-cells = <1>;
+
+		/* fabric parents of isp_sys, on from boot like the others in this block */
+		ps_afi: power-controller@110 {
+			compatible = "apple,t6041-pmgr-pwrstate", "apple,t8103-pmgr-pwrstate";
+			reg = <0x110 4>;
+			label = "afi";
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			apple,always-on;
+		};
+
+		ps_fab6_soc: power-controller@480 {
+			compatible = "apple,t6041-pmgr-pwrstate", "apple,t8103-pmgr-pwrstate";
+			reg = <0x480 4>;
+			label = "fab6_soc";
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			power-domains = <&ps_afi>;
+			apple,always-on;
+		};
 
 		/*
 		 * Always-on: the firmware leaves atc2_usb on while its parent atc2_common is power-gated, and genpd
