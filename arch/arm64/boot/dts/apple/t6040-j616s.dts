@@ -237,3 +237,24 @@
 		};
 	};
 };
+
+/*
+ * The camera stays off until its own attended boot: its DARTs program
+ * their address filter at probe, during kernel boot, before the boot
+ * counting in userspace could catch a crash.
+ */
+&isp {
+	status = "disabled";
+};
+
+&isp_dart0 {
+	status = "disabled";
+};
+
+&isp_dart1 {
+	status = "disabled";
+};
+
+&isp_dart2 {
+	status = "disabled";
+};
