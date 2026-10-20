@@ -92,6 +92,23 @@
 		#phy-cells = <1>;
 		#reset-cells = <0>;
 		power-domains = <&ps_atc2_common_dp>;
+		mboxes = <&atcphy2_mbox>;
+		mbox-names = "phy-cpu";
+	};
+
+	/*
+	 * The PHY coprocessor (ADT acio-phy-cpuN, "iop,mxwrap", RTKit) runs the SuperSpeed
+	 * bring-up; its ASC v4 mailbox. ADT lists the IRQs as 1, 0, 3, 2 of the block,
+	 * as for AOP: send-empty is the lowest.
+	 */
+	atcphy2_mbox: mailbox@393148000 {
+		compatible = "apple,t6040-asc-mailbox", "apple,asc-mailbox-v4";
+		reg = <3 0x93148000 0 0x4000>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x3be 4 0 0x3bf 4 0 0x3c0 4 0 0x3c1 4>;
+		interrupt-names = "send-empty", "send-not-empty", "recv-empty", "recv-not-empty";
+		#mbox-cells = <0>;
+		power-domains = <&ps_atc2_phymxwrap>;
 	};
 
 	atc2_dart1: iommu@392f80000 {
@@ -221,6 +238,18 @@
 		#phy-cells = <1>;
 		#reset-cells = <0>;
 		power-domains = <&ps_atc1_common_dp>;
+		mboxes = <&atcphy1_mbox>;
+		mbox-names = "phy-cpu";
+	};
+
+	atcphy1_mbox: mailbox@38b148000 {
+		compatible = "apple,t6040-asc-mailbox", "apple,asc-mailbox-v4";
+		reg = <3 0x8b148000 0 0x4000>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x3b4 4 0 0x3b5 4 0 0x3b6 4 0 0x3b7 4>;
+		interrupt-names = "send-empty", "send-not-empty", "recv-empty", "recv-not-empty";
+		#mbox-cells = <0>;
+		power-domains = <&ps_atc1_phymxwrap>;
 	};
 
 	atc1_dart1: iommu@38af80000 {
@@ -276,6 +305,18 @@
 		#phy-cells = <1>;
 		#reset-cells = <0>;
 		power-domains = <&ps_atc0_common_dp>;
+		mboxes = <&atcphy0_mbox>;
+		mbox-names = "phy-cpu";
+	};
+
+	atcphy0_mbox: mailbox@383148000 {
+		compatible = "apple,t6040-asc-mailbox", "apple,asc-mailbox-v4";
+		reg = <3 0x83148000 0 0x4000>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x3aa 4 0 0x3ab 4 0 0x3ac 4 0 0x3ad 4>;
+		interrupt-names = "send-empty", "send-not-empty", "recv-empty", "recv-not-empty";
+		#mbox-cells = <0>;
+		power-domains = <&ps_atc0_phymxwrap>;
 	};
 
 	atc0_dart1: iommu@382f80000 {
