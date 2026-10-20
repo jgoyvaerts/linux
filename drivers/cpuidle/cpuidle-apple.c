@@ -124,6 +124,8 @@ static struct cpuidle_driver apple_idle_driver = {
 
 static int apple_cpuidle_probe(struct platform_device *pdev)
 {
+	bool t604x = of_device_is_compatible(pdev->dev.of_node, "apple,t6041-cpuidle");
+
 	/*
 	 * CPU PD writes CYC_OVRD, which is an undefined instruction on
 	 * T8140. Its WFI already lets the hardware power-gate idle
@@ -131,13 +133,23 @@ static int apple_cpuidle_probe(struct platform_device *pdev)
 	 * the generic s2idle selector skips fallback index 0, otherwise
 	 * tick_freeze() and timekeeping suspension are never reached.
 	 */
-	if (of_machine_is_compatible("apple,t8140"))
+	if (of_machine_is_compatible("apple,t8140") || t604x)
 		apple_idle_driver.states[STATE_PWRDOWN] = apple_idle_driver.states[STATE_WFI];
+
+	/*
+	 * T6040 (M4 Pro) is the same: iBoot locks CYC_OVRD, and a plain
+	 * WFI already powers the core down, losing x0-x15 and FP/SIMD
+	 * (the arm64 idle code saves those). Keep the second state off
+	 * until it is enabled through sysfs.
+	 */
+	if (t604x)
+		apple_idle_driver.states[STATE_PWRDOWN].flags |= CPUIDLE_FLAG_OFF;
 
 	return cpuidle_register(&apple_idle_driver, NULL);
 }
 
 static const struct of_device_id apple_cpuidle_of_match[] = {
+	{ .compatible = "apple,t6041-cpuidle" },
 	{ .compatible = "apple,t8140-cpuidle" },
 	{ }
 };
