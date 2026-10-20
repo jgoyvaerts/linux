@@ -10,6 +10,11 @@
  * The driver performs no ATC-register writes during probe. The power
  * sequences only cover the PHY: the host controller must be stopped before
  * power_off, which dwc3-apple does on every role change.
+ *
+ * Runtime PM: the PHY core keeps this device active from power_on to
+ * power_off, and the DWC3 reset below holds it while the controller is out of
+ * reset (the controller runs on the pipehandler's PIPE clock). In between,
+ * the PHY's common_dp power state can drop with an idle port.
  */
 
 #include <dt-bindings/phy/phy.h>
@@ -22,6 +27,7 @@
 #include <linux/of.h>
 #include <linux/phy/phy.h>
 #include <linux/platform_device.h>
+#include <linux/pm_runtime.h>
 #include <linux/reset-controller.h>
 
 #define T6040_USB2_USBCTL		0x00
@@ -70,6 +76,7 @@ struct t6040_usb2_phy {
 	enum phy_mode mode;
 	bool powered;
 	bool shutdown_failed;
+	bool dwc3_running;	/* reset deasserted: holds a runtime PM reference */
 };
 
 static inline void t6040_usb2_mask32(void __iomem *reg, u32 mask, u32 set)
@@ -277,12 +284,22 @@ static int t6040_usb2_reset_assert(struct reset_controller_dev *rcdev,
 {
 	struct t6040_usb2_phy *tphy =
 		container_of(rcdev, struct t6040_usb2_phy, rcdev);
+	int ret;
+
+	PM_RUNTIME_ACQUIRE(tphy->dev, pm);
+	ret = PM_RUNTIME_ACQUIRE_ERR(&pm);
+	if (ret)
+		return ret;
 
 	guard(mutex)(&tphy->lock);
 	t6040_usb2_clear32(tphy->pipehandler + T6040_PIPEHANDLER_AON_GEN,
 			   T6040_PIPEHANDLER_AON_GEN_DWC3_RESET_N);
 	t6040_usb2_set32(tphy->pipehandler + T6040_PIPEHANDLER_AON_GEN,
 			 T6040_PIPEHANDLER_AON_GEN_DWC3_FORCE_CLAMP_EN);
+	if (tphy->dwc3_running) {
+		tphy->dwc3_running = false;
+		pm_runtime_put(tphy->dev);
+	}
 	return 0;
 }
 
@@ -292,6 +309,12 @@ static int t6040_usb2_reset_deassert(struct reset_controller_dev *rcdev,
 	struct t6040_usb2_phy *tphy =
 		container_of(rcdev, struct t6040_usb2_phy, rcdev);
 	u32 value;
+	int ret;
+
+	PM_RUNTIME_ACQUIRE(tphy->dev, pm);
+	ret = PM_RUNTIME_ACQUIRE_ERR(&pm);
+	if (ret)
+		return ret;
 
 	guard(mutex)(&tphy->lock);
 	if (tphy->shutdown_failed)
@@ -307,6 +330,10 @@ static int t6040_usb2_reset_deassert(struct reset_controller_dev *rcdev,
 		      T6040_PIPEHANDLER_AON_GEN_DWC3_FORCE_CLAMP_EN)) !=
 		    T6040_PIPEHANDLER_AON_GEN_DWC3_RESET_N)
 		return -EIO;
+	if (!tphy->dwc3_running) {
+		pm_runtime_get_noresume(tphy->dev);
+		tphy->dwc3_running = true;
+	}
 	return 0;
 }
 
@@ -367,6 +394,11 @@ static int t6040_usb2_probe(struct platform_device *pdev)
 	if (IS_ERR(tphy->evt))
 		return dev_err_probe(dev, PTR_ERR(tphy->evt),
 				     "failed to map USB2 event bank 1\n");
+
+	/* Before devm_phy_create(): the PHY core then manages the references. */
+	ret = devm_pm_runtime_enable(dev);
+	if (ret)
+		return ret;
 
 	tphy->phy = devm_phy_create(dev, NULL, &t6040_usb2_phy_ops);
 	if (IS_ERR(tphy->phy))
