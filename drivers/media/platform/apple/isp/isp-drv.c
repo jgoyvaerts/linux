@@ -184,6 +184,7 @@ static int apple_isp_init_iommu(struct apple_isp *isp)
 					       &heap_size);
 	}
 
+	isp->fw.heap_base = heap_base;
 	isp->fw.heap_top = heap_base + heap_size;
 
 	err = of_property_read_u64(dev->of_node, "apple,dart-vm-size",
@@ -420,6 +421,10 @@ static int apple_isp_probe(struct platform_device *pdev)
 				   &isp->temporal_filter);
 	if (err)
 		isp->temporal_filter = 0;
+
+	/* the sensor connection layout, for firmware that takes it at boot */
+	of_property_read_u32(dev->of_node, "apple,cam-connections-scheme",
+			     &isp->cam_connections_scheme);
 
 	err = apple_isp_init_presets(isp);
 	if (err) {
@@ -786,6 +791,48 @@ static const struct apple_isp_hw apple_isp_hw_t8140 = {
 	.resident_fw = true,
 };
 
+/*
+ * T6040 runs the same coprocessor and firmware interface as T8140, booted
+ * as macOS boots it on the J616s (macOS 26.6.2 camera log, kext register
+ * map) and as aurora's m1n1 proxy captures with it: no coprocessor reset,
+ * the firmware's address filter (DAPF) instead of 1:1 MMIO mappings, four
+ * broadcast-clear windows in eight slots, the scaler 1 output path and no
+ * capture metadata pool or watchdog.
+ */
+static const struct apple_isp_hw apple_isp_hw_t6040 = {
+	.gen = ISP_GEN_T6040,
+	.fw_abi = ISP_FW_ABI_H17,
+	.pmu_base = 0x0,
+
+	.dsid_count = 4,
+	.dsid_slots = 8,
+	.dsid_clr_base0 = 0x2201d4000,
+	.dsid_clr_base1 = 0x2221d4000,
+	.dsid_clr_base2 = 0x2241d4000,
+	.dsid_clr_base3 = 0x2261d4000,
+	.dsid_clr_range0 = 0x2fc,
+
+	/* the PMGR and PMP scratch words of the ISP's DAPF windows */
+	.clock_scratch = 0x5003d0fa8,
+	.clock_base = 0x0,
+	.clock_bit = 0x0,
+	.clock_size = 0x8,
+	.bandwidth_scratch = 0x504824000,
+	.bandwidth_base = 0x0,
+	.bandwidth_bit = 0x0,
+	.bandwidth_size = 0x8,
+	.mbox_irq_enable = ISP_MBOX_IRQ_ENABLE_T6031,
+
+	.scl1 = true,
+	.lpdp = false,
+	.meta_size = ISP_META_SIZE_T8140,
+
+	.coproc_control = ISP_COPROC_CONTROL_T8140,
+	.boot_mode = 1,
+	.shared_size = 0xde600000,
+	.resident_fw = true,
+};
+
 static const struct of_device_id apple_isp_of_match[] = {
 	{ .compatible = "apple,t8103-isp", .data = &apple_isp_hw_t8103 },
 	{ .compatible = "apple,t8112-isp", .data = &apple_isp_hw_t8112 },
@@ -795,6 +842,7 @@ static const struct of_device_id apple_isp_of_match[] = {
 	{ .compatible = "apple,t6030-isp", .data = &apple_isp_hw_t6030 },
 	{ .compatible = "apple,t6031-isp", .data = &apple_isp_hw_t6031 },
 	{ .compatible = "apple,t8140-isp", .data = &apple_isp_hw_t8140 },
+	{ .compatible = "apple,t6040-isp", .data = &apple_isp_hw_t6040 },
 	{},
 };
 MODULE_DEVICE_TABLE(of, apple_isp_of_match);

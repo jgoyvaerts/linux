@@ -186,10 +186,13 @@ int ipc_chan_send(struct apple_isp *isp, struct isp_channel *chan,
 
 	t = wait_event_timeout(isp->wait, chan_tx_done(isp, chan), timeout);
 	if (t == 0) {
+		/* A set but unserviced interrupt points at its routing. */
 		dev_err(isp->dev,
-			"%s: timed out on request [0x%llx, 0x%llx, 0x%llx]\n",
+			"%s: timed out on request [0x%llx, 0x%llx, 0x%llx], irq 0x%x enable 0x%x\n",
 			chan->name, chan->req.arg0, chan->req.arg1,
-			chan->req.arg2);
+			chan->req.arg2,
+			isp_mbox_read32(isp, ISP_MBOX_IRQ_INTERRUPT),
+			isp_mbox_read32(isp, isp->hw->mbox_irq_enable));
 		return -ETIME;
 	}
 
