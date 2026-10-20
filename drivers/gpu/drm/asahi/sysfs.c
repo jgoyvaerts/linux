@@ -170,6 +170,46 @@ int asahi_sysfs_register(struct device *dev, const void *snapshot,
 }
 EXPORT_SYMBOL_GPL(asahi_sysfs_register);
 
+/*
+ * G17: GPU idle power-off delay (ms, 2-1000). On T6040/25G83 the firmware powers the GPU cores
+ * off after 2 ms idle and reads its own delay only at boot; above 2 the driver holds the cores
+ * powered until the GPU has been idle this long (power::IDLE_HOLD_MS). Each wake-up there costs
+ * about 1 ms, so userspace may lengthen it on AC power.
+ */
+static u32 *asahi_idle_word;
+
+static ssize_t idle_off_delay_ms_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	return sysfs_emit(buf, "%u\n", READ_ONCE(*asahi_idle_word));
+}
+
+static ssize_t idle_off_delay_ms_store(struct device *dev, struct device_attribute *attr,
+				       const char *buf, size_t count)
+{
+	u32 ms;
+
+	if (kstrtou32(buf, 0, &ms) || ms < 2 || ms > 1000)
+		return -EINVAL;
+	WRITE_ONCE(*asahi_idle_word, ms);
+	return count;
+}
+
+static DEVICE_ATTR_RW(idle_off_delay_ms);
+
+int asahi_sysfs_register_idle(struct device *dev, u32 *word)
+{
+	int ret;
+
+	if (!dev || !word)
+		return -ENODEV;
+	asahi_idle_word = word;
+	ret = device_create_file(dev, &dev_attr_idle_off_delay_ms);
+	if (ret)
+		asahi_idle_word = NULL;
+	return ret;
+}
+EXPORT_SYMBOL_GPL(asahi_sysfs_register_idle);
+
 void asahi_sysfs_unregister(struct device *dev, void *handle)
 {
 	struct asahi_stats_attribute *stats = handle;
@@ -180,6 +220,10 @@ void asahi_sysfs_unregister(struct device *dev, void *handle)
 	/* Removal drains active show callbacks before either allocation dies. */
 	device_remove_file(dev, &stats->memory_attr);
 	device_remove_file(dev, &stats->attr);
+	if (asahi_idle_word) {
+		device_remove_file(dev, &dev_attr_idle_off_delay_ms);
+		asahi_idle_word = NULL;
+	}
 	kfree(stats);
 }
 EXPORT_SYMBOL_GPL(asahi_sysfs_unregister);
