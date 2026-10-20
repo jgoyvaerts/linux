@@ -621,7 +621,9 @@ static int apple_probe_per_dcp(struct device *dev,
 	}
 
 	drm_crtc_helper_add(&crtc->base, &apple_crtc_helper_funcs);
-	drm_crtc_enable_color_mgmt(&crtc->base, 0, true, 0);
+	drm_crtc_enable_color_mgmt(&crtc->base, 0, true, dcp_gamma_lut_size(dcp));
+	if (dcp_gamma_lut_size(dcp))
+		drm_mode_crtc_set_gamma_size(&crtc->base, dcp_gamma_lut_size(dcp));
 
 	enc = drmm_simple_encoder_alloc(drm, struct apple_encoder, base,
 					DRM_MODE_ENCODER_TMDS);
