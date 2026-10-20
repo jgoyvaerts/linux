@@ -98,6 +98,16 @@ struct dcp_display_mode {
 	bool vrr;
 };
 
+/*
+ * Lowest adaptive-sync refresh rate of a vrr mode, 16.16 Hz. 26.6 reports a
+ * MinimumVariableRefreshRate of 0 for the built-in ProMotion panel, whose
+ * range is 24..120 Hz (macOS IOMFBDisplayRefresh).
+ */
+static inline u32 dcp_mode_min_vrr(const struct dcp_display_mode *mode)
+{
+	return mode->min_vrr ?: 24 << 16;
+}
+
 struct dimension {
 	s64 total, front_porch, sync_width, active;
 	s64 precise_sync_rate;
