@@ -17,6 +17,7 @@ properties:
           - apple,agx-g13s
           - apple,agx-g14g
           - apple,agx-g14s
+          - apple,agx-t6040
           - apple,agx-t8140
       - items:
           - enum:
@@ -44,25 +45,11 @@ properties:
 
   memory-region:
     minItems: 3
-    items:
-      - description: Region containing GPU MMU TTBs
-      - description: Region containing GPU MMU page tables
-      - description:
-          Region containing a shared handoff structure for VM
-          management coordination
-      - description: Calibration blob. Mostly power-related configuration
-      - description: Calibration blob. Mostly GPU-related configuration
-      - description: Shared global variables with GPU firmware
+    maxItems: 6
 
   memory-region-names:
     minItems: 3
-    items:
-      - const: ttbs
-      - const: pagetables
-      - const: handoff
-      - const: hw-cal-a
-      - const: hw-cal-b
-      - const: globals
+    maxItems: 6
 
   operating-points-v2: true
 
@@ -73,6 +60,27 @@ properties:
       macOS version the current firmware is paired with, used to pick
       the version of firmware ABI to be used.
       Bootloader will overwrite this
+
+  apple,chip-revision:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: GPU chip revision, written to the firmware's hardware data.
+
+patternProperties:
+  "^apple,m4-[a-z0-9-]+$":
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    description:
+      GPU calibration tables of the T6040 (per-cluster frequencies,
+      voltages and performance-state indices, core mask, leakage, AON
+      table, maximum power), from which the driver builds the
+      firmware's power configuration.
+
+  "^apple,sgx-[a-z0-9-]+$":
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    description:
+      Copies of the Apple device tree /arm-io/sgx properties of the same
+      name (performance-state tables, power sampling periods, active MCC
+      mask, firmware interrupt doorbell) that the T6040 driver needs for
+      the firmware's hardware data.
 
 required:
   - compatible
@@ -101,13 +109,27 @@ allOf:
             - description: GFX coprocessor mailbox
             - description: GFX1 coprocessor mailbox
         memory-region:
-          maxItems: 3
+          items:
+            - description: Region containing GPU MMU TTBs
+            - description: Region containing GPU MMU page tables
+            - description:
+                Region containing a shared handoff structure for VM
+                management coordination
         memory-region-names:
-          maxItems: 3
+          items:
+            - const: ttbs
+            - const: pagetables
+            - const: handoff
       required:
         - power-domains
         - operating-points-v2
-    else:
+
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: apple,agx-t6040
+    then:
       properties:
         reg:
           items:
@@ -120,9 +142,69 @@ allOf:
         mboxes:
           maxItems: 1
         memory-region:
-          minItems: 6
+          items:
+            - description: GPU firmware data segment, also holding its crash log
+            - description: Region containing GPU MMU TTBs
+            - description: Region containing GPU MMU page tables
+            - description: Region containing the GPU MMU level 2 tables
+            - description:
+                Region containing a shared handoff structure for VM
+                management coordination
         memory-region-names:
-          minItems: 6
+          items:
+            - const: firmware
+            - const: ttbs
+            - const: pagetables
+            - const: l2
+            - const: handoff
+      required:
+        - reg-names
+        - memory-region-names
+        - apple,chip-revision
+    else:
+      patternProperties:
+        "^apple,(m4|sgx)-": false
+      properties:
+        apple,chip-revision: false
+
+  - if:
+      not:
+        properties:
+          compatible:
+            contains:
+              enum:
+                - apple,agx-t6040
+                - apple,agx-t8140
+    then:
+      properties:
+        reg:
+          items:
+            - description: GPU coprocessor control registers
+            - description: GPU block MMIO registers
+        reg-names:
+          items:
+            - const: asc
+            - const: sgx
+        mboxes:
+          maxItems: 1
+        memory-region:
+          items:
+            - description: Region containing GPU MMU TTBs
+            - description: Region containing GPU MMU page tables
+            - description:
+                Region containing a shared handoff structure for VM
+                management coordination
+            - description: Calibration blob. Mostly power-related configuration
+            - description: Calibration blob. Mostly GPU-related configuration
+            - description: Shared global variables with GPU firmware
+        memory-region-names:
+          items:
+            - const: ttbs
+            - const: pagetables
+            - const: handoff
+            - const: hw-cal-a
+            - const: hw-cal-b
+            - const: globals
       required:
         - apple,firmware-abi
 
