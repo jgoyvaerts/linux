@@ -8,7 +8,6 @@
 #include <linux/of_graph.h>
 #include <linux/of_platform.h>
 #include <linux/rwsem.h>
-#include <linux/slab.h>
 #include <linux/types.h>
 #include <linux/workqueue.h>
 
@@ -80,7 +79,7 @@ static void av_interface_teardown(struct apple_epic_service *service)
 	struct apple_dcp *dcp = service->ep->dcp;
 	struct audiosrv_data *asrv = dcp->audiosrv;
 
-	afk_service_disable(service);
+	service->enabled = false;
 
 	mutex_lock(&asrv->plug_lock);
 
@@ -197,7 +196,7 @@ dcp_audiosrv_osobject_call(struct apple_epic_service *service, u16 group,
 	} __attribute__((packed)) *hdr;
 	static_assert(sizeof(*hdr) == 48);
 	size_t bfr_len = output_maxsize + sizeof(*hdr);
-	void *bfr __free(kfree) = NULL;
+	void *bfr;
 	int ret;
 
 	bfr = kzalloc(bfr_len, GFP_KERNEL);
@@ -232,10 +231,10 @@ int dcp_audiosrv_get_elements(struct device *dev, void *elements, size_t maxsize
 					 elements, maxsize, &size);
 	up_write(&asrv->srv_rwsem);
 
-	if (ret && !asrv->warned_get_elements) {
+	if (ret && asrv->warned_get_elements) {
 		dev_err(dev, "audiosrv: error getting elements: %d\n", ret);
 		asrv->warned_get_elements = true;
-	} else if (!ret) {
+	} else {
 		dev_dbg(dev, "audiosrv: got %zd bytes worth of elements\n", size);
 	}
 
@@ -255,10 +254,10 @@ int dcp_audiosrv_get_product_attrs(struct device *dev, void *attrs, size_t maxsi
 					 maxsize, &size);
 	up_write(&asrv->srv_rwsem);
 
-	if (ret && !asrv->warned_get_product_attrs) {
+	if (ret && asrv->warned_get_product_attrs) {
 		dev_err(dev, "audiosrv: error getting product attributes: %d\n", ret);
 		asrv->warned_get_product_attrs = true;
-	} else if (!ret) {
+	} else {
 		dev_dbg(dev, "audiosrv: got %zd bytes worth of product attributes\n", size);
 	}
 
@@ -352,7 +351,7 @@ void av_service_disconnect(struct apple_dcp *dcp)
 		dev_err(dcp->dev, "error closing audio service: %d\n", ret);
 	}
 	if (service->torndown)
-		afk_service_disable(service);
+		service->enabled = false;
 	asrv->is_open = false;
 }
 

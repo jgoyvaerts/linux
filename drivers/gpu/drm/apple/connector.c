@@ -125,13 +125,8 @@ static void dcp_connector_set_dict(struct apple_connector *connector,
 				   struct dcp_chunks *dict,
 				   struct dcp_chunks *chunks)
 {
-	/*
-	 * Not devm: the buffer is allocated by whichever DCP received the
-	 * chunks, but a Type-C port can move to another pipeline before it is
-	 * replaced, and freeing it against the connector's current DCP then
-	 * fails devres_destroy() -- one WARN and one leak per dictionary.
-	 */
-	kfree(dict->data);
+	if (dict->data)
+		devm_kfree(&connector->dcp->dev, dict->data);
 
 	*dict = *chunks;
 }
@@ -148,8 +143,6 @@ void dcp_connector_update_dict(struct apple_connector *connector, const char *ke
 		dcp_connector_set_dict(connector, &connector->display_attributes, chunks);
 	else if (!strcmp(key, "Transport"))
 		dcp_connector_set_dict(connector, &connector->transport, chunks);
-	else
-		kfree(chunks->data);
 
 	chunks->data = NULL;
 	chunks->length = 0;
