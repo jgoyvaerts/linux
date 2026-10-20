@@ -1045,6 +1045,12 @@
 			nvmem-cell-names = "shutdown_flag", "boot_stage", "boot_error_count", "panic_count";
 			nvmem-cells = <&shutdown_flag_f80f_3 &boot_stage_f801 &boot_error_count_f802_0 &panic_count_f802_4>;
 		};
+
+		rtc {
+			compatible = "apple,smc-rtc";
+			nvmem-cells = <&rtc_offset>;
+			nvmem-cell-names = "rtc_offset";
+		};
 	};
 
 	spmi@509014000 {
@@ -1061,6 +1067,10 @@
 				compatible = "fixed-layout";
 				#size-cells = <1>;
 				#address-cells = <1>;
+
+				rtc_offset: rtc-offset@2100 {
+					reg = <0x2100 6>;
+				};
 
 				boot_stage_f801: boot-stage@f801 {
 					reg = <0xf801 1>;
