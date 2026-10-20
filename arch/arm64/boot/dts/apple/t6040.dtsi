@@ -483,6 +483,16 @@
 			#reset-cells = <0>;
 			apple,always-on;
 		};
+
+		/* ADT pmgr device NUB_GPIO (0x11a), no parent. */
+		ps_nub_gpio: power-controller@90 {
+			compatible = "apple,t6041-pmgr-pwrstate", "apple,t8103-pmgr-pwrstate";
+			reg = <0x90 4>;
+			label = "nub_gpio";
+			#power-domain-cells = <0>;
+			#reset-cells = <0>;
+			apple,always-on;
+		};
 	};
 
 	/*
@@ -1199,6 +1209,24 @@
 		interrupts = <0 0x6bc 4>;
 		interrupt-parent = <&aic>;
 		#iommu-cells = <1>;
+	};
+
+	/*
+	 * The always-on GPIO bank (ADT /arm-io/nub-gpio0, 61 pins). Its power state lives in the AON PMGR, which the
+	 * loader deletes when its USB check fails; the bank then stays unbound for that boot.
+	 */
+	pinctrl_nub: pinctrl@5081e4000 {
+		compatible = "apple,t6041-pinctrl", "apple,t8103-pinctrl";
+		reg = <5 0x81e4000 0 0x4000>;
+		power-domains = <&ps_nub_gpio>;
+		interrupts = <0 0x333 4 0 0x334 4 0 0x335 4 0 0x336 4 0 0x337 4 0 0x338 4 0 0x339 4>;
+		interrupt-parent = <&aic>;
+		#interrupt-cells = <2>;
+		interrupt-controller;
+		apple,npins = <61>;
+		gpio-ranges = <&pinctrl_nub 0 0 61>;
+		#gpio-cells = <2>;
+		gpio-controller;
 	};
 
 	pinctrl: pinctrl@51c000000 {
