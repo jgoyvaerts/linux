@@ -2824,7 +2824,8 @@ params_done:
 		dart->locked = apple_dart_is_locked(dart);
 	/* These loaders re-export the firmware's own display translations. */
 	dart->fw_mirror = dart->locked &&
-		(of_device_is_compatible(pdev->dev.of_node, "apple,t8140-dart") ||
+		(of_device_is_compatible(pdev->dev.of_node, "apple,t6040-dart") ||
+		 of_device_is_compatible(pdev->dev.of_node, "apple,t8140-dart") ||
 		 of_device_is_compatible(pdev->dev.of_node, "apple,t8142-dart"));
 	if (!dart->locked) {
 		ret = apple_dart_hw_reset(dart);
