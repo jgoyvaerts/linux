@@ -13,6 +13,7 @@
 #include <linux/mutex.h>
 #include <linux/phy/phy.h>
 #include <linux/platform_device.h>
+#include <linux/pm_runtime.h>
 #include <linux/pm_wakeup.h>
 #include <linux/reset.h>
 #include <linux/usb/phy.h>
@@ -86,6 +87,11 @@
  * dwc3_apple_init(). In host mode xHCI then keeps running in suspend-to-idle when a USB device
  * may wake the system, as a halted xHC could not signal the wakeup.
  *
+ * Runtime PM (T6040 only, see dwc3_apple_core_probe()): the glue holds a reference from the
+ * reset deassert to the end of the shutdown, so with no cable the controller can runtime-suspend
+ * and its power domain drop, its DARTs (which save and restore their state) and, through the
+ * device link of its phys, the PHY with it.
+ *
  * enum dwc3_apple_state is defined in dwc3-apple-state.h.
  */
 
@@ -110,6 +116,8 @@
  * @reset_pending: Controller reset must complete before another start
  * @usb2_power_off_pending: Core-owned USB2 references still to release
  * @usb3_power_off_pending: Core-owned USB3 references still to release
+ * @idle_rpm: Let the controller runtime-suspend while the core is down
+ * @rpm_held: The glue holds a runtime PM reference for the running core
  */
 struct dwc3_apple {
 	struct dwc3 dwc;
@@ -134,6 +142,8 @@ struct dwc3_apple {
 	bool reset_pending;
 	unsigned long usb2_power_off_pending;
 	unsigned long usb3_power_off_pending;
+	bool idle_rpm;
+	bool rpm_held;
 };
 
 #define to_dwc3_apple(d) container_of((d), struct dwc3_apple, dwc)
@@ -261,6 +271,17 @@ static int dwc3_apple_core_probe(struct dwc3_apple *appledwc, enum dwc3_apple_st
 	}
 	devres_remove_group(appledwc->dev, group);
 
+	/*
+	 * dwc3_core_probe() enabled runtime PM with the device active and forbade it, for the
+	 * dwc3 platform driver's own callbacks, which this glue does not use. The core is being
+	 * brought up now, so take the glue's reference (see dwc3_apple_core_start()) and, where
+	 * that is tested, allow runtime PM so the reference alone decides.
+	 */
+	pm_runtime_get_noresume(appledwc->dev);
+	appledwc->rpm_held = true;
+	if (appledwc->idle_rpm)
+		pm_runtime_allow(appledwc->dev);
+
 	appledwc->state = DWC3_APPLE_NO_CABLE;
 	return 0;
 }
@@ -339,6 +360,11 @@ static int dwc3_apple_core_stop(struct dwc3_apple *appledwc)
 		appledwc->reset_pending = false;
 	}
 	dev_pm_syscore_device(appledwc->dev, false);
+	if (appledwc->rpm_held) {
+		appledwc->rpm_held = false;
+		pm_runtime_mark_last_busy(appledwc->dev);
+		pm_runtime_put_autosuspend(appledwc->dev);
+	}
 
 	return 0;
 }
@@ -392,9 +418,24 @@ static int dwc3_apple_core_start(struct dwc3_apple *appledwc, enum dwc3_apple_st
 		}
 	}
 
+	/*
+	 * Before the first core probe runtime PM is not enabled yet and the controller stays
+	 * powered; dwc3_apple_core_probe() takes the reference then.
+	 */
+	if (appledwc->state != DWC3_APPLE_PROBE_PENDING && !appledwc->rpm_held) {
+		ret = pm_runtime_resume_and_get(appledwc->dev);
+		if (ret)
+			return ret;
+		appledwc->rpm_held = true;
+	}
+
 	ret = reset_control_deassert(appledwc->reset);
 	if (ret) {
 		dev_err(appledwc->dev, "Failed to deassert reset, err=%d\n", ret);
+		/* Nothing was started: drop the reference again. */
+		ret_reset = dwc3_apple_core_stop(appledwc);
+		if (ret_reset)
+			dev_warn(appledwc->dev, "Failed to finish core shutdown, err=%d\n", ret_reset);
 		return ret;
 	}
 
@@ -673,6 +714,8 @@ static int dwc3_apple_probe(struct platform_device *pdev)
 	appledwc->dev = &pdev->dev;
 	appledwc->fixed_hub = dwc3_apple_has_fixed_hub(dev);
 	appledwc->host_only = dwc3_apple_host_only(dev);
+	/* Tested on T6040 only, where the PHY driver and the DARTs follow runtime PM. */
+	appledwc->idle_rpm = of_device_is_compatible(dev->of_node, "apple,t6040-dwc3");
 	mutex_init(&appledwc->lock);
 	/* A never-connected port has no generic core probe to publish this. */
 	appledwc->dwc.dev = dev;
