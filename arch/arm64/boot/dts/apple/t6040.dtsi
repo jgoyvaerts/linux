@@ -133,7 +133,7 @@
 	 * The two left USB-C ports: left-front ATC1 (PD controller hpm1, SID 0xa) and left-back ATC0 (hpm0, SID 0xc),
 	 * both PD controllers on nub-spmi-a0. Every ATCn address is ATC2's minus (2 - n) * 0x8000000 and every IRQ
 	 * ATC2's minus (2 - n) * 0x20. The ADT lists only irq/sleep/wake; select is irq + 2, as on hpm2.
-	 * nub-spmi-a0 also carries hpm5 (MagSafe, SID 8), which is not described.
+	 * nub-spmi-a0 also carries hpm5, the MagSafe 3 port (SID 8).
 	 */
 	nub_spmi_a0: spmi@509188000 {
 		compatible = "apple,t6040-spmi", "apple,spmi";
@@ -145,6 +145,19 @@
 		interrupt-parent = <&aic>;
 		interrupts = <0 0x362 4>;
 		power-domains = <&ps_nub_spmi_a0>;
+
+		/*
+		 * hpm5, the MagSafe 3 port's PD controller (ADT port-type 0x11, "Power In",
+		 * no USB data path, no connector). tipd takes the port's capabilities from
+		 * the controller and registers a Type-C port and a power supply for it, as
+		 * for MagSafe on the M1 Pro/Max and the M2 Airs. Select is irq + 2.
+		 */
+		usb-pd@8 {
+			compatible = "apple,sn201202x";
+			reg = <0x8 0>;
+			interrupts = <0x3f 1 0x41 1 0x45 1 0x47 1>;
+			interrupt-names = "irq", "select", "sleep", "wake";
+		};
 
 		usb-pd@a {
 			compatible = "apple,sn201202x";
