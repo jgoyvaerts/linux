@@ -3114,7 +3114,8 @@ params_done:
 	dart->fw_handoff = apple_dart_fw_handoff_enabled(dart);
 	/* Preserve our retained-root path when no reserved-table handoff exists. */
 	dart->fw_mirror = dart->locked && !dart->fw_handoff &&
-		(of_device_is_compatible(dev->of_node, "apple,t8140-dart") ||
+		(of_device_is_compatible(dev->of_node, "apple,t6041-dart") ||
+		 of_device_is_compatible(dev->of_node, "apple,t8140-dart") ||
 		 of_device_is_compatible(dev->of_node, "apple,t8142-dart"));
 	if (!dart->locked) {
 		ret = apple_dart_hw_reset(dart);
