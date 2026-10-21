@@ -2117,6 +2117,14 @@ static int macaudio_snd_platform_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
+	/*
+	 * Without sense the PCM2 link is gone, and a card whose front-ends
+	 * are not the MCA's (the J616 jack) has no PCM2 RX widget at all.
+	 * The sense route is the table's last entry.
+	 */
+	if (!data->has_sense)
+		card->num_dapm_routes--;
+
 	/* Remove useless controls */
 	if (!data->has_speakers) /* No speakers, remove both */
 		card->num_controls -= MACAUDIO_NUM_SPEAKER_CONTROLS;
