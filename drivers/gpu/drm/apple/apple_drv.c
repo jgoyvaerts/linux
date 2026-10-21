@@ -470,8 +470,29 @@ static const struct drm_crtc_funcs apple_crtc_funcs = {
 
 };
 
+static int apple_atomic_check(struct drm_device *dev, struct drm_atomic_state *state)
+{
+	struct drm_crtc_state *old_state, *new_state;
+	struct drm_crtc *crtc;
+	int i;
+
+	/*
+	 * DCP applies adaptive sync only when it selects the mode, a full mode
+	 * set (panel off and on). Flag it as one, so a VRR_ENABLED change needs
+	 * DRM_MODE_ATOMIC_ALLOW_MODESET and runs through atomic_enable.
+	 */
+	if (dcp_vrr) {
+		for_each_oldnew_crtc_in_state(state, crtc, old_state, new_state, i) {
+			if (old_state->vrr_enabled != new_state->vrr_enabled)
+				new_state->mode_changed = true;
+		}
+	}
+
+	return drm_atomic_helper_check(dev, state);
+}
+
 static const struct drm_mode_config_funcs apple_mode_config_funcs = {
-	.atomic_check		= drm_atomic_helper_check,
+	.atomic_check		= apple_atomic_check,
 	.atomic_commit		= drm_atomic_helper_commit,
 	.fb_create		= drm_gem_fb_create,
 };
