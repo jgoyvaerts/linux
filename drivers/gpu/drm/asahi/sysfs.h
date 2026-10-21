@@ -14,5 +14,6 @@ int asahi_sysfs_register_idle(struct device *dev, u32 *word);
 int asahi_sysfs_register_raw(struct device *dev, const void *raw, void **handle);
 void asahi_sysfs_unregister(struct device *dev, void *handle);
 u64 asahi_g17_stampless_grace_ns(void);
+bool asahi_g17_spare_inherited_cancel(void);
 
 #endif /* _ASAHI_SYSFS_H */

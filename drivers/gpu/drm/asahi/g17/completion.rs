@@ -470,7 +470,10 @@ impl Completion {
             return;
         }
         self.status.record_if_device_loss(error);
-        if self.accepted.load(Ordering::Acquire) {
+        // ECANCELED is inherited from a failed producer or a cancel, not this VM's fault (G-02, switch).
+        if self.accepted.load(Ordering::Acquire)
+            && !(error == ECANCELED && spare_inherited_cancel())
+        {
             self.status.report_failure(error);
         }
         self.release_healthy();
@@ -527,4 +530,13 @@ impl Deferred {
             Self::Release(completion) => completion.release_after_retirement(),
         }
     }
+}
+
+/// Module parameter `g17_spare_inherited_cancel` (sysfs.c), default off, writable at runtime.
+fn spare_inherited_cancel() -> bool {
+    extern "C" {
+        fn asahi_g17_spare_inherited_cancel() -> bool;
+    }
+    // SAFETY: the C helper only reads one module-lifetime word with READ_ONCE.
+    unsafe { asahi_g17_spare_inherited_cancel() }
 }

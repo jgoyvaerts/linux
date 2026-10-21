@@ -296,3 +296,18 @@ u64 asahi_g17_stampless_grace_ns(void)
 {
 	return (u64)READ_ONCE(g17_stampless_grace_us) * NSEC_PER_USEC;
 }
+
+/*
+ * G-02: a packet whose dependency was an innocent render the firmware dropped in another VM's
+ * recovery fails with an inherited ECANCELED. Default off: that is reported as device loss.
+ * On: the fence keeps the error but the VM is not told it lost its device (Rust: completion.rs).
+ */
+static bool g17_spare_inherited_cancel;
+module_param(g17_spare_inherited_cancel, bool, 0644);
+MODULE_PARM_DESC(g17_spare_inherited_cancel,
+		 "G17: do not report an inherited ECANCELED as device loss (default 0)");
+
+bool asahi_g17_spare_inherited_cancel(void)
+{
+	return READ_ONCE(g17_spare_inherited_cancel);
+}
