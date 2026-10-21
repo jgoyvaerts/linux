@@ -50,7 +50,7 @@
 
 / {
 	pmp_report: pmp-report@5003c0000 {
-		compatible = "apple,t6040-pmp-v2-report";
+		compatible = "apple,t6041-pmp-v2-report";
 		reg = <0x5 0x003c0000 0 0x20000>;
 		nonposted-mmio;
 		power-domains = <&ps_pms_sram>;
@@ -59,21 +59,21 @@
 
 		/* The CPU clusters, for their fast die-temperature loops; on while Linux runs. */
 		report@a {
-			compatible = "apple,t6040-pmp-v2-report-entry", "apple,t6000-pmp-v2-report-entry";
+			compatible = "apple,t6041-pmp-v2-report-entry", "apple,t6000-pmp-v2-report-entry";
 			reg = <0xa>;
 			label = "pmp-eacc0";
 			apple,always-on;
 		};
 
 		report@b {
-			compatible = "apple,t6040-pmp-v2-report-entry", "apple,t6000-pmp-v2-report-entry";
+			compatible = "apple,t6041-pmp-v2-report-entry", "apple,t6000-pmp-v2-report-entry";
 			reg = <0xb>;
 			label = "pmp-pacc0";
 			apple,always-on;
 		};
 
 		report@c {
-			compatible = "apple,t6040-pmp-v2-report-entry", "apple,t6000-pmp-v2-report-entry";
+			compatible = "apple,t6041-pmp-v2-report-entry", "apple,t6000-pmp-v2-report-entry";
 			reg = <0xc>;
 			label = "pmp-pacc1";
 			apple,always-on;
@@ -85,7 +85,7 @@
 		 * GPU as off and holds it at its lowest performance state (338 MHz).
 		 */
 		report@d {
-			compatible = "apple,t6040-pmp-v2-report-entry", "apple,t6000-pmp-v2-report-entry";
+			compatible = "apple,t6041-pmp-v2-report-entry", "apple,t6000-pmp-v2-report-entry";
 			reg = <0xd>;
 			label = "pmp-gfx";
 			apple,always-on;
@@ -93,7 +93,7 @@
 	};
 
 	pmp_dart: iommu@500300000 {
-		compatible = "apple,t6040-dart", "apple,t8110-dart";
+		compatible = "apple,t6041-dart", "apple,t8110-dart";
 		reg = <0x5 0x00300000 0 0xc000>;
 		interrupt-parent = <&aic>;
 		interrupts = <0 0x185 4>;
@@ -103,7 +103,7 @@
 	};
 
 	pmp_mbox: mailbox@500e08000 {
-		compatible = "apple,t6040-asc-mailbox", "apple,asc-mailbox-v4";
+		compatible = "apple,t6041-asc-mailbox", "apple,asc-mailbox-v4";
 		reg = <0x5 0x00e08000 0 0x4000>;
 		interrupt-parent = <&aic>;
 		interrupts = <0 0x19e 4 0 0x19f 4 0 0x1a0 4 0 0x1a1 4>;
@@ -113,7 +113,7 @@
 	};
 
 	pmp: pmp@500700000 {
-		compatible = "apple,t6040-pmp-v2", "apple,t6000-pmp-v2";
+		compatible = "apple,t6041-pmp-v2", "apple,t6000-pmp-v2";
 		reg = <0x5 0x00700000 0 0xe0000>,
 		      <0x5 0x00e00000 0 0x4000>;
 		reg-names = "pmp", "asc";

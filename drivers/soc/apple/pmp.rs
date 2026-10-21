@@ -494,7 +494,7 @@ kernel::of_device_table!(
     <PmpDriver as platform::Driver>::IdInfo,
     [
         (of::DeviceId::new(c"apple,t8140-pmp-v2"), &HW_CFG_T8140),
-        (of::DeviceId::new(c"apple,t6040-pmp-v2"), &HW_CFG_T6040),
+        (of::DeviceId::new(c"apple,t6041-pmp-v2"), &HW_CFG_T6040),
         (of::DeviceId::new(c"apple,t6000-pmp-v2"), &HW_CFG_DEFAULT),
     ]
 );

@@ -44,7 +44,7 @@
 	};
 
 	gpu_mbox: mailbox@28a608000 {
-		compatible = "apple,t6040-asc-mailbox", "apple,asc-mailbox-v4";
+		compatible = "apple,t6041-asc-mailbox", "apple,asc-mailbox-v4";
 		reg = <0x2 0x8a608000 0x0 0x4000>;
 		interrupt-parent = <&aic>;
 		interrupts = <0 0x5dd 4 0 0x5de 4 0 0x5df 4 0 0x5e0 4>;

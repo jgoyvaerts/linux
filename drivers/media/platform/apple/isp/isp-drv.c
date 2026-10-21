@@ -842,7 +842,7 @@ static const struct of_device_id apple_isp_of_match[] = {
 	{ .compatible = "apple,t6030-isp", .data = &apple_isp_hw_t6030 },
 	{ .compatible = "apple,t6031-isp", .data = &apple_isp_hw_t6031 },
 	{ .compatible = "apple,t8140-isp", .data = &apple_isp_hw_t8140 },
-	{ .compatible = "apple,t6040-isp", .data = &apple_isp_hw_t6040 },
+	{ .compatible = "apple,t6041-isp", .data = &apple_isp_hw_t6040 },
 	{},
 };
 MODULE_DEVICE_TABLE(of, apple_isp_of_match);

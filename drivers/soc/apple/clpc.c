@@ -465,7 +465,7 @@ static const struct apple_clpc_hw apple_clpc_hw_t6040 = {
 
 static const struct of_device_id apple_clpc_of_match[] = {
 	{ .compatible = "apple,t8140-clpc", .data = &apple_clpc_hw_t8140 },
-	{ .compatible = "apple,t6040-clpc", .data = &apple_clpc_hw_t6040 },
+	{ .compatible = "apple,t6041-clpc", .data = &apple_clpc_hw_t6040 },
 	{}
 };
 MODULE_DEVICE_TABLE(of, apple_clpc_of_match);

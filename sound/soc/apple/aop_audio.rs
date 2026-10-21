@@ -1017,7 +1017,7 @@ kernel::of_device_table!(
     [
         (of::DeviceId::new(c_str!("apple,aop-audio")), &HW_CFG_T8013),
         (of::DeviceId::new(c_str!("apple,t6030-aop-audio")), &HW_CFG_T6030),
-        (of::DeviceId::new(c_str!("apple,t6040-aop-audio")), &HW_CFG_T6040),
+        (of::DeviceId::new(c_str!("apple,t6041-aop-audio")), &HW_CFG_T6040),
     ]
 );
 

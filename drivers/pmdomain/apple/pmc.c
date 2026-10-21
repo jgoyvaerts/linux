@@ -832,7 +832,7 @@ static const struct apple_pmc_hw apple_pmc_hw_t6040 = {
 
 static const struct of_device_id apple_pmc_of_match[] = {
 	{ .compatible = "apple,t8140-pmc", .data = &apple_pmc_hw_t8140 },
-	{ .compatible = "apple,t6040-pmc", .data = &apple_pmc_hw_t6040 },
+	{ .compatible = "apple,t6041-pmc", .data = &apple_pmc_hw_t6040 },
 	{}
 };
 MODULE_DEVICE_TABLE(of, apple_pmc_of_match);

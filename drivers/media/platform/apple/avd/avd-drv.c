@@ -840,7 +840,7 @@ static const struct of_device_id avd_of_match[] = {
 		.data = &avd_t8122_variant
 	},
 	{
-		.compatible = "apple,t6040-avd",
+		.compatible = "apple,t6041-avd",
 		.data = &avd_t6040_variant
 	},
 	{

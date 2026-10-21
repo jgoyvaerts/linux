@@ -8,7 +8,7 @@
 	#size-cells = <2>;
 
 	cpuidle {
-		compatible = "apple,t6040-cpuidle";
+		compatible = "apple,t6041-cpuidle";
 	};
 
 	/*
@@ -16,7 +16,7 @@
 	 * the USB2 PHY and the dwc3 (USB2 host with hotplug). The two left ports below are the same stack.
 	 */
 	spmi_atc2: spmi@509198000 {
-		compatible = "apple,t6040-spmi", "apple,spmi";
+		compatible = "apple,t6041-spmi", "apple,spmi";
 		reg = <5 0x9198000 0 0x100>;
 		#address-cells = <2>;
 		#size-cells = <0>;
@@ -106,7 +106,7 @@
 	 * as for AOP: send-empty is the lowest.
 	 */
 	atcphy2_mbox: mailbox@393148000 {
-		compatible = "apple,t6040-asc-mailbox", "apple,asc-mailbox-v4";
+		compatible = "apple,t6041-asc-mailbox", "apple,asc-mailbox-v4";
 		reg = <3 0x93148000 0 0x4000>;
 		interrupt-parent = <&aic>;
 		interrupts = <0 0x3be 4 0 0x3bf 4 0 0x3c0 4 0 0x3c1 4>;
@@ -116,7 +116,7 @@
 	};
 
 	atc2_dart1: iommu@392f80000 {
-		compatible = "apple,t6040-dart", "apple,t8110-dart";
+		compatible = "apple,t6041-dart", "apple,t8110-dart";
 		reg = <3 0x92f80000 0 0x4000>;
 		interrupt-parent = <&aic>;
 		interrupts = <0 0x697 4>;
@@ -125,7 +125,7 @@
 	};
 
 	atc2_dart0: iommu@392f00000 {
-		compatible = "apple,t6040-dart", "apple,t8110-dart";
+		compatible = "apple,t6041-dart", "apple,t8110-dart";
 		reg = <3 0x92f00000 0 0x4000>;
 		interrupt-parent = <&aic>;
 		interrupts = <0 0x697 4>;
@@ -140,7 +140,7 @@
 	 * nub-spmi-a0 also carries hpm5, the MagSafe 3 port (SID 8).
 	 */
 	nub_spmi_a0: spmi@509188000 {
-		compatible = "apple,t6040-spmi", "apple,spmi";
+		compatible = "apple,t6041-spmi", "apple,spmi";
 		reg = <5 0x9188000 0 0x100>;
 		#address-cells = <2>;
 		#size-cells = <0>;
@@ -260,7 +260,7 @@
 	};
 
 	atcphy1_mbox: mailbox@38b148000 {
-		compatible = "apple,t6040-asc-mailbox", "apple,asc-mailbox-v4";
+		compatible = "apple,t6041-asc-mailbox", "apple,asc-mailbox-v4";
 		reg = <3 0x8b148000 0 0x4000>;
 		interrupt-parent = <&aic>;
 		interrupts = <0 0x3b4 4 0 0x3b5 4 0 0x3b6 4 0 0x3b7 4>;
@@ -270,7 +270,7 @@
 	};
 
 	atc1_dart1: iommu@38af80000 {
-		compatible = "apple,t6040-dart", "apple,t8110-dart";
+		compatible = "apple,t6041-dart", "apple,t8110-dart";
 		reg = <3 0x8af80000 0 0x4000>;
 		interrupt-parent = <&aic>;
 		interrupts = <0 0x677 4>;
@@ -279,7 +279,7 @@
 	};
 
 	atc1_dart0: iommu@38af00000 {
-		compatible = "apple,t6040-dart", "apple,t8110-dart";
+		compatible = "apple,t6041-dart", "apple,t8110-dart";
 		reg = <3 0x8af00000 0 0x4000>;
 		interrupt-parent = <&aic>;
 		interrupts = <0 0x677 4>;
@@ -327,7 +327,7 @@
 	};
 
 	atcphy0_mbox: mailbox@383148000 {
-		compatible = "apple,t6040-asc-mailbox", "apple,asc-mailbox-v4";
+		compatible = "apple,t6041-asc-mailbox", "apple,asc-mailbox-v4";
 		reg = <3 0x83148000 0 0x4000>;
 		interrupt-parent = <&aic>;
 		interrupts = <0 0x3aa 4 0 0x3ab 4 0 0x3ac 4 0 0x3ad 4>;
@@ -337,7 +337,7 @@
 	};
 
 	atc0_dart1: iommu@382f80000 {
-		compatible = "apple,t6040-dart", "apple,t8110-dart";
+		compatible = "apple,t6041-dart", "apple,t8110-dart";
 		reg = <3 0x82f80000 0 0x4000>;
 		interrupt-parent = <&aic>;
 		interrupts = <0 0x657 4>;
@@ -346,7 +346,7 @@
 	};
 
 	atc0_dart0: iommu@382f00000 {
-		compatible = "apple,t6040-dart", "apple,t8110-dart";
+		compatible = "apple,t6041-dart", "apple,t8110-dart";
 		reg = <3 0x82f00000 0 0x4000>;
 		interrupt-parent = <&aic>;
 		interrupts = <0 0x657 4>;
@@ -516,7 +516,7 @@
 	 * its t8132 entry; the DART and the AVD_SYS power state bind through the generic drivers.
 	 */
 	avd@280000000 {
-		compatible = "apple,t6040-avd", "apple,t8132-avd";
+		compatible = "apple,t6041-avd", "apple,t8132-avd";
 		reg = <2 0x81080000 0 0x14000 2 0x810a8000 0 0x4000 2 0x81100000 0 0x10000>;
 		reg-names = "code", "mbox", "ctrl";
 		interrupt-parent = <&aic>;
@@ -527,7 +527,7 @@
 	};
 
 	avd_dart: iommu@281020000 {
-		compatible = "apple,t6040-dart", "apple,t8110-dart";
+		compatible = "apple,t6041-dart", "apple,t8110-dart";
 		reg = <2 0x81020000 0 0xc000>;
 		#iommu-cells = <1>;
 		interrupt-parent = <&aic>;
@@ -542,7 +542,7 @@
 	 * mailbox at +0x2924000; the first of the ADT's four interrupts.
 	 */
 	isp: isp@580000000 {
-		compatible = "apple,t6040-isp", "apple,isp";
+		compatible = "apple,t6041-isp", "apple,isp";
 		reg = <5 0x80000000 0 0x1604000>, <5 0x82924000 0 0x40>,
 		      <5 0x829241d0 0 0x20>, <5 0x82924464 0 0x10>;
 		reg-names = "coproc", "mbox", "gpio", "mbox2";
@@ -562,7 +562,7 @@
 	 * (DAPF0) lets the firmware reach the PMGR, PMP and DSID-clear registers.
 	 */
 	isp_dart0: iommu@5828c0000 {
-		compatible = "apple,t6040-dart", "apple,t8110-dart";
+		compatible = "apple,t6041-dart", "apple,t8110-dart";
 		reg = <5 0x828c0000 0 0xc000>, <5 0x828d0000 0 0x4000>;
 		#iommu-cells = <1>;
 		interrupt-parent = <&aic>;
@@ -587,7 +587,7 @@
 	};
 
 	isp_dart1: iommu@5828e0000 {
-		compatible = "apple,t6040-dart", "apple,t8110-dart";
+		compatible = "apple,t6041-dart", "apple,t8110-dart";
 		reg = <5 0x828e0000 0 0xc000>;
 		#iommu-cells = <1>;
 		interrupt-parent = <&aic>;
@@ -598,7 +598,7 @@
 	};
 
 	isp_dart2: iommu@582900000 {
-		compatible = "apple,t6040-dart", "apple,t8110-dart";
+		compatible = "apple,t6041-dart", "apple,t8110-dart";
 		reg = <5 0x82900000 0 0xc000>;
 		#iommu-cells = <1>;
 		interrupt-parent = <&aic>;
@@ -609,7 +609,7 @@
 	};
 
 	aop@510600000 {
-		compatible = "apple,t6040-aop";
+		compatible = "apple,t6041-aop";
 		reg = <5 0x10c10000 0 0x2e0000 5 0x10600000 0 0x88000 5 0x10050000 0 0x4000 5 0x8328000 0 0x24>;
 		reg-names = "firmware", "asc", "asc-aux", "config";
 		mboxes = <&aop_mbox>;
@@ -623,7 +623,7 @@
 		 * stream's base-ns ADMAC channels 0 and 1 (ADT audio-speaker dma-channels).
 		 */
 		aop_audio: audio {
-			compatible = "apple,t6040-aop-audio", "apple,t6030-aop-audio";
+			compatible = "apple,t6041-aop-audio", "apple,t6030-aop-audio";
 			apple,chassis-name = "J616";
 			apple,machine-kind = "MacBook Pro";
 			dmas = <&admac0 1>, <&admac1 0>, <&admac1 1>;
@@ -632,16 +632,16 @@
 		};
 
 		aop_als: als {
-			compatible = "apple,t6040-aop-als", "apple,aop-als";
+			compatible = "apple,t6041-aop-als", "apple,aop-als";
 		};
 
 		las {
-			compatible = "apple,t6040-aop-las", "apple,aop-las";
+			compatible = "apple,t6041-aop-las", "apple,aop-las";
 		};
 	};
 
 	admac1: dma-controller@513800000 {
-		compatible = "apple,t6040-admac", "apple,t8132-admac";
+		compatible = "apple,t6041-admac", "apple,t8132-admac";
 		reg = <5 0x13800000 0 0x34000>;
 		#dma-cells = <1>;
 		dma-channels = <0xd>;
@@ -651,7 +651,7 @@
 	};
 
 	admac0: dma-controller@513300000 {
-		compatible = "apple,t6040-admac", "apple,t8132-admac";
+		compatible = "apple,t6041-admac", "apple,t8132-admac";
 		reg = <5 0x13300000 0 0x34000>;
 		#dma-cells = <1>;
 		dma-channels = <0x12>;
@@ -661,7 +661,7 @@
 	};
 
 	aop_mbox: mailbox@510608000 {
-		compatible = "apple,t6040-asc-mailbox", "apple,asc-mailbox-v4";
+		compatible = "apple,t6041-asc-mailbox", "apple,asc-mailbox-v4";
 		reg = <5 0x10608000 0 0x4000>;
 		interrupt-parent = <&aic>;
 		interrupts = <0 0x2c6 4 0 0x2c7 4 0 0x2c8 4 0 0x2c9 4>;
@@ -670,7 +670,7 @@
 	};
 
 	aop_dart: iommu@510f00000 {
-		compatible = "apple,t6040-dart", "apple,t8110-dart";
+		compatible = "apple,t6041-dart", "apple,t8110-dart";
 		reg = <5 0x10f00000 0 0xc000>, <5 0x10f10000 0 0x4000>;
 		#iommu-cells = <1>;
 		interrupt-parent = <&aic>;
@@ -700,7 +700,7 @@
 	};
 
 	dcp: dcp@402e00000 {
-		compatible = "apple,t6040-dcp", "apple,dcp";
+		compatible = "apple,t6041-dcp", "apple,dcp";
 		reg = <4 0x2e00000 0 0x4000 4 0 0 0x4000000 4 0x2240000 0 0x10000 4 0x23a8000 0 0x4000 4 0x2800000 0 0x800000>;
 		reg-names = "coproc", "disp-0", "disp-1", "disp-2", "disp-3";
 		mboxes = <&dcp_mbox>;
@@ -730,7 +730,7 @@
 	};
 
 	dcp_mbox: mailbox@402e08000 {
-		compatible = "apple,t6040-asc-mailbox", "apple,asc-mailbox-v4";
+		compatible = "apple,t6041-asc-mailbox", "apple,asc-mailbox-v4";
 		reg = <4 0x2e08000 0 0x4000>;
 		interrupt-parent = <&aic>;
 		interrupts = <0 0x477 4 0 0x478 4 0 0x479 4 0 0x47a 4>;
@@ -740,7 +740,7 @@
 	};
 
 	dcp_dart: iommu@402340000 {
-		compatible = "apple,t6040-dart", "apple,t8110-dart";
+		compatible = "apple,t6041-dart", "apple,t8110-dart";
 		reg = <4 0x2340000 0 0x20000>;
 		#iommu-cells = <1>;
 		interrupt-parent = <&aic>;
@@ -749,7 +749,7 @@
 	};
 
 	disp0_dart: iommu@402300000 {
-		compatible = "apple,t6040-dart", "apple,t8110-dart";
+		compatible = "apple,t6041-dart", "apple,t8110-dart";
 		reg = <4 0x2300000 0 0xc000>;
 		#iommu-cells = <1>;
 		interrupt-parent = <&aic>;
@@ -1095,7 +1095,7 @@
 	};
 
 	aic: interrupt-controller@502400000 {
-		compatible = "apple,t6040-aic3", "apple,t8122-aic3";
+		compatible = "apple,t6041-aic3", "apple,t8122-aic3";
 		reg = <5 0x2400000 0 0x184000 5 0x2440000 0 4>;
 		reg-names = "core", "event";
 		#address-cells = <0>;
@@ -1194,7 +1194,7 @@
 	};
 
 	smc_mbox: mailbox@50c608000 {
-		compatible = "apple,t6040-asc-mailbox", "apple,asc-mailbox-v4";
+		compatible = "apple,t6041-asc-mailbox", "apple,asc-mailbox-v4";
 		reg = <5 0xc608000 0 0x4000>;
 		#mbox-cells = <0>;
 		interrupt-names = "send-empty", "send-not-empty", "recv-empty", "recv-not-empty";
@@ -1203,7 +1203,7 @@
 	};
 
 	smc: smc@50c600000 {
-		compatible = "apple,t6040-smc", "apple,t8103-smc", "apple,smc";
+		compatible = "apple,t6041-smc", "apple,t8103-smc", "apple,smc";
 		reg = <5 0xc600000 0 0x4000 5 0xde70000 0 0x100000>;
 		reg-names = "smc", "sram";
 		mboxes = <&smc_mbox>;
@@ -1228,7 +1228,7 @@
 	};
 
 	spmi@509014000 {
-		compatible = "apple,t6040-spmi", "apple,spmi";
+		compatible = "apple,t6041-spmi", "apple,spmi";
 		reg = <5 0x9014000 0 0x100>;
 		#size-cells = <0>;
 		#address-cells = <2>;
@@ -1632,7 +1632,7 @@
 		};
 
 		ps_avd_sys: power-controller@170 {
-			compatible = "apple,t6040-pmgr-pwrstate", "apple,t8103-pmgr-pwrstate";
+			compatible = "apple,t6041-pmgr-pwrstate", "apple,t8103-pmgr-pwrstate";
 			reg = <0x170 4>;
 			label = "avd_sys";
 			#power-domain-cells = <0>;

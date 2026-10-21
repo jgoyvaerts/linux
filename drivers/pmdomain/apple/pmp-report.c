@@ -307,7 +307,7 @@ static const struct of_device_id apple_pmp_report_of_match[] = {
 	{ .compatible = "apple,t6020-pmp-v2-report", .data = &apple_pmp_offsets_t602x },
 	{ .compatible = "apple,t8112-pmp-v2-report", .data = &apple_pmp_offsets_t8112 },
 	{ .compatible = "apple,t8140-pmp-v2-report", .data = &apple_pmp_offsets_t8140 },
-	{ .compatible = "apple,t6040-pmp-v2-report", .data = &apple_pmp_offsets_t6040 },
+	{ .compatible = "apple,t6041-pmp-v2-report", .data = &apple_pmp_offsets_t6040 },
 	{}
 };
 

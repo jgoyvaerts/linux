@@ -1913,8 +1913,8 @@ static enum dcp_firmware_version dcp_check_firmware_version(struct device *dev)
 	 */
 	if (of_device_is_compatible(dev->of_node, "apple,t8132-dcp") ||
 	    of_device_is_compatible(dev->of_node, "apple,t8132-dcpext") ||
-	    of_device_is_compatible(dev->of_node, "apple,t6040-dcp") ||
-	    of_device_is_compatible(dev->of_node, "apple,t6040-dcpext")) {
+	    of_device_is_compatible(dev->of_node, "apple,t6041-dcp") ||
+	    of_device_is_compatible(dev->of_node, "apple,t6041-dcpext")) {
 		if (ret >= 0 && !strcmp(fw_str, "26.6.2"))
 			return DCP_FIRMWARE_V_26_6;
 
@@ -1977,7 +1977,7 @@ static int dcp_validate_t6040_dt(struct device *dev)
 		of_get_child_by_name(dev->of_node, "piodma");
 	int i;
 
-	if (!of_device_is_compatible(dev->of_node, "apple,t6040-dcp"))
+	if (!of_device_is_compatible(dev->of_node, "apple,t6041-dcp"))
 		return 0;
 
 	if (dcp_read_fw_version(dev, "apple,firmware-compat", compat_str) < 0 ||
@@ -2110,7 +2110,7 @@ static int dcp_comp_bind(struct device *dev, struct device *main, void *data)
 	 * already clocked and started the coprocessor, so the clock is optional
 	 * there. Every other SoC keeps the mandatory clock.
 	 */
-	if (of_device_is_compatible(dev->of_node, "apple,t6040-dcp"))
+	if (of_device_is_compatible(dev->of_node, "apple,t6041-dcp"))
 		dcp->clk = devm_clk_get_optional(dev, NULL);
 	else
 		dcp->clk = devm_clk_get(dev, NULL);
@@ -2581,7 +2581,7 @@ static const struct of_device_id of_match[] = {
 	{ .compatible = "apple,t6020-dcp", .data = &apple_dcp_hw_t6020,  },
 	{ .compatible = "apple,t8112-dcp", .data = &apple_dcp_hw_t8112,  },
 	{ .compatible = "apple,t8132-dcp", .data = &apple_dcp_hw_t8132,  },
-	{ .compatible = "apple,t6040-dcp", .data = &apple_dcp_hw_t6040,  },
+	{ .compatible = "apple,t6041-dcp", .data = &apple_dcp_hw_t6040,  },
 	{ .compatible = "apple,dcp",       .data = &apple_dcp_hw_dcp,    },
 	{ .compatible = "apple,dcpext",    .data = &apple_dcp_hw_dcpext, },
 	{}
