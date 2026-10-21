@@ -57,7 +57,7 @@ static inline u32 isp_coproc_control(struct apple_isp *isp)
  * Log what the firmware left behind when it did not answer a command: the
  * mailbox status/enable pairs, the doorbell block, the handshake words, the
  * coprocessor control and status words (status follows control on every
- * generation), and the messages posted in each channel.
+ * generation), and the messages pending in each channel.
  */
 void apple_isp_firmware_dump_state(struct apple_isp *isp)
 {
@@ -82,7 +82,7 @@ void apple_isp_firmware_dump_state(struct apple_isp *isp)
 
 	for (int i = 0; i < isp->num_ipc_chans; i++) {
 		struct isp_channel *chan = isp->ipc_chans[i];
-		unsigned int posted = 0;
+		unsigned int pending = 0;
 
 		if (!chan)
 			continue;
@@ -93,17 +93,18 @@ void apple_isp_firmware_dump_state(struct apple_isp *isp)
 
 			memcpy(&msg, chan->virt + n * ISP_IPC_MESSAGE_SIZE,
 			       sizeof(msg));
-			if (!msg.arg0)
+			/* Empty slots hold 0 or an acknowledge flag (1 or 3). */
+			if (!msg.arg0 || msg.arg0 == 0x1 || msg.arg0 == 0x3)
 				continue;
-			if (posted++ < 2)
+			if (pending++ < 2)
 				isp_err(isp,
 					"%s[%u]: 0x%llx 0x%llx 0x%llx\n",
 					chan->name, n, msg.arg0, msg.arg1,
 					msg.arg2);
 		}
-		isp_err(isp, "%s: type %u src %u cursor %u/%u, %u posted\n",
+		isp_err(isp, "%s: type %u src %u cursor %u/%u, %u pending\n",
 			chan->name, chan->type, chan->src, chan->cursor,
-			chan->num, posted);
+			chan->num, pending);
 	}
 }
 
