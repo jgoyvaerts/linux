@@ -117,7 +117,7 @@
 
 	atc2_dart1: iommu@392f80000 {
 		compatible = "apple,t6041-dart", "apple,t8110-dart";
-		reg = <3 0x92f80000 0 0x4000>;
+		reg = <3 0x92f80000 0 0xc000>;
 		interrupt-parent = <&aic>;
 		interrupts = <0 0x697 4>;
 		power-domains = <&ps_atc2_usb>;
@@ -126,7 +126,7 @@
 
 	atc2_dart0: iommu@392f00000 {
 		compatible = "apple,t6041-dart", "apple,t8110-dart";
-		reg = <3 0x92f00000 0 0x4000>;
+		reg = <3 0x92f00000 0 0xc000>;
 		interrupt-parent = <&aic>;
 		interrupts = <0 0x697 4>;
 		power-domains = <&ps_atc2_usb>;
@@ -271,7 +271,7 @@
 
 	atc1_dart1: iommu@38af80000 {
 		compatible = "apple,t6041-dart", "apple,t8110-dart";
-		reg = <3 0x8af80000 0 0x4000>;
+		reg = <3 0x8af80000 0 0xc000>;
 		interrupt-parent = <&aic>;
 		interrupts = <0 0x677 4>;
 		power-domains = <&ps_atc1_usb>;
@@ -280,7 +280,7 @@
 
 	atc1_dart0: iommu@38af00000 {
 		compatible = "apple,t6041-dart", "apple,t8110-dart";
-		reg = <3 0x8af00000 0 0x4000>;
+		reg = <3 0x8af00000 0 0xc000>;
 		interrupt-parent = <&aic>;
 		interrupts = <0 0x677 4>;
 		power-domains = <&ps_atc1_usb>;
@@ -338,7 +338,7 @@
 
 	atc0_dart1: iommu@382f80000 {
 		compatible = "apple,t6041-dart", "apple,t8110-dart";
-		reg = <3 0x82f80000 0 0x4000>;
+		reg = <3 0x82f80000 0 0xc000>;
 		interrupt-parent = <&aic>;
 		interrupts = <0 0x657 4>;
 		power-domains = <&ps_atc0_usb>;
@@ -347,7 +347,7 @@
 
 	atc0_dart0: iommu@382f00000 {
 		compatible = "apple,t6041-dart", "apple,t8110-dart";
-		reg = <3 0x82f00000 0 0x4000>;
+		reg = <3 0x82f00000 0 0xc000>;
 		interrupt-parent = <&aic>;
 		interrupts = <0 0x657 4>;
 		power-domains = <&ps_atc0_usb>;
