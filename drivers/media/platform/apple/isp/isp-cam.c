@@ -441,7 +441,13 @@ static int isp_ch_configure_capture(struct apple_isp *isp, u32 ch)
 	bool h17 = isp->hw->fw_abi == ISP_FW_ABI_H17;
 	int err;
 
-	isp_cmd_flicker_sensor_set(isp, 0);
+	/*
+	 * H17 firmware allocates its lens shading tables while it loads the
+	 * setfile, and FLICKER_SENSOR_SET starts the lens shading thread, which
+	 * faults on the missing tables. macOS loads the setfile first there.
+	 */
+	if (!h17)
+		isp_cmd_flicker_sensor_set(isp, 0);
 
 	/*
 	 * The setfile isn't requisite but then we don't get calibration. If
@@ -450,6 +456,9 @@ static int isp_ch_configure_capture(struct apple_isp *isp, u32 ch)
 	err = isp_ch_load_setfile(isp, ch);
 	if (err == -EINTR)
 		return err;
+
+	if (h17)
+		isp_cmd_flicker_sensor_set(isp, 0);
 
 	if (isp->hw->lpdp) {
 		err = isp_cmd_ch_lpdp_hs_receiver_tuning_set(isp, ch, 1, 15);
