@@ -121,6 +121,8 @@ impl crate::g17::Firmware {
             .find(|pair| pair.qids().contains(&qid))
             .and_then(|pair| pair.oldest_packet());
         if let Some(packet) = packet {
+            // Unclassified work counts as innocent, and a blamed group must never be replayed.
+            packet.completion.classify(crate::g17::recovery::Class::Guilty);
             self.fail_render_packet(&packet, error, deferred)?;
         }
         Ok(())
