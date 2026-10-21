@@ -833,6 +833,21 @@ static const struct apple_isp_hw apple_isp_hw_t8140 = {
  * broadcast-clear windows in eight slots, the scaler 1 output path and no
  * capture metadata pool or watchdog.
  */
+/* The same for T6040, from the J616s ADT's DART address filter. */
+static const struct isp_mmio_window apple_isp_fw_mmio_t6040[] = {
+	{ 0x220004000, 0x1d4000 },	/* DSID broadcast-clear windows */
+	{ 0x222004000, 0x1d4000 },
+	{ 0x224004000, 0x1d4000 },
+	{ 0x226004000, 0x1d4000 },
+	{ 0x485660000, 0x4000 },
+	{ 0x5003c0000, 0x28000 },	/* PMGR, with the PMP clock scratch */
+	{ 0x500e3c000, 0x4000 },
+	{ 0x502284000, 0x4000 },	/* PMGR, ISP power states */
+	{ 0x502880000, 0x8000 },
+	{ 0x504824000, 0x4000 },	/* PMP bandwidth scratch */
+	{ 0x51062c000, 0x20000 },
+};
+
 static const struct apple_isp_hw apple_isp_hw_t6040 = {
 	.gen = ISP_GEN_T6040,
 	.fw_abi = ISP_FW_ABI_H17,
@@ -860,6 +875,8 @@ static const struct apple_isp_hw apple_isp_hw_t6040 = {
 	.scl1 = true,
 	.lpdp = false,
 	.meta_size = ISP_META_SIZE_T8140,
+	.fw_mmio = apple_isp_fw_mmio_t6040,
+	.num_fw_mmio = ARRAY_SIZE(apple_isp_fw_mmio_t6040),
 
 	.coproc_control = ISP_COPROC_CONTROL_T8140,
 	.boot_mode = 1,
