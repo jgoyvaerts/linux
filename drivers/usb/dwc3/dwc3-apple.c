@@ -804,6 +804,11 @@ static int dwc3_apple_probe(struct platform_device *pdev)
 	/* Tested on T6040 only, where the PHY driver and the DARTs follow runtime PM. */
 	appledwc->idle_rpm = of_device_is_compatible(dev->of_node, "apple,t6040-dwc3");
 	mutex_init(&appledwc->lock);
+	/*
+	 * dwc3_core_probe() publishes the same pointer once the first cable arrives; a controller
+	 * that never saw one is unbound through it too.
+	 */
+	platform_set_drvdata(pdev, &appledwc->dwc);
 
 	appledwc->reset = devm_reset_control_get_exclusive(dev, NULL);
 	if (IS_ERR(appledwc->reset))
