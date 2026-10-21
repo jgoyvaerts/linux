@@ -209,6 +209,11 @@
 	};
 };
 
+/* The Type-C retimers uatcrt0..2 (ADT: atcrt at 0x18/0x19/0x1a) sit on this bus; no driver yet. */
+&i2c6 {
+	status = "okay";
+};
+
 /*
  * The speaker sound card. The AOP firmware runs the stream (MCA cluster 0, one serializer for all six amps);
  * macaudio's J616 variant links the AOP audio component's spkr back-end (DAI 3) to the amps. The codecs are
