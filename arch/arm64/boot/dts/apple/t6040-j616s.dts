@@ -16,6 +16,7 @@
 / {
 	model = "Apple MacBook Pro (16-inch, M4 Pro, 2024)";
 	compatible = "apple,j616s", "apple,t6040", "apple,arm-platform";
+	chassis-type = "laptop";
 
 	led-controller {
 		compatible = "pwm-leds";
