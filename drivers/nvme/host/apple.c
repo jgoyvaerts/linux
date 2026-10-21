@@ -247,7 +247,9 @@ struct apple_nvme {
 	struct reset_control *reset;
 	bool owns_rtkit;
 	bool inherited_rtkit;
-	u64 write_lba_range[2]; /* first inclusive, end exclusive; immutable */
+	/* first inclusive, end exclusive pairs; immutable */
+	u64 write_lba_range[2 * APPLE_M4_WRITE_RANGES_MAX];
+	unsigned int write_lba_ranges;
 
 	struct dma_pool *prp_page_pool;
 	struct dma_pool *prp_small_pool;
@@ -1105,6 +1107,26 @@ out:
 	return false;
 }
 
+static bool apple_nvme_partition_allowed(struct apple_nvme *anv,
+					 struct apple_nvme_queue *q,
+					 struct nvme_ns *ns,
+					 struct nvme_command *cmnd)
+{
+	unsigned int i;
+
+	for (i = 0; i < anv->write_lba_ranges; i++)
+		if (apple_m4_partition_allowed(q->is_adminq, cmnd->common.opcode,
+				le32_to_cpu(cmnd->common.cdw10),
+				le32_to_cpu(cmnd->common.nsid),
+				ns && ns->head ? ns->head->lba_shift : 0,
+				le64_to_cpu(cmnd->rw.slba),
+				le16_to_cpu(cmnd->rw.length),
+				anv->write_lba_range[2 * i],
+				anv->write_lba_range[2 * i + 1]))
+			return true;
+	return false;
+}
+
 static blk_status_t apple_nvme_queue_rq(struct blk_mq_hw_ctx *hctx,
 					const struct blk_mq_queue_data *bd)
 {
@@ -1148,12 +1170,7 @@ static blk_status_t apple_nvme_queue_rq(struct blk_mq_hw_ctx *hctx,
 	}
 
 	if (anv->hw->partition_write_probe &&
-	    !apple_m4_partition_allowed(q->is_adminq, cmnd->common.opcode,
-			le32_to_cpu(cmnd->common.cdw10),
-			le32_to_cpu(cmnd->common.nsid),
-			ns && ns->head ? ns->head->lba_shift : 0,
-			le64_to_cpu(cmnd->rw.slba), le16_to_cpu(cmnd->rw.length),
-			anv->write_lba_range[0], anv->write_lba_range[1])) {
+	    !apple_nvme_partition_allowed(anv, q, ns, cmnd)) {
 		dev_warn_ratelimited(anv->dev,
 			"partition guard rejected %s opcode 0x%x\n",
 			q->is_adminq ? "admin" : "I/O", cmnd->common.opcode);
@@ -2308,16 +2325,29 @@ static struct apple_nvme *apple_nvme_alloc(struct platform_device *pdev)
 		goto out_detach_genpd;
 	}
 	if (anv->hw->partition_write_probe) {
-		ret = of_property_read_u64_array(dev->of_node, "lab,write-lba-range",
-						 anv->write_lba_range, 2);
-		if (ret || !apple_m4_partition_range_valid(anv->write_lba_range[0],
-							   anv->write_lba_range[1])) {
+		unsigned int i;
+
+		ret = of_property_count_u64_elems(dev->of_node, "lab,write-lba-range");
+		if (ret > 0 && ret % 2 == 0 && ret <= ARRAY_SIZE(anv->write_lba_range)) {
+			anv->write_lba_ranges = ret / 2;
+			ret = of_property_read_u64_array(dev->of_node, "lab,write-lba-range",
+							 anv->write_lba_range,
+							 2 * anv->write_lba_ranges);
+		} else {
+			ret = -EINVAL;
+		}
+		for (i = 0; !ret && i < anv->write_lba_ranges; i++)
+			if (!apple_m4_partition_range_valid(anv->write_lba_range[2 * i],
+							    anv->write_lba_range[2 * i + 1]))
+				ret = -EINVAL;
+		if (ret) {
 			dev_err(dev, "Missing/invalid partition write bounds\n");
 			ret = -EINVAL;
 			goto out_detach_genpd;
 		}
-		dev_info(dev, "Writes restricted to namespace 1, 4096-byte LBAs [%llu,%llu)\n",
-			 anv->write_lba_range[0], anv->write_lba_range[1]);
+		for (i = 0; i < anv->write_lba_ranges; i++)
+			dev_info(dev, "Writes restricted to namespace 1, 4096-byte LBAs [%llu,%llu)\n",
+				 anv->write_lba_range[2 * i], anv->write_lba_range[2 * i + 1]);
 	}
 
 	ret = apple_nvme_attach_genpd(anv);
