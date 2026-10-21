@@ -310,6 +310,21 @@ static int isp_detect_camera(struct apple_isp *isp)
 	return 0;
 }
 
+static int isp_ch_load_setfile(struct apple_isp *isp, u32 ch);
+
+/*
+ * macOS loads the setfile of H17 firmware within 20 ms of START, before
+ * any other channel command. Loaded at the first stream instead, after the
+ * resident firmware has idled since probe, the firmware's lens shading
+ * thread (FlowLSC200) faults on that first channel command, whichever it
+ * is. So resident H17 firmware gets its setfile and flicker setting right
+ * after it starts, and the stream path leaves them alone.
+ */
+static bool isp_setfile_at_boot(struct apple_isp *isp)
+{
+	return isp->hw->resident_fw && isp->hw->fw_abi == ISP_FW_ABI_H17;
+}
+
 int apple_isp_detect_camera(struct apple_isp *isp)
 {
 	int err;
@@ -325,6 +340,18 @@ int apple_isp_detect_camera(struct apple_isp *isp)
 	}
 
 	err = isp_detect_camera(isp);
+
+	if (!err && isp_setfile_at_boot(isp)) {
+		/*
+		 * Only a command that timed out is fatal: as on the stream
+		 * path, a missing or bad setfile only costs calibration.
+		 */
+		err = isp_ch_load_setfile(isp, isp->current_ch);
+		if (err != -ETIME)
+			err = 0;
+		if (!err)
+			err = isp_cmd_flicker_sensor_set(isp, 0);
+	}
 
 	/* Resident firmware stays up; the channel is set up per stream. */
 	if (isp->hw->resident_fw) {
@@ -441,24 +468,18 @@ static int isp_ch_configure_capture(struct apple_isp *isp, u32 ch)
 	bool h17 = isp->hw->fw_abi == ISP_FW_ABI_H17;
 	int err;
 
-	/*
-	 * H17 firmware allocates its lens shading tables while it loads the
-	 * setfile, and FLICKER_SENSOR_SET starts the lens shading thread, which
-	 * faults on the missing tables. macOS loads the setfile first there.
-	 */
-	if (!h17)
+	if (!isp_setfile_at_boot(isp)) {
 		isp_cmd_flicker_sensor_set(isp, 0);
 
-	/*
-	 * The setfile isn't requisite but then we don't get calibration. If
-	 * loading it was interrupted by a signal, give up on the stream.
-	 */
-	err = isp_ch_load_setfile(isp, ch);
-	if (err == -EINTR)
-		return err;
-
-	if (h17)
-		isp_cmd_flicker_sensor_set(isp, 0);
+		/*
+		 * The setfile isn't requisite but then we don't get
+		 * calibration. If loading it was interrupted by a signal, give
+		 * up on the stream.
+		 */
+		err = isp_ch_load_setfile(isp, ch);
+		if (err == -EINTR)
+			return err;
+	}
 
 	if (isp->hw->lpdp) {
 		err = isp_cmd_ch_lpdp_hs_receiver_tuning_set(isp, ch, 1, 15);
