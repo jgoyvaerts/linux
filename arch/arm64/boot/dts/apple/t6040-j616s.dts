@@ -297,12 +297,35 @@
 };
 
 /*
- * Nothing uses the nub GPIO bank yet, and its built-in driver reads the
- * whole register bank during kernel boot: keep it off until a consumer
- * (jack, HDMI) comes with an attended test.
+ * The jack, enabled for its first attended test: i2c2, the codec, its sound card, and the AOP audio
+ * component's jack DMA channels (base-ns ADMAC TX2 and RX2, ADT audio-codec-output/-input dma-channels 4 and 5).
+ */
+&i2c2 {
+	status = "okay";
+};
+
+&jack_codec {
+	status = "okay";
+};
+
+&sound_jack {
+	status = "okay";
+};
+
+&aop_audio {
+	dmas = <&admac0 1>, <&admac1 0>, <&admac1 1>, <&admac1 4>, <&admac1 5>;
+	dma-names = "dma", "spkr", "sense", "cout", "cin";
+};
+
+/*
+ * The nub GPIO bank carries the jack codec's reset. The AP takes none of its interrupts: the AOP firmware owns
+ * some of its pins and interrupt registers (the AOP DART's filter covers both), and a chained handler here
+ * would see their pending bits without a handler of ours.
  */
 &pinctrl_nub {
-	status = "disabled";
+	/delete-property/ interrupt-controller;
+	/delete-property/ #interrupt-cells;
+	/delete-property/ interrupts;
 };
 
 /*
