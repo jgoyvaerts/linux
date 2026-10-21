@@ -11,6 +11,10 @@
 #define ISP_IPC_TERMINAL_MAX_LEN	512
 #define ISP_IPC_BUFEXC_STAT_META_OFFSET 0x10
 
+static bool fw_log;
+module_param(fw_log, bool, 0644);
+MODULE_PARM_DESC(fw_log, "Print the firmware log to the kernel log");
+
 struct isp_sm_deferred_work {
 	struct work_struct work;
 	struct apple_isp *isp;
@@ -210,10 +214,12 @@ int ipc_tm_handle(struct apple_isp *isp, struct isp_channel *chan)
 	size_t size = min_t(u64, req->arg1, ISP_IPC_TERMINAL_MAX_LEN);
 	const char *line;
 
-	/* Firmware log output, available through dynamic debug */
+	/* Firmware log output, with fw_log or through dynamic debug */
 	if (iova && size && isp->log_surf) {
 		line = apple_isp_translate(isp, isp->log_surf, iova, size);
-		if (line)
+		if (line && fw_log)
+			dev_info(isp->dev, "ISPASC: %.*s", (int)size, line);
+		else if (line)
 			dev_dbg(isp->dev, "ISPASC: %.*s", (int)size, line);
 	}
 
