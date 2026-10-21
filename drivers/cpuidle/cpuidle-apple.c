@@ -136,15 +136,6 @@ static int apple_cpuidle_probe(struct platform_device *pdev)
 	if (of_machine_is_compatible("apple,t8140") || t604x)
 		apple_idle_driver.states[STATE_PWRDOWN] = apple_idle_driver.states[STATE_WFI];
 
-	/*
-	 * T6040 (M4 Pro) is the same: iBoot locks CYC_OVRD, and a plain
-	 * WFI already powers the core down, losing x0-x15 and FP/SIMD
-	 * (the arm64 idle code saves those). Keep the second state off
-	 * until it is enabled through sysfs.
-	 */
-	if (t604x)
-		apple_idle_driver.states[STATE_PWRDOWN].flags |= CPUIDLE_FLAG_OFF;
-
 	return cpuidle_register(&apple_idle_driver, NULL);
 }
 
