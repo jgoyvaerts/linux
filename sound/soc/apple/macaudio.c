@@ -1964,11 +1964,6 @@ struct macaudio_platform_cfg macaudio_j616_cfg = {
 	.stereo = true,
 	.amp_gain = 15,
 	.safe_vol = -20,
-	/*
-	 * -10 dB measures between macOS's 50 % and 100 % volume; 0 dB would be
-	 * louder than macOS ever plays these speakers.
-	 */
-	.max_vol = -10,
 	.fe_dai_names = { "j616-pcm-0", "j616-pcm-1", "j616-pcm-2" },
 	.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_CBC_CFC |
 		   SND_SOC_DAIFMT_GATED | SND_SOC_DAIFMT_NB_IF,
