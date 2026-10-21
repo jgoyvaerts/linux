@@ -138,6 +138,7 @@
 #define T6040_CPU_RUN_START		0x10	/* AppleMxWrap::_runCPU */
 #define T6040_CPU_IDLE_CTRL		0x40	/* MXWRAP_BLK_IDLE_CTRL */
 #define T6040_CPU_IDLE_CTRL_EN		BIT(0)
+#define T6040_CPU_STATUS		0x44	/* bit 1: idle */
 
 /* ADT acio-phy-cpuN segment-ranges: the coprocessor sees its __DATA SRAM ("cpu-data") here */
 #define T6040_CPU_DATA_IOVA		0x10000000
@@ -514,21 +515,17 @@ static int t6040_usb3_wait_tuned(struct t6040_usb2_phy *tphy)
 }
 
 /*
- * Run the coprocessor and boot RTKit. A CPU that already runs without a live
- * RTKit session (an earlier driver instance, a crash) gets AppleMxWrap's stop
- * request first and RTKit a clean state.
+ * Run the coprocessor and boot RTKit, once per boot. This firmware can neither
+ * be woken from an RTKit sleep nor restarted after it ran (neither answers),
+ * so a coprocessor that runs without a live RTKit session cannot be used.
  */
 static int t6040_usb3_cpu_start(struct t6040_usb2_phy *tphy)
 {
 	void __iomem *cpu = t6040_cpu(tphy);
-	int ret;
 
 	if (readl(cpu + T6040_CPU_RUN) & T6040_CPU_RUN_START) {
-		writel(~T6040_CPU_RUN_START, cpu + T6040_CPU_RUN);
-		usleep_range(1000, 2000);
-		ret = apple_rtkit_reinit(tphy->rtk);
-		if (ret)
-			return ret;
+		dev_err(tphy->dev, "USB3: the PHY coprocessor already ran this boot and cannot be restarted\n");
+		return -EBUSY;
 	}
 	writel(T6040_CPU_RUN_START, cpu + T6040_CPU_RUN);
 	usleep_range(5000, 6000);
@@ -537,14 +534,14 @@ static int t6040_usb3_cpu_start(struct t6040_usb2_phy *tphy)
 
 /*
  * C: runFirmware. macOS starts the coprocessor on the first attach of a boot
- * and keeps it running: on detach it only sends Power Down, and on the next
- * attach the running firmware tunes the PHY again. A coprocessor that does
- * not (or no longer runs) is started afresh. Then release the PHY reset (D).
+ * and keeps it running; on detach it sends Power Down, and the PHY is asleep
+ * (UC_TNBL_DONE clear) before the next power-on. The running firmware then
+ * tunes the PHY again. Then release the PHY reset (D).
  */
 static int t6040_usb3_run_firmware(struct t6040_usb2_phy *tphy, bool swap)
 {
 	void __iomem *cpu = t6040_cpu(tphy);
-	const char *how = "started";
+	const char *how = "running";
 	u32 uc_before;
 	int ret;
 
@@ -555,33 +552,22 @@ static int t6040_usb3_run_firmware(struct t6040_usb2_phy *tphy, bool swap)
 	fsleep(10);
 
 	uc_before = readl(t6040_core(tphy) + T6040_CORE_UC_CTRL);
-	/*
-	 * A running coprocessor must tune the PHY for this attach. A tuned flag still set from
-	 * the last attach says it has not: the replugs that kept it running came up at USB2
-	 * only. The firmware tunes as it starts, for the lane in CFG_S2R_USB_LN_SWAP, so it is
-	 * restarted then, as it is when it does not tune at all.
-	 */
-	if (apple_rtkit_is_running(tphy->rtk)) {
-		how = "restarted";
-		if (!(uc_before & T6040_CORE_UC_CTRL_TNBL_DONE) && !t6040_usb3_wait_tuned(tphy)) {
-			how = "running";
-			goto tuned;
+	if (!apple_rtkit_is_running(tphy->rtk)) {
+		how = "started";
+		ret = t6040_usb3_cpu_start(tphy);
+		if (ret) {
+			dev_err(tphy->dev, "USB3: PHY coprocessor start failed: %d\n", ret);
+			return ret;
 		}
-	}
-
-	ret = t6040_usb3_cpu_start(tphy);
-	if (ret) {
-		dev_err(tphy->dev, "USB3: PHY coprocessor start failed: %d\n", ret);
-		return ret;
 	}
 	ret = t6040_usb3_wait_tuned(tphy);
 	if (ret) {
-		dev_err(tphy->dev, "USB3: the PHY coprocessor did not tune the PHY (%#x)\n",
-			readl(t6040_core(tphy) + T6040_CORE_UC_CTRL));
+		dev_err(tphy->dev, "USB3: the %s PHY coprocessor did not tune the PHY (uc %#x -> %#x, idle %#x, status %#x)\n",
+			how, uc_before, readl(t6040_core(tphy) + T6040_CORE_UC_CTRL),
+			readl(cpu + T6040_CPU_IDLE_CTRL), readl(cpu + T6040_CPU_STATUS));
 		return ret;
 	}
 
-tuned:
 	dev_info(tphy->dev, "USB3 PHY tuned: lane %d, coprocessor %s, uc %#x -> %#x\n", swap, how,
 		 uc_before, readl(t6040_core(tphy) + T6040_CORE_UC_CTRL));
 	t6040_usb2_set32(t6040_cfg(tphy) + T6040_CFG_CTRL, T6040_CFG_CTRL_PHY_RESET_N);
@@ -606,8 +592,26 @@ static void t6040_usb3_firmware_power_down(struct t6040_usb2_phy *tphy)
 		ret = -ETIMEDOUT;
 	if (ret)
 		dev_warn(tphy->dev, "USB3: no Power Down acknowledge: %d\n", ret);
-	dev_dbg(tphy->dev, "USB3: after Power Down, uc %#x\n",
-		readl(t6040_core(tphy) + T6040_CORE_UC_CTRL));
+}
+
+/*
+ * Put the PHY back to sleep, the reverse of A and D: the state it has before
+ * the first attach (ctrl 0x4: clamped, asleep; AHB clock not requested).
+ */
+static void t6040_usb3_sleep(struct t6040_usb2_phy *tphy)
+{
+	void __iomem *cfg = t6040_cfg(tphy);
+
+	t6040_usb2_clear32(cfg + T6040_CFG_CTRL, T6040_CFG_CTRL_PHY_RESET_N);
+	t6040_usb2_clear32(cfg + T6040_CFG_CTRL, T6040_CFG_CTRL_APB_RESET_N);
+	t6040_usb2_set32(cfg + T6040_CFG_AHB, T6040_CFG_AHB_CLK_REQ_N);
+	t6040_usb3_cfg_ack(tphy, "AHB clock release", T6040_CFG_STATUS_AHB_CLK, true);
+	t6040_usb2_set32(cfg + T6040_CFG_CTRL, T6040_CFG_CTRL_CLAMP);
+	udelay(8);
+	t6040_usb2_clear32(cfg + T6040_CFG_CTRL, T6040_CFG_CTRL_SLEEP_B_BIG);
+	t6040_usb3_cfg_ack(tphy, "SLEEP_B_BIG release", T6040_CFG_STATUS_SLEEP_B_BIG, false);
+	t6040_usb2_clear32(cfg + T6040_CFG_CTRL, T6040_CFG_CTRL_SLEEP_B_SML);
+	t6040_usb3_cfg_ack(tphy, "SLEEP_B_SML release", T6040_CFG_STATUS_SLEEP_B_SML, false);
 }
 
 /* Sets PHY_STATUS(_2) handshake bits in the BIST block and waits as macOS does, without failing. */
@@ -806,11 +810,17 @@ static int t6040_usb3_power_off(struct phy *phy)
 	/*
 	 * shortcut: macOS also powers the lanes and the common block down here
 	 * (aciophy_phy_shutdown); its lane masks are not decoded, so the PHY
-	 * stays awake until the next attach reprograms it or its power domain
-	 * drops. Upgrade once the shutdown masks are known.
+	 * goes to sleep without them. Upgrade once the shutdown masks are known.
 	 */
 	if (tphy->usb3_up) {
+		u32 uc = readl(t6040_core(tphy) + T6040_CORE_UC_CTRL);
+
 		t6040_usb3_firmware_power_down(tphy);
+		t6040_usb3_sleep(tphy);
+		dev_info(tphy->dev, "USB3 PHY asleep: uc %#x -> %#x, cfg %#x/%#x\n", uc,
+			 readl(t6040_core(tphy) + T6040_CORE_UC_CTRL),
+			 readl(t6040_cfg(tphy) + T6040_CFG_CTRL),
+			 readl(t6040_cfg(tphy) + T6040_CFG_STATUS));
 		tphy->usb3_up = false;
 	}
 	return 0;
