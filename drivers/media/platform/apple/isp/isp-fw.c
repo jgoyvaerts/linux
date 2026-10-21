@@ -53,6 +53,60 @@ static inline u32 isp_coproc_control(struct apple_isp *isp)
 	return isp->hw->coproc_control ?: ISP_COPROC_CONTROL;
 }
 
+/*
+ * Log what the firmware left behind when it did not answer a command: the
+ * mailbox status/enable pairs, the doorbell block, the handshake words, the
+ * coprocessor control and status words (status follows control on every
+ * generation), and the messages posted in each channel.
+ */
+void apple_isp_firmware_dump_state(struct apple_isp *isp)
+{
+	u32 control = isp_coproc_control(isp);
+	u32 gpio[8];
+
+	for (int i = 0; i < ARRAY_SIZE(gpio); i++)
+		gpio[i] = isp_gpio_read32(isp, ISP_GPIO_0 + 4 * i);
+
+	isp_err(isp,
+		"mbox 0x%x/0x%x 0x%x/0x%x 0x%x/0x%x doorbell 0x%x 0x%x 0x%x 0x%x\n",
+		isp_mbox_read32(isp, 0x0), isp_mbox_read32(isp, 0x8),
+		isp_mbox_read32(isp, 0x10), isp_mbox_read32(isp, 0x18),
+		isp_mbox_read32(isp, 0x30), isp_mbox_read32(isp, 0x38),
+		isp_mbox2_read32(isp, 0x0), isp_mbox2_read32(isp, 0x4),
+		isp_mbox2_read32(isp, 0x8), isp_mbox2_read32(isp, 0xc));
+	isp_err(isp,
+		"gpio 0x%x 0x%x 0x%x 0x%x 0x%x 0x%x 0x%x 0x%x control 0x%x status 0x%x\n",
+		gpio[0], gpio[1], gpio[2], gpio[3], gpio[4], gpio[5], gpio[6],
+		gpio[7], isp_coproc_read32(isp, control),
+		isp_coproc_read32(isp, control + 4));
+
+	for (int i = 0; i < isp->num_ipc_chans; i++) {
+		struct isp_channel *chan = isp->ipc_chans[i];
+		unsigned int posted = 0;
+
+		if (!chan)
+			continue;
+
+		dma_rmb();
+		for (u32 n = 0; n < chan->num; n++) {
+			struct isp_message msg;
+
+			memcpy(&msg, chan->virt + n * ISP_IPC_MESSAGE_SIZE,
+			       sizeof(msg));
+			if (!msg.arg0)
+				continue;
+			if (posted++ < 2)
+				isp_err(isp,
+					"%s[%u]: 0x%llx 0x%llx 0x%llx\n",
+					chan->name, n, msg.arg0, msg.arg1,
+					msg.arg2);
+		}
+		isp_err(isp, "%s: type %u src %u cursor %u/%u, %u posted\n",
+			chan->name, chan->type, chan->src, chan->cursor,
+			chan->num, posted);
+	}
+}
+
 /* Wait for the firmware to write @expected to a GPIO word. */
 static int isp_gpio_wait(struct apple_isp *isp, u32 reg, u32 expected)
 {
