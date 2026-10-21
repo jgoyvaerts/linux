@@ -193,6 +193,7 @@ int ipc_chan_send(struct apple_isp *isp, struct isp_channel *chan,
 			chan->req.arg2,
 			isp_mbox_read32(isp, ISP_MBOX_IRQ_INTERRUPT),
 			isp_mbox_read32(isp, isp->hw->mbox_irq_enable));
+		apple_isp_firmware_dump_state(isp);
 		return -ETIME;
 	}
 

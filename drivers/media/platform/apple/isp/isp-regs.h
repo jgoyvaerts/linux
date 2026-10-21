@@ -86,6 +86,11 @@ static inline void isp_mbox_write32(struct apple_isp *isp, u32 reg, u32 val)
 	writel(val, isp->mbox + reg);
 }
 
+static inline u32 isp_mbox2_read32(struct apple_isp *isp, u32 reg)
+{
+	return readl(isp->mbox2 + reg);
+}
+
 static inline void isp_mbox2_write32(struct apple_isp *isp, u32 reg, u32 val)
 {
 	writel(val, isp->mbox2 + reg);
