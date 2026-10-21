@@ -11,7 +11,7 @@ use crate::g17::{
     recovery::Memory as _,
     Firmware, MSG_CONTROL_NOTIFY,
 };
-use core::sync::atomic::{fence, Ordering};
+use core::sync::atomic::{fence, AtomicU32, AtomicU64, Ordering};
 use kernel::{prelude::*, sync::Arc};
 
 impl super::Registry {
@@ -28,7 +28,128 @@ impl super::Registry {
     }
 }
 
+/// Log-only (G-31) state: when each QID was first seen stuck (0: not stuck), which QIDs
+/// were logged, and the lines logged this boot.
+const NOT_STUCK: AtomicU64 = AtomicU64::new(0);
+static STUCK_SINCE: [AtomicU64; 128] = [NOT_STUCK; 128];
+static STUCK_LOGGED: [AtomicU64; 2] = [NOT_STUCK; 2];
+static STUCK_LINES: AtomicU32 = AtomicU32::new(0);
+/// A queue must stay stuck this long before it is logged, so a kill in progress is not.
+const STUCK_LOG_AFTER_NS: u64 = 5_000_000_000;
+const STUCK_MAX_LINES: u32 = 16;
+
 impl Firmware {
+    /// Log-only (G-31): once per QID, name the gate that keeps a quarantined queue of a
+    /// closed owner from being killed or settled. Reads the same state the kill decision
+    /// reads under the device mutex; changes nothing.
+    fn log_stuck_compute(&self, recovery_closed: bool, now: u64) {
+        if STUCK_LINES.load(Ordering::Relaxed) >= STUCK_MAX_LINES {
+            return;
+        }
+        for queue in self
+            .queues
+            .compute
+            .iter()
+            .flatten()
+            .filter_map(|entry| entry.queue.as_deref())
+        {
+            let qid = usize::from(queue.qid()) % 128;
+            let since = &STUCK_SINCE[qid];
+            if !queue.stuck_quarantined() {
+                since.store(0, Ordering::Relaxed);
+                continue;
+            }
+            let first = since.load(Ordering::Relaxed);
+            if first == 0 {
+                since.store(now.max(1), Ordering::Relaxed);
+                continue;
+            }
+            let bit = 1u64 << (qid % 64);
+            if now.saturating_sub(first) < STUCK_LOG_AFTER_NS
+                || STUCK_LOGGED[qid / 64].load(Ordering::Relaxed) & bit != 0
+            {
+                continue;
+            }
+            STUCK_LOGGED[qid / 64].fetch_or(bit, Ordering::Relaxed);
+            let n = STUCK_LINES.fetch_add(1, Ordering::Relaxed) + 1;
+            if n > STUCK_MAX_LINES {
+                return;
+            }
+            let (reason, scope) = self.stuck_reason(queue, recovery_closed, now);
+            queue.log_stuck(n, reason, scope);
+        }
+    }
+
+    /// Mirrors `service_compute_exit` and `publish_compute_exit` in order; the first gate
+    /// that refuses wins. Returns the scheduler page's QID scope once it was read.
+    fn stuck_reason(
+        &self,
+        queue: &crate::g17::queue::compute::Queue,
+        recovery_closed: bool,
+        now: u64,
+    ) -> (&'static str, u128) {
+        if self.recovery.pending() || !recovery_closed {
+            return ("GPU recovery open", 0);
+        }
+        let Some(context) = queue.context() else {
+            return ("owner context detached", 0);
+        };
+        let Some(age) = (0..self.queues.teardown.len()).find_map(|index| {
+            self.queues
+                .teardown
+                .closed(index, now)
+                .filter(|(closed, _)| Arc::ptr_eq(closed, context))
+                .map(|(_, age)| age)
+        }) else {
+            return ("context not draining in teardown", 0);
+        };
+        match self.queues.render.teardown_idle(context) {
+            Ok(true) => {}
+            Ok(false) => return ("render side of the context still busy", 0),
+            Err(_) => return ("render idle check failed", 0),
+        }
+        if !self.queues.render.teardown_pools_released(context) {
+            return ("render pools of the context not released", 0);
+        }
+        if let Some(reason) = queue.exit_refusal(context, age) {
+            return (reason, 0);
+        }
+        if self.render_control_backpressured() {
+            return ("render control ring backpressured", 0);
+        }
+        if queue.exit_owner(context).is_none() {
+            return ("commands of several contexts", 0);
+        }
+        let (mut own, mut foreign, _) = self.queues.render.exit_scope(context);
+        for other in self
+            .queues
+            .compute
+            .iter()
+            .flatten()
+            .filter_map(|entry| entry.queue.as_deref())
+        {
+            let bit = 1u128 << other.qid();
+            if other
+                .context()
+                .is_some_and(|bound| Arc::ptr_eq(bound, context))
+            {
+                own |= bit;
+            } else {
+                foreign |= bit;
+            }
+        }
+        let Ok(state) = exit::State::read(context) else {
+            return ("scheduler page unreadable", 0);
+        };
+        if state.scope(queue.qid(), own, foreign).is_none() {
+            return ("kill scope names QIDs the context does not own", state.qids);
+        }
+        (
+            "kill allowed; render slot hold or publication refused",
+            state.qids,
+        )
+    }
+
     pub(in crate::g17) fn service_compute_exit(&mut self, deferred: &mut DeferredBatch) -> Result {
         let recovery_closed = self.init.recovery_state()? == 0;
         let view = crate::g17::qos::View::new(self.init.qos()?)?;
@@ -41,6 +162,7 @@ impl Firmware {
                 )?;
             }
         }
+        self.log_stuck_compute(recovery_closed, now_ns());
         if self.recovery.pending() || !recovery_closed {
             return Ok(());
         }

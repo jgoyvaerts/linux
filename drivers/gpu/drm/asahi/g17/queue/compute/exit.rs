@@ -83,6 +83,61 @@ impl Transaction {
 }
 
 impl Queue {
+    /// Log-only (G-31): quarantined, its owner closed, commands still held and no kill issued.
+    pub(crate) fn stuck_quarantined(&self) -> bool {
+        self.quarantined && self.released && self.active.len != 0 && self.exit.is_none()
+    }
+    /// Log-only (G-31): the first `exit_candidate` condition that refuses this queue.
+    pub(crate) fn exit_refusal(&self, context: &Arc<Context>, age: u64) -> Option<&'static str> {
+        let delay = if self.quarantined {
+            QUARANTINED_DELAY_NS
+        } else {
+            CANCELLED_DELAY_NS
+        };
+        if !self
+            .context()
+            .is_some_and(|bound| Arc::ptr_eq(bound, context))
+        {
+            Some("bound to another context")
+        } else if !self.released || self.active.len == 0 || self.exit.is_some() {
+            Some("not a kill candidate")
+        } else if self.active_traversal() {
+            Some("ray traversal is never killed")
+        } else if !(self.quarantined || self.retired_by_teardown) {
+            Some("neither quarantined nor retired by teardown")
+        } else if age < delay {
+            Some("kill delay not elapsed")
+        } else {
+            None
+        }
+    }
+    /// Log-only (G-31): one line with the refusal and the retirement-witness words that
+    /// `quarantined_retired` compares (newest kick against the stamp, item ring cursors).
+    pub(crate) fn log_stuck(&self, n: u32, reason: &str, scope: u128) {
+        let label =
+            crate::g17::status::OwnerLabel(self.context().map(|context| context.status().owner()));
+        let newest = self.active.back().and_then(|active| active.ticket);
+        let kick = newest.map_or(0, |ticket| ticket.kick);
+        let end = newest.map_or(0, |ticket| ticket.item_producer);
+        let stamp = self.graph.stamp().unwrap_or(0);
+        let cursors = self.graph.cursors().ok();
+        pr_info!(
+            "G17 stuck compute {}: qid {} {} active {} submitted {}: {}; newest kick {:#x} stamp {:#x} covered {} items producer {} consumer {} end {} scope {:#x}\n",
+            n,
+            self.qid(),
+            label,
+            self.active.len,
+            self.submitted,
+            reason,
+            kick,
+            stamp,
+            super::retirement::stamp_covers(stamp, kick) as u8,
+            cursors.map_or(u32::MAX, |c| c.producer),
+            cursors.map_or(u32::MAX, |c| c.consumer),
+            end,
+            scope
+        );
+    }
     /// Kill state for the capacity census. Log lines only.
     pub(crate) fn exit_label(&self) -> &'static str {
         match self.exit.as_ref().map(|exit| exit.phase) {
