@@ -546,6 +546,15 @@ static int apple_gpio_pinctrl_probe(struct platform_device *pdev)
 		res = apple_gpio_regmap_access(&pdev->dev, npins, &pctl_regmap_config);
 		if (res)
 			return dev_err_probe(&pdev->dev, res, "invalid GPIO register ranges\n");
+	} else {
+		/*
+		 * The flat cache is filled by reading the block back: read only
+		 * the registers of the pins this bank has, not all 512 slots.
+		 */
+		if (!npins || npins > 512)
+			return dev_err_probe(&pdev->dev, -EINVAL, "invalid apple,npins\n");
+		pctl_regmap_config.max_register = REG_GPIO(npins - 1);
+		pctl_regmap_config.num_reg_defaults_raw = npins;
 	}
 
 	pctl->map = devm_regmap_init_mmio(&pdev->dev, pctl->base,
