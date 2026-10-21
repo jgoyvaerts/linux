@@ -1164,6 +1164,13 @@ impl Queue {
                 }
                 self.retirement_ready = true;
             }
+            // Nothing of this owner is in flight: no active command, replay or unwitnessed
+            // predecessor. Only a retirement sets `retirement_ready`, so an owner that bound
+            // the queue and closed without a published command (none submitted, or every
+            // publication failed before becoming visible) left it unreusable for good.
+            if self.previous.is_none() && self.replays.len == 0 && self.exit.is_none() {
+                self.retirement_ready = true;
+            }
             if self.retirement_ready {
                 self.owner = None;
                 self.released_at = now_ns();
