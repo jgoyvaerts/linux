@@ -103,6 +103,11 @@ static int cs42l84_put_dac_vol(struct snd_kcontrol *kctl,
 	if (vola < mc->min || vola > mc->max || volb < mc->min || volb > mc->max)
 		return -EINVAL;
 
+	/* A machine driver's snd_soc_limit_volume() ceiling, as the stock volsw put enforces */
+	if (mc->platform_max && (val->value.integer.value[0] > mc->platform_max ||
+				 val->value.integer.value[1] > mc->platform_max))
+		return -EINVAL;
+
 	ret = snd_soc_component_update_bits(component, CS42L84_FRZ_CTL,
 					    CS42L84_FRZ_CTL_ENGAGE,
 					    CS42L84_FRZ_CTL_ENGAGE);
