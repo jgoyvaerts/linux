@@ -246,27 +246,6 @@
 };
 
 /*
- * The camera stays off until its own attended boot: its DARTs program
- * their address filter at probe, during kernel boot, before the boot
- * counting in userspace could catch a crash.
- */
-&isp {
-	status = "disabled";
-};
-
-&isp_dart0 {
-	status = "disabled";
-};
-
-&isp_dart1 {
-	status = "disabled";
-};
-
-&isp_dart2 {
-	status = "disabled";
-};
-
-/*
  * Nothing uses the nub GPIO bank yet, and its built-in driver reads the
  * whole register bank during kernel boot: keep it off until a consumer
  * (jack, HDMI) comes with an attended test.
