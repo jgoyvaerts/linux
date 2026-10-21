@@ -31,6 +31,7 @@
 
 #include <drm/drm_fb_dma_helper.h>
 #include <drm/drm_atomic_helper.h>
+#include <drm/drm_color_mgmt.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_module.h>
@@ -596,6 +597,11 @@ int dcp_crtc_atomic_check(struct drm_crtc *crtc, struct drm_atomic_state *state)
 			return -EINVAL;
 		}
 	}
+
+	/* DRM core only caps the blob size; the gamma update copies a full table. */
+	if (crtc_state->color_mgmt_changed && crtc_state->gamma_lut &&
+	    drm_color_lut_size(crtc_state->gamma_lut) != dcp_gamma_lut_size(pdev))
+		return -EINVAL;
 
 	needs_modeset = drm_atomic_crtc_needs_modeset(crtc_state) || !dcp->valid_mode;
 	if (!needs_modeset && !dcp->connector->connected) {
