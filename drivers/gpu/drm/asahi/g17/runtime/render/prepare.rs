@@ -147,7 +147,13 @@ impl super::super::Backend {
                         // must be unbind, before being rebound to different PB state").
                         // Wait until the closed owner parks; the parked build then gets
                         // a fresh PB state, buffer slot and InitBufferManager.
-                        if !foreign && pair.owner().is_none() && crate::g17::fw::is_25g83() {
+                        // An unpublished pair never sent InitBufferManager and gets no
+                        // teardown entry, so it never parks: rebind it warm.
+                        if !foreign
+                            && pair.owner().is_none()
+                            && pair.context().is_published()
+                            && crate::g17::fw::is_25g83()
+                        {
                             return Err(awaiting_park());
                         }
                         if !pair.reusable()? {
