@@ -1490,8 +1490,8 @@ static const char *apple_dart_t8110_v2_fault_name(u32 exception);
 
 /*
  * The v2 exception registers sit at 0x4000 and 0x8000 + 0x40 * SID. Some
- * T8110-format DARTs with a v2 version (the M4 Pro's USB and PCIe DARTs)
- * have a 0x4000 register window and none of them.
+ * T8110-format DARTs with a v2 version (the M4 Pro's PCIe DARTs) have a
+ * 0x4000 register window and none of them; its USB DARTs have them (0xc000).
  */
 static bool apple_dart_t8110_v2_exceptions(struct apple_dart *dart)
 {
