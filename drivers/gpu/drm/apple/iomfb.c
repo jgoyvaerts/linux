@@ -621,16 +621,6 @@ void dcp_flush(struct drm_crtc *crtc, struct drm_atomic_state *state)
 {
 	struct platform_device *pdev = to_apple_crtc(crtc)->dcp;
 	struct apple_dcp *dcp = platform_get_drvdata(pdev);
-	struct drm_crtc_state *crtc_state = drm_atomic_get_new_crtc_state(state, crtc);
-
-	/*
-	 * Compositors toggle VRR_ENABLED without a modeset, but DCP only applies
-	 * adaptive sync when the mode is selected again.
-	 */
-	if (dcp_vrr && crtc_state->active && !drm_atomic_crtc_needs_modeset(crtc_state) &&
-	    dcp->valid_mode && dcp->use_timestamps &&
-	    crtc_state->vrr_enabled != dcp->vrr_enabled)
-		dcp_modeset_fw(dcp, crtc_state);
 
 	if (dcp_channel_busy(&dcp->ch_cmd))
 	{

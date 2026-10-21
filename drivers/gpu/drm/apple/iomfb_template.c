@@ -1859,7 +1859,6 @@ static void dcp_swapped(struct apple_dcp *dcp, void *data, void *cookie)
 		dev_info(dcp->dev, "M4_DCP_SWAP_SUBMIT_OK n=%u\n", dcp->m4_swaps_ok);
 	}
 	dcp->swap_start = ktime_get();
-	dcp->swap_submit_timestamp = arch_timer_read_counter();
 
 	while (!list_empty(&dcp->swapped_out_fbs)) {
 		struct dcp_fb_reference *entry;
@@ -2198,7 +2197,6 @@ int DCP_FW_NAME(iomfb_modeset)(struct apple_dcp *dcp,
 
 	/* Keep track of suspected vrr modes */
 	dcp->use_timestamps = mode->vrr;
-	dcp->swap_submit_timestamp = 0;
 	vrr = dcp_vrr && mode->vrr && crtc_state->vrr_enabled;
 	/* M4 (R51): frame period for the flip_event_mode vblank clock; a new mode restarts the sequence epoch */
 	if (crtc_state->mode.clock && crtc_state->mode.htotal && crtc_state->mode.vtotal)
@@ -2416,21 +2414,15 @@ void DCP_FW_NAME(iomfb_flush)(struct apple_dcp *dcp, struct drm_crtc *crtc, stru
 		req->clear = 1;
 	}
 
-	if (has_surface && dcp->vrr_enabled) {
+	if (has_surface && dcp->use_timestamps && dcp_swap_timestamps) {
 		/*
-		 * Adaptive sync: the target is the submission time (the arch
-		 * counter is the firmware's mach time) and the previous swap's,
-		 * so DCP refreshes at the swap rate instead of the fixed one.
-		 */
-		u64 now = arch_timer_read_counter();
-
-		req->swap.ts1 = now;
-		req->swap.ts2 = dcp->swap_submit_timestamp ?: now;
-		req->swap.ts3 = now;
-	} else if (has_surface && dcp->use_timestamps && dcp_swap_timestamps) {
-		/*
-		 * Fake timstamps to get 120hz refresh rate. It looks
-		 * like the actual value does not matter, as long  as it is non zero.
+		 * ts1 is the time the swap should be shown, in the firmware's
+		 * clock. A target long past shows the swap at the next refresh:
+		 * 120 Hz in the fixed mode, as soon as the panel allows with
+		 * adaptive sync. Do not send the arch counter here: on 26.6
+		 * the swap after a VRR mode set was then never shown (no swap
+		 * complete, black panel), and DCP holds a swap whose target it
+		 * reads as more than about a frame ahead.
 		 */
 		req->swap.ts1 = 120;
 		req->swap.ts2 = 120;
