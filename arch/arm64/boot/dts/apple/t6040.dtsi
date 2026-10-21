@@ -13,7 +13,8 @@
 
 	/*
 	 * The right-hand USB-C port (ATC2): the PD controller on its own SPMI bus, the ATC2 power states, both DARTs,
-	 * the USB2 PHY and the dwc3 (USB2 host with hotplug). The two left ports below are the same stack.
+	 * the Type-C PHY and the dwc3 (USB2 and USB3 host with hotplug). The two left ports below are the
+	 * same stack.
 	 */
 	spmi_atc2: spmi@509198000 {
 		compatible = "apple,t6041-spmi", "apple,spmi";
@@ -52,15 +53,21 @@
 							remote-endpoint = <&dwc3_2_hs>;
 						};
 					};
+					port@1 {
+						reg = <1>;
+						typec2_connector_ss: endpoint {
+							remote-endpoint = <&atcphy2_ss>;
+						};
+					};
 				};
 			};
 		};
 	};
 
-	usb@392280000 {
+	usb_drd2: usb@392280000 {
 		compatible = "apple,t6040-dwc3", "apple,t8103-dwc3";
-		reg = <3 0x92280000 0 0xcd00 3 0x9228cd00 0 0x3200>;
-		reg-names = "dwc3-core", "dwc3-apple";
+		reg = <3 0x92280000 0 0xcd00 3 0x9228cd00 0 0x3200 3 0x92200000 0 0x4000>;
+		reg-names = "dwc3-core", "dwc3-apple", "drd-cfg";
 		interrupt-parent = <&aic>;
 		interrupts = <0 0x693 4>;
 		/*
@@ -73,8 +80,8 @@
 		iommus = <&atc2_dart0 0 &atc2_dart1 1>;
 		power-domains = <&ps_atc2_usb>;
 		resets = <&atcphy2>;
-		phys = <&atcphy2 3>;
-		phy-names = "usb2-phy";
+		phys = <&atcphy2 3>, <&atcphy2 4>;
+		phy-names = "usb2-phy", "usb3-phy";
 
 		ports {
 			#address-cells = <1>;
@@ -91,13 +98,26 @@
 
 	atcphy2: phy@392a90000 {
 		compatible = "apple,t6040-atcphy";
-		reg = <3 0x92a90000 0 0x4000 3 0x92800000 0 0x4000 3 0x92a84000 0 0x4000>;
-		reg-names = "bank0", "bank1", "pipehandler";
+		reg = <3 0x92a90000 0 0x4000>, <3 0x92800000 0 0x4000>, <3 0x92a84000 0 0x4000>,
+		      <3 0x93000000 0 0x30000>, <3 0x93200000 0 0x4000>, <3 0x93140000 0 0x4000>,
+		      <3 0x930c0000 0 0x10000>, <3 0x90000000 0 0x8000>, <3 0x90020000 0 0x4000>,
+		      <3 0x93244000 0 0x4000>, <3 0x93250000 0 0x4000>;
+		reg-names = "bank0", "bank1", "pipehandler", "core", "cfg", "cpu",
+			    "cpu-data", "axi2af", "axi2af-lioa", "fabric", "common-cfg";
 		#phy-cells = <1>;
 		#reset-cells = <0>;
 		power-domains = <&ps_atc2_common_dp>;
 		mboxes = <&atcphy2_mbox>;
 		mbox-names = "phy-cpu";
+		/* As the USB3 bring-up was tested: every PHY write completes before the next. */
+		nonposted-mmio;
+		orientation-switch;
+
+		port {
+			atcphy2_ss: endpoint {
+				remote-endpoint = <&typec2_connector_ss>;
+			};
+		};
 	};
 
 	/*
@@ -185,6 +205,12 @@
 							remote-endpoint = <&dwc3_1_hs>;
 						};
 					};
+					port@1 {
+						reg = <1>;
+						typec1_connector_ss: endpoint {
+							remote-endpoint = <&atcphy1_ss>;
+						};
+					};
 				};
 			};
 		};
@@ -215,15 +241,21 @@
 							remote-endpoint = <&dwc3_0_hs>;
 						};
 					};
+					port@1 {
+						reg = <1>;
+						typec0_connector_ss: endpoint {
+							remote-endpoint = <&atcphy0_ss>;
+						};
+					};
 				};
 			};
 		};
 	};
 
-	usb@38a280000 {
+	usb_drd1: usb@38a280000 {
 		compatible = "apple,t6040-dwc3", "apple,t8103-dwc3";
-		reg = <3 0x8a280000 0 0xcd00 3 0x8a28cd00 0 0x3200>;
-		reg-names = "dwc3-core", "dwc3-apple";
+		reg = <3 0x8a280000 0 0xcd00 3 0x8a28cd00 0 0x3200 3 0x8a200000 0 0x4000>;
+		reg-names = "dwc3-core", "dwc3-apple", "drd-cfg";
 		interrupt-parent = <&aic>;
 		interrupts = <0 0x673 4>;
 		dr_mode = "otg";
@@ -232,8 +264,8 @@
 		iommus = <&atc1_dart0 0 &atc1_dart1 1>;
 		power-domains = <&ps_atc1_usb>;
 		resets = <&atcphy1>;
-		phys = <&atcphy1 3>;
-		phy-names = "usb2-phy";
+		phys = <&atcphy1 3>, <&atcphy1 4>;
+		phy-names = "usb2-phy", "usb3-phy";
 
 		ports {
 			#address-cells = <1>;
@@ -250,13 +282,26 @@
 
 	atcphy1: phy@38aa90000 {
 		compatible = "apple,t6040-atcphy";
-		reg = <3 0x8aa90000 0 0x4000 3 0x8a800000 0 0x4000 3 0x8aa84000 0 0x4000>;
-		reg-names = "bank0", "bank1", "pipehandler";
+		reg = <3 0x8aa90000 0 0x4000>, <3 0x8a800000 0 0x4000>, <3 0x8aa84000 0 0x4000>,
+		      <3 0x8b000000 0 0x30000>, <3 0x8b200000 0 0x4000>, <3 0x8b140000 0 0x4000>,
+		      <3 0x8b0c0000 0 0x10000>, <3 0x88000000 0 0x8000>, <3 0x88020000 0 0x4000>,
+		      <3 0x8b244000 0 0x4000>, <3 0x8b250000 0 0x4000>;
+		reg-names = "bank0", "bank1", "pipehandler", "core", "cfg", "cpu",
+			    "cpu-data", "axi2af", "axi2af-lioa", "fabric", "common-cfg";
 		#phy-cells = <1>;
 		#reset-cells = <0>;
 		power-domains = <&ps_atc1_common_dp>;
 		mboxes = <&atcphy1_mbox>;
 		mbox-names = "phy-cpu";
+		/* As the USB3 bring-up was tested: every PHY write completes before the next. */
+		nonposted-mmio;
+		orientation-switch;
+
+		port {
+			atcphy1_ss: endpoint {
+				remote-endpoint = <&typec1_connector_ss>;
+			};
+		};
 	};
 
 	atcphy1_mbox: mailbox@38b148000 {
@@ -287,10 +332,10 @@
 		#iommu-cells = <1>;
 	};
 
-	usb@382280000 {
+	usb_drd0: usb@382280000 {
 		compatible = "apple,t6040-dwc3", "apple,t8103-dwc3";
-		reg = <3 0x82280000 0 0xcd00 3 0x8228cd00 0 0x3200>;
-		reg-names = "dwc3-core", "dwc3-apple";
+		reg = <3 0x82280000 0 0xcd00 3 0x8228cd00 0 0x3200 3 0x82200000 0 0x4000>;
+		reg-names = "dwc3-core", "dwc3-apple", "drd-cfg";
 		interrupt-parent = <&aic>;
 		interrupts = <0 0x653 4>;
 		dr_mode = "otg";
@@ -299,8 +344,8 @@
 		iommus = <&atc0_dart0 0 &atc0_dart1 1>;
 		power-domains = <&ps_atc0_usb>;
 		resets = <&atcphy0>;
-		phys = <&atcphy0 3>;
-		phy-names = "usb2-phy";
+		phys = <&atcphy0 3>, <&atcphy0 4>;
+		phy-names = "usb2-phy", "usb3-phy";
 
 		ports {
 			#address-cells = <1>;
@@ -317,13 +362,26 @@
 
 	atcphy0: phy@382a90000 {
 		compatible = "apple,t6040-atcphy";
-		reg = <3 0x82a90000 0 0x4000 3 0x82800000 0 0x4000 3 0x82a84000 0 0x4000>;
-		reg-names = "bank0", "bank1", "pipehandler";
+		reg = <3 0x82a90000 0 0x4000>, <3 0x82800000 0 0x4000>, <3 0x82a84000 0 0x4000>,
+		      <3 0x83000000 0 0x30000>, <3 0x83200000 0 0x4000>, <3 0x83140000 0 0x4000>,
+		      <3 0x830c0000 0 0x10000>, <3 0x80000000 0 0x8000>, <3 0x80020000 0 0x4000>,
+		      <3 0x83244000 0 0x4000>, <3 0x83250000 0 0x4000>;
+		reg-names = "bank0", "bank1", "pipehandler", "core", "cfg", "cpu",
+			    "cpu-data", "axi2af", "axi2af-lioa", "fabric", "common-cfg";
 		#phy-cells = <1>;
 		#reset-cells = <0>;
 		power-domains = <&ps_atc0_common_dp>;
 		mboxes = <&atcphy0_mbox>;
 		mbox-names = "phy-cpu";
+		/* As the USB3 bring-up was tested: every PHY write completes before the next. */
+		nonposted-mmio;
+		orientation-switch;
+
+		port {
+			atcphy0_ss: endpoint {
+				remote-endpoint = <&typec0_connector_ss>;
+			};
+		};
 	};
 
 	atcphy0_mbox: mailbox@383148000 {

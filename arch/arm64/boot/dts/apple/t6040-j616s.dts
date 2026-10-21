@@ -12,6 +12,7 @@
 /include/ "t6040-cpufreq.dtsi"
 /include/ "t6040-pmc-mcc.dtsi"
 /include/ "t6040-pmp.dtsi"
+/include/ "t6040-j616s-usb3.dtsi"
 
 / {
 	model = "Apple MacBook Pro (16-inch, M4 Pro, 2024)";
