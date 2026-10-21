@@ -808,6 +808,9 @@ static int t6040_usb3_power_on(struct phy *phy)
 	return 0;
 
 usb2_only:
+	/* power_off skips a PHY that never came up: undo here, so the next attach starts clean */
+	t6040_usb3_firmware_power_down(tphy);
+	t6040_usb3_sleep(tphy);
 	dev_warn(tphy->dev, "USB3 PHY bring-up failed (%d), USB2 only\n", ret);
 	return 0;
 }
