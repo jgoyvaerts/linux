@@ -32,14 +32,18 @@ config PHY_APPLE_ATC_KUNIT_TEST
 	  If unsure, say N.
 
 config PHY_APPLE_T6040_USB2
-	tristate "Apple T6040 Type-C USB2 PHY (experimental)"
+	tristate "Apple T6040 Type-C PHY (USB2 and USB3 host)"
 	depends on ARM64 && ARCH_APPLE
+	depends on TYPEC
+	depends on APPLE_RTKIT
 	select GENERIC_PHY
+	select APPLE_TUNABLE
 	help
-	  Build the experimental USB2-only PHY provider for the T6040
-	  generation. It implements only the host sequence decoded from the
-	  paired AppleT6040TypeCPhy driver and deliberately provides no USB3,
-	  Type-C mux, retimer, or power-role support.
+	  Build the PHY provider for the T6040 generation's Type-C ports. It
+	  implements the USB2 host sequence and the USB3 host attach decoded
+	  from the paired AppleT6040TypeCPhy driver, including the start of
+	  the PHY coprocessor, and provides no device mode, DisplayPort,
+	  USB4/Thunderbolt or retimer support.
 
 	  This driver performs no ATC-register writes at probe time. Enabling a
 	  matching device-tree node causes MMIO writes when a USB2 consumer
