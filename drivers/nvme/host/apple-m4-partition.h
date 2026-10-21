@@ -1,16 +1,26 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Local J616s qualification. Extends the read-only policy for the Linux
- * partitions. The first enclosing interval is derived from this Mac's original
- * 110 GB M4-Dev physical store, reserving its first 50 GB for the existing APFS
- * container; the second is exactly GPT slot 3 (HP, created by macOS 2026-10-18).
- * Actual partition bounds must additionally be supplied from verified GPT.
+/* Extends the read-only policy for the Linux partitions.
+ *
+ * The write ranges come from the boot loader, which checked each one against
+ * a GPT entry (exact first/last LBA and PARTUUID) before it booted Linux, and
+ * publishes them as /chosen/m4,write-lba-range. Such a range only has to stay
+ * clear of the GPT itself (LBA 0..7 in 4 KiB units).
+ *
+ * Loaders before rev 15 publish nothing; the node's lab,write-lba-range is used
+ * then, and only inside the two intervals of the owner's own disk: the first is
+ * derived from this Mac's original 110 GB M4-Dev physical store, reserving its
+ * first 50 GB for the existing APFS container; the second is exactly GPT slot 3
+ * (HP, created by macOS 2026-10-18). Drop that fallback once rev 15 is installed.
  */
-#define APPLE_M4_WRITE_RANGES_MAX 2
+#define APPLE_M4_WRITE_RANGES_MAX 4
+#define APPLE_M4_GPT_END 8ULL
 
-static inline bool apple_m4_partition_range_valid(u64 first, u64 end)
+static inline bool apple_m4_partition_range_valid(u64 first, u64 end, bool from_loader)
 {
 	if (first >= end)
 		return false;
+	if (from_loader)
+		return first >= APPLE_M4_GPT_END;
 	return (first >= 228317114ULL && end <= 242965551ULL) ||
 	       (first >= 201461644ULL && end <= 216077314ULL);
 }
@@ -21,8 +31,8 @@ static inline bool apple_m4_partition_allowed(bool admin, unsigned int opcode,
 {
 	if (apple_m4_readonly_allowed(admin, opcode, feature))
 		return true;
-	if (admin || nsid != 1 || lba_shift != 12 ||
-	    !apple_m4_partition_range_valid(first, end))
+	/* [first, end) was checked once, at probe */
+	if (admin || nsid != 1 || lba_shift != 12)
 		return false;
 	/* Only flush data written under this same policy. No discard/format. */
 	if (opcode == nvme_cmd_flush)
