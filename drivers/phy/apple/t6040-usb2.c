@@ -12,9 +12,9 @@
  * that orientation and starts the PHY coprocessor (RTKit), which signals
  * that it has tuned the PHY; set_mode then moves the controller's PIPE from
  * the dummy PHY to this one, which dwc3-apple does after the core init and
- * before xHCI starts. power_off parks the PIPE again and sends the
- * coprocessor the Power Down message, as macOS does on detach; the
- * coprocessor keeps running for the next attach.
+ * before xHCI starts. power_off parks the PIPE again, sends the coprocessor
+ * the Power Down message and idles it, and puts the PHY to sleep; the next
+ * attach resumes the coprocessor in the same RTKit session.
  * Without a plug orientation, or when the coprocessor does not come up, the
  * PIPE stays on the dummy PHY and the port keeps working at USB2.
  *
@@ -533,10 +533,12 @@ static int t6040_usb3_cpu_start(struct t6040_usb2_phy *tphy)
 }
 
 /*
- * C: runFirmware. macOS starts the coprocessor on the first attach of a boot
- * and keeps it running; on detach it sends Power Down, and the PHY is asleep
- * (UC_TNBL_DONE clear) before the next power-on. The running firmware then
- * tunes the PHY again. Then release the PHY reset (D).
+ * C: runFirmware. macOS starts the coprocessor on the first attach of a boot.
+ * On detach it sends Power Down and powers the embedded CPU down, on the next
+ * attach it powers it up again, which makes the firmware tune the PHY again
+ * (m4.23: a coprocessor left running does not). This firmware can only be
+ * brought back from RTKit idle, in its session: neither a restart nor a wake
+ * from RTKit sleep answers. Then release the PHY reset (D).
  */
 static int t6040_usb3_run_firmware(struct t6040_usb2_phy *tphy, bool swap)
 {
@@ -553,10 +555,15 @@ static int t6040_usb3_run_firmware(struct t6040_usb2_phy *tphy, bool swap)
 
 	uc_before = readl(t6040_core(tphy) + T6040_CORE_UC_CTRL);
 	if (!apple_rtkit_is_running(tphy->rtk)) {
-		how = "started";
-		ret = t6040_usb3_cpu_start(tphy);
+		/* idle since the last detach, else never run this boot */
+		how = "resumed";
+		ret = apple_rtkit_resume_idle(tphy->rtk);
+		if (ret == -EINVAL) {
+			how = "started";
+			ret = t6040_usb3_cpu_start(tphy);
+		}
 		if (ret) {
-			dev_err(tphy->dev, "USB3: PHY coprocessor start failed: %d\n", ret);
+			dev_err(tphy->dev, "USB3: the PHY coprocessor was not %s: %d\n", how, ret);
 			return ret;
 		}
 	}
@@ -575,7 +582,7 @@ static int t6040_usb3_run_firmware(struct t6040_usb2_phy *tphy, bool swap)
 	return 0;
 }
 
-/* Detach: the one message macOS sends the coprocessor. It keeps running. */
+/* Detach: the one message macOS sends the coprocessor, then RTKit idle. */
 static void t6040_usb3_firmware_power_down(struct t6040_usb2_phy *tphy)
 {
 	int ret;
@@ -592,6 +599,11 @@ static void t6040_usb3_firmware_power_down(struct t6040_usb2_phy *tphy)
 		ret = -ETIMEDOUT;
 	if (ret)
 		dev_warn(tphy->dev, "USB3: no Power Down acknowledge: %d\n", ret);
+
+	/* macOS: "power down embedded CPU" */
+	ret = apple_rtkit_idle(tphy->rtk);
+	if (ret)
+		dev_warn(tphy->dev, "USB3: PHY coprocessor idle failed: %d\n", ret);
 }
 
 /*
