@@ -544,6 +544,8 @@ static int t6040_usb3_cpu_start(struct t6040_usb2_phy *tphy)
 static int t6040_usb3_run_firmware(struct t6040_usb2_phy *tphy, bool swap)
 {
 	void __iomem *cpu = t6040_cpu(tphy);
+	const char *how = "started";
+	u32 uc_before;
 	int ret;
 
 	t6040_usb2_mask32(t6040_cfg(tphy) + T6040_CFG_SPARE0, T6040_CFG_SPARE0_USB_LN_SWAP,
@@ -552,12 +554,19 @@ static int t6040_usb3_run_firmware(struct t6040_usb2_phy *tphy, bool swap)
 	t6040_usb2_set32(cpu + T6040_CPU_IDLE_CTRL, T6040_CPU_IDLE_CTRL_EN);
 	fsleep(10);
 
+	uc_before = readl(t6040_core(tphy) + T6040_CORE_UC_CTRL);
+	/*
+	 * A running coprocessor must tune the PHY for this attach. A tuned flag still set from
+	 * the last attach says it has not: the replugs that kept it running came up at USB2
+	 * only. The firmware tunes as it starts, for the lane in CFG_S2R_USB_LN_SWAP, so it is
+	 * restarted then, as it is when it does not tune at all.
+	 */
 	if (apple_rtkit_is_running(tphy->rtk)) {
-		dev_dbg(tphy->dev, "USB3: coprocessor running, uc %#x\n",
-			readl(t6040_core(tphy) + T6040_CORE_UC_CTRL));
-		if (!t6040_usb3_wait_tuned(tphy))
+		how = "restarted";
+		if (!(uc_before & T6040_CORE_UC_CTRL_TNBL_DONE) && !t6040_usb3_wait_tuned(tphy)) {
+			how = "running";
 			goto tuned;
-		dev_info(tphy->dev, "USB3: the running PHY coprocessor did not tune the PHY, restarting it\n");
+		}
 	}
 
 	ret = t6040_usb3_cpu_start(tphy);
@@ -573,6 +582,8 @@ static int t6040_usb3_run_firmware(struct t6040_usb2_phy *tphy, bool swap)
 	}
 
 tuned:
+	dev_info(tphy->dev, "USB3 PHY tuned: lane %d, coprocessor %s, uc %#x -> %#x\n", swap, how,
+		 uc_before, readl(t6040_core(tphy) + T6040_CORE_UC_CTRL));
 	t6040_usb2_set32(t6040_cfg(tphy) + T6040_CFG_CTRL, T6040_CFG_CTRL_PHY_RESET_N);
 	fsleep(100);
 	return 0;
