@@ -1569,6 +1569,15 @@ static int macaudio_late_probe(struct snd_soc_card *card)
 		mutex_unlock(&ma->volume_lock_mutex);
 	}
 
+	/* The notifier walks the card's controls: only while the card is bound */
+	return register_pm_notifier(&ma->pm_nb);
+}
+
+static int macaudio_card_remove(struct snd_soc_card *card)
+{
+	struct macaudio_snd_data *ma = snd_soc_card_get_drvdata(card);
+
+	unregister_pm_notifier(&ma->pm_nb);
 	return 0;
 }
 
@@ -2138,6 +2147,7 @@ static int macaudio_snd_platform_probe(struct platform_device *pdev)
 	card->num_controls = ARRAY_SIZE(macaudio_controls);
 	card->probe = macaudio_probe;
 	card->late_probe = macaudio_late_probe;
+	card->remove = macaudio_card_remove;
 	card->component_chaining = true;
 	card->fully_routed = true;
 
@@ -2187,15 +2197,8 @@ static int macaudio_snd_platform_probe(struct platform_device *pdev)
 	atomic_set(&data->sw_gain_prepared_epoch, -1);
 	atomic_set(&data->sw_gain_limit_failed, 0);
 
-	ret = snd_soc_register_card(card);
-	if (ret)
-		return ret;
-
 	data->pm_nb.notifier_call = macaudio_pm_notify;
-	ret = register_pm_notifier(&data->pm_nb);
-	if (ret)
-		snd_soc_unregister_card(card);
-	return ret;
+	return snd_soc_register_card(card);
 }
 
 static void macaudio_snd_platform_remove(struct platform_device *pdev)
@@ -2206,7 +2209,6 @@ static void macaudio_snd_platform_remove(struct platform_device *pdev)
 	 * Unregister first: a back-end trigger queues lock_update_work, which
 	 * arms lock_timeout_work, and neither may run once the card is gone.
 	 */
-	unregister_pm_notifier(&ma->pm_nb);
 	snd_soc_unregister_card(&ma->card);
 	cancel_work_sync(&ma->lock_update_work);
 	cancel_delayed_work_sync(&ma->lock_timeout_work);
