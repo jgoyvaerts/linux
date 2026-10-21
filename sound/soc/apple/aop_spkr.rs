@@ -608,9 +608,16 @@ impl SenseRing {
             && unsafe { (*rt).frame_bits } as usize == SENSE_FRAME_BYTES * 8
         {
             // SAFETY: as above.
-            let (area, frames) = unsafe { ((*rt).dma_area, (*rt).buffer_size as usize) };
+            let (area, frames, period) = unsafe {
+                (
+                    (*rt).dma_area,
+                    (*rt).buffer_size as usize,
+                    (*rt).period_size as usize,
+                )
+            };
             let ring = self.cpu.load(Ordering::Acquire);
             let mut pos = self.fe_pos.load(Ordering::Relaxed);
+            let first = pos;
             let mut src = from;
             let mut left = bytes / SENSE_FRAME_BYTES;
             while left > 0 && frames > 0 {
@@ -632,8 +639,14 @@ impl SenseRing {
                 src = (src + n * SENSE_FRAME_BYTES) % SENSE_RING_BYTES;
             }
             self.fe_pos.store(pos, Ordering::Relaxed);
-            // SAFETY: a running, attached front-end, under its stream lock.
-            unsafe { bindings::snd_pcm_period_elapsed_under_stream_lock(sub) };
+            // Once per completed period, as ALSA's interrupt accounting expects: it treats a call
+            // that advanced less than a period, some jiffies after the last one, as a missed
+            // buffer wrap (and the sense front-end's rate is 0 until a playback sets it, which
+            // makes that window two jiffies), so a period longer than the ring's 10 ms overran.
+            if first / period.max(1) != pos / period.max(1) {
+                // SAFETY: a running, attached front-end, under its stream lock.
+                unsafe { bindings::snd_pcm_period_elapsed_under_stream_lock(sub) };
+            }
         }
         // SAFETY: locked above.
         unsafe { bindings::snd_pcm_stream_unlock_irqrestore(sub, flags) };
