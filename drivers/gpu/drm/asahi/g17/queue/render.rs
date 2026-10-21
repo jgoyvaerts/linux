@@ -284,6 +284,22 @@ impl Pair {
     pub(crate) fn manager(&mut self) -> &mut buffer::Manager {
         &mut self.memory.manager
     }
+    /// Owner, oldest and newest retained ordinal and group count, for diagnostics.
+    pub(crate) fn trace_groups(
+        &self,
+    ) -> (crate::g17::status::OwnerLabel, Option<(u64, u64)>, usize) {
+        let front = self.active.front();
+        let ordinals = front
+            .zip(self.active.back())
+            .map(|(front, back)| (front.ticket.ordinal, back.ticket.ordinal));
+        (
+            crate::g17::status::OwnerLabel(
+                front.map(|front| front.packet.completion.status().owner()),
+            ),
+            ordinals,
+            self.active.len(),
+        )
+    }
     pub(crate) fn in_flight(&self) -> bool {
         self.active.len() != 0 || self.replay.len() != 0
     }

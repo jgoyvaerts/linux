@@ -236,6 +236,7 @@ impl crate::g17::Shared {
                 render.grow.active = Some(request);
                 (request, slot, pair)
             };
+            let mut blocks = None;
             let prepared = match pair.as_mut() {
                 Some(pair) => {
                     let vm = pair.context().vm().clone();
@@ -243,6 +244,7 @@ impl crate::g17::Shared {
                     let slot = pair.slot();
                     let manager = pair.manager();
                     let before = manager.blocks();
+                    blocks = Some(before);
                     if vm.render_pool_tvb_blocks(slot, pool) != Some(before) {
                         Err(EFAULT)
                     } else {
@@ -277,6 +279,17 @@ impl crate::g17::Shared {
             firmware.queues.render.grow.active = None;
             self.changed.notify_all();
             if !lease.is_current() || request.halt_count != firmware.recovery.generation() {
+                if crate::debug::debug_enabled(crate::debug::DebugFlags::TVBStats) {
+                    pr_info!(
+                        "G17: parameter-buffer growth counter {} (slot {} vm {}) dropped without a reply (lease current {}, halt {} generation {})\n",
+                        request.counter,
+                        request.buffer_slot,
+                        request.vm_slot,
+                        lease.is_current(),
+                        request.halt_count,
+                        firmware.recovery.generation()
+                    );
+                }
                 continue;
             }
             let result = if let Some(error) = prepare_error {
@@ -314,6 +327,32 @@ impl crate::g17::Shared {
                     false
                 }
             };
+            if crate::debug::debug_enabled(crate::debug::DebugFlags::TVBStats) {
+                // Ties each request to the pair, owner and ordinals in flight (G-25 trace).
+                let pair = slot
+                    .and_then(|slot| firmware.queues.render.entries[slot].as_mut())
+                    .and_then(|entry| entry.pair.as_mut());
+                let (owner, ordinals, groups, after) = match pair {
+                    Some(pair) => {
+                        let (owner, ordinals, groups) = pair.trace_groups();
+                        (owner, ordinals, groups, Some(pair.manager().blocks()))
+                    }
+                    None => (crate::g17::status::OwnerLabel(None), None, 0, None),
+                };
+                pr_info!(
+                    "G17: parameter-buffer growth counter {} (slot {} vm {}): render slot {:?} of {}, ordinals {:?} ({} groups), blocks {:?} -> {:?}, reply grew {}\n",
+                    request.counter,
+                    request.buffer_slot,
+                    request.vm_slot,
+                    slot,
+                    owner,
+                    ordinals,
+                    groups,
+                    blocks,
+                    after,
+                    grew
+                );
+            }
             firmware.queues.render.grow.reply = Some((request, grew, 0));
             if !firmware.flush_tvb_reply()? {
                 return Ok(());
