@@ -21,7 +21,7 @@
  * more, but the loader's media fix-ups and Bluetooth admission run on this tree and their source is not
  * available to prove they ignore them, so they stay until the loader is checked.
  * The NVMe node is the partition-guarded driver binding (lab,write-lba-range limits writes to the Linux
- * partition).
+ * partitions: slot 6 and slot 3).
  *
  * Declared differences from the rev 10 final tree: atc2_usb_aon is apple,always-on; the memory ranges are one
  * multi-range node; no m4,* diagnostic records.
@@ -205,7 +205,9 @@
 		mboxes = <&ans_mbox>;
 		interrupts = <0 0xa17 4>;
 		interrupt-parent = <&aic>;
-		lab,write-lba-range = <0 0xd9bd800 0 0xe7b5c00>;
+		/* slot 6 (this root), slot 3 (HP) */
+		lab,write-lba-range = <0 0xd9bd800 0 0xe7b5c00>,
+				      <0 0xc020f8c 0 0xce11402>;
 	};
 };
 
