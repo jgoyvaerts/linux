@@ -430,6 +430,14 @@ static void dcpep_got_msg(struct apple_dcp *dcp, u64 message)
 	dcpep_handle_cb(dcp, ctx_id, data, length, offset);
 }
 
+/*
+ * Turning VRR on through the connector black-screened the J616s panel on 26.6 firmware (2026-10-21): the DCP
+ * accepted the VRR mode, then no swap completed. Report the panel as not VRR-capable unless asked.
+ */
+bool dcp_vrr;
+module_param_named(vrr, dcp_vrr, bool, 0444);
+MODULE_PARM_DESC(vrr, "Report the panel's VRR range so compositors can enable adaptive sync (default 0, experimental)");
+
 int dcp_get_modes(struct drm_connector *connector)
 {
 	struct apple_connector *apple_connector = to_apple_connector(connector);
@@ -476,6 +484,8 @@ int dcp_get_modes(struct drm_connector *connector)
 	if (nr_modes && apple_connector->drm_edid)
 		drm_edid_connector_update(connector, apple_connector->drm_edid);
 
+	if (!dcp_vrr)
+		max_vrr = 0;
 	drm_connector_set_vrr_capable_property(connector, max_vrr);
 	/* The panel has no EDID to carry the range; set it after the EDID update, which resets it. */
 	if (max_vrr && !connector->display_info.monitor_range.max_vfreq) {
@@ -617,7 +627,7 @@ void dcp_flush(struct drm_crtc *crtc, struct drm_atomic_state *state)
 	 * Compositors toggle VRR_ENABLED without a modeset, but DCP only applies
 	 * adaptive sync when the mode is selected again.
 	 */
-	if (crtc_state->active && !drm_atomic_crtc_needs_modeset(crtc_state) &&
+	if (dcp_vrr && crtc_state->active && !drm_atomic_crtc_needs_modeset(crtc_state) &&
 	    dcp->valid_mode && dcp->use_timestamps &&
 	    crtc_state->vrr_enabled != dcp->vrr_enabled)
 		dcp_modeset_fw(dcp, crtc_state);
