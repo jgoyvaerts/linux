@@ -9,3 +9,7 @@
 
 #define CREATE_TRACE_POINTS
 #include "trace.h"
+
+/* io.h accessors are inline; glue modules that use them (dwc3-apple) need these. */
+EXPORT_TRACEPOINT_SYMBOL_GPL(dwc3_readl);
+EXPORT_TRACEPOINT_SYMBOL_GPL(dwc3_writel);
