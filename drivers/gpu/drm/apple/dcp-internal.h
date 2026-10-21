@@ -257,8 +257,6 @@ struct apple_dcp {
 	bool use_timestamps;
 	/* IOMFBParameter 14 carried a minimum refresh rate at the last modeset: the panel runs adaptive sync */
 	bool vrr_enabled;
-	/* arch counter at the last accepted swap, for the adaptive-sync swap timestamps */
-	u64 swap_submit_timestamp;
 	struct dcp_set_digital_out_mode_req mode;
 
 	/* completion for active turning true */
