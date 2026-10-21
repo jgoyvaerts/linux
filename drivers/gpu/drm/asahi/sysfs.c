@@ -8,12 +8,14 @@
 #include <linux/errno.h>
 #include <linux/export.h>
 #include <linux/module.h>
+#include <linux/moduleparam.h>
 #include <linux/sched.h>
 #include <linux/pid.h>
 #include <linux/slab.h>
 #include <linux/stddef.h>
 #include <linux/string.h>
 #include <linux/sysfs.h>
+#include <linux/time64.h>
 #include <linux/types.h>
 
 #include "sysfs.h"
@@ -268,3 +270,29 @@ EXPORT_SYMBOL_GPL(asahi_sysfs_unregister);
 MODULE_AUTHOR("AGX driver maintainer");
 MODULE_LICENSE("Dual MIT/GPL");
 MODULE_DESCRIPTION("Asahi AGX firmware stats sysfs shim");
+
+/*
+ * G17: how long a compute command whose exact completion record is present waits for its
+ * completion stamp before it retires on the record alone (Rust: queue/compute/retirement.rs).
+ * Runtime-writable so the "stamps are merely late" test needs no rebuild. The Rust module!
+ * macro registers its parameters without sysfs permissions, so this one lives here.
+ */
+static unsigned int g17_stampless_grace_us = 1000;
+
+static int stampless_grace_set(const char *val, const struct kernel_param *kp)
+{
+	return param_set_uint_minmax(val, kp, 100, 200000);
+}
+
+static const struct kernel_param_ops stampless_grace_ops = {
+	.set = stampless_grace_set,
+	.get = param_get_uint,
+};
+module_param_cb(g17_stampless_grace_us, &stampless_grace_ops, &g17_stampless_grace_us, 0644);
+MODULE_PARM_DESC(g17_stampless_grace_us,
+		 "G17 compute completion-stamp grace in microseconds (100..200000, default 1000)");
+
+u64 asahi_g17_stampless_grace_ns(void)
+{
+	return (u64)READ_ONCE(g17_stampless_grace_us) * NSEC_PER_USEC;
+}

@@ -812,7 +812,7 @@ impl Queue {
                 let stamp = self.graph.stamp()?;
                 let record_aged = front
                     .observed_at
-                    .is_some_and(|at| now_ns().saturating_sub(at) >= retirement::STAMP_GRACE_NS);
+                    .is_some_and(|at| now_ns().saturating_sub(at) >= retirement::stamp_grace_ns());
                 let timestamps = retirement::poll(
                     &ticket,
                     front.observed,

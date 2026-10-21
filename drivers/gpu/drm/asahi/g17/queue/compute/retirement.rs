@@ -68,8 +68,15 @@ pub(crate) enum Recordless {
 /// How long a command whose exact completion record is present waits for its completion stamp
 /// before it retires on the record alone. The firmware stores the stamp after the cache
 /// maintenance that follows the record; it occasionally never stores it for a command, most
-/// visibly while a render of the same VM is running.
-pub(crate) const STAMP_GRACE_NS: u64 = 1_000_000;
+/// visibly while a render of the same VM is running. Module parameter
+/// `g17_stampless_grace_us` (sysfs.c): default 1 ms, 100 us to 200 ms, writable at runtime.
+pub(crate) fn stamp_grace_ns() -> u64 {
+    extern "C" {
+        fn asahi_g17_stampless_grace_ns() -> u64;
+    }
+    // SAFETY: the C helper only reads one module-lifetime word with READ_ONCE.
+    unsafe { asahi_g17_stampless_grace_ns() }
+}
 
 static STAMPLESS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
@@ -90,7 +97,7 @@ pub(crate) fn note_stampless(qid: u8, kick: u64) {
 /// A zero-duration record fails before visibility polling. It proves execution did not occur;
 /// ownership still requires a separate retirement witness before mappings can be released.
 /// The command is complete when its stamp covers it, or when its exact completion record has
-/// been present for [`STAMP_GRACE_NS`] (`record_aged`); in both cases its items must be consumed.
+/// been present for [`stamp_grace_ns`] (`record_aged`); in both cases its items must be consumed.
 pub(crate) fn poll(
     ticket: &Ticket,
     observed: Option<Observation>,

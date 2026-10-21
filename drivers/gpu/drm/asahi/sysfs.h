@@ -3,6 +3,8 @@
 #ifndef _ASAHI_SYSFS_H
 #define _ASAHI_SYSFS_H
 
+#include <linux/types.h>
+
 struct device;
 
 int asahi_sysfs_register(struct device *dev, const void *snapshot,
@@ -11,5 +13,6 @@ void asahi_current_owner(char *comm, int *pid);
 int asahi_sysfs_register_idle(struct device *dev, u32 *word);
 int asahi_sysfs_register_raw(struct device *dev, const void *raw, void **handle);
 void asahi_sysfs_unregister(struct device *dev, void *handle);
+u64 asahi_g17_stampless_grace_ns(void);
 
 #endif /* _ASAHI_SYSFS_H */
