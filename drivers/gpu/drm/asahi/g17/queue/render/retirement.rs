@@ -241,12 +241,32 @@ pub(crate) fn abandoned(
     recovery_state: u32,
     accept_executed: bool,
 ) -> Result<bool> {
+    Ok(abandonment_gap(ticket, snapshot, stamps, recovery_state, accept_executed)?.is_none())
+}
+
+/// The first condition of abandoned() that does not hold, in its evaluation order, or None
+/// when the witness holds. An error is a cursor window the snapshot does not fit.
+pub(crate) fn abandonment_gap(
+    ticket: &Ticket,
+    snapshot: Snapshot,
+    stamps: [u32; 2],
+    recovery_state: u32,
+    accept_executed: bool,
+) -> Result<Option<&'static str>> {
     let completion = observe(ticket, snapshot)?;
-    if !completion.retired || !snapshot.job_list_empty || (snapshot.executed() && !accept_executed)
-    {
-        return Ok(false);
-    }
-    Ok(visible(ticket, stamps)? && recovery_state == 0)
+    Ok(if !completion.retired {
+        Some("not retired")
+    } else if !snapshot.job_list_empty {
+        Some("job list not empty")
+    } else if snapshot.executed() && !accept_executed {
+        Some("executed")
+    } else if !visible(ticket, stamps)? {
+        Some("stamps behind")
+    } else if recovery_state != 0 {
+        Some("recovery in progress")
+    } else {
+        None
+    })
 }
 
 /// Pair-wide proof, checked before and after servicing free-list events and

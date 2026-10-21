@@ -220,6 +220,7 @@ pub(super) fn service<H: Host>(
     }
     host.recovery_mut().pending = None;
 
+    let firmware_cancelled = entries.cancelled;
     let (cancelled, blame) = classify(host, entries, request.blamed, &mut sources);
     if let Some(qid) = request.blamed {
         pr_warn!(
@@ -232,6 +233,13 @@ pub(super) fn service<H: Host>(
             host.settle_blamed_render(qid, EIO);
         }
     }
+    // Shows which innocent queues the post-recovery settlement covers; the others are left to
+    // worker polling and their render timeout (G-02).
+    pr_info!(
+        "G17: recovery settles cancelled queues {:#x} (firmware cancelled {:#x})\n",
+        cancelled,
+        firmware_cancelled
+    );
     if cancelled != 0 {
         host.settle_cancelled_renders(cancelled);
     }

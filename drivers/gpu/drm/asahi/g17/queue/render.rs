@@ -1341,6 +1341,75 @@ impl Pair {
         Ok(true)
     }
 
+    /// Names, for each retained group, the first condition that kept the ordered replay from
+    /// taking the pair at a render timeout or post-recovery settlement, with the raw evidence
+    /// (G-02). Read-only.
+    fn log_unreplayed(&self, host: &mut impl Host) {
+        use core::sync::atomic::{AtomicU32, Ordering};
+        use retirement::Memory;
+        static DUMPS: AtomicU32 = AtomicU32::new(0);
+        // shortcut: only the first 16 dumps per boot; enough for a guarded test boot (at most 3 recoveries).
+        if self.active.len() == 0 || DUMPS.fetch_add(1, Ordering::Relaxed) >= 16 {
+            return;
+        }
+        let mut observer = Observer {
+            memory: &self.memory,
+            qids: self.qids(),
+            host,
+        };
+        let state = observer.host.epoch().map(|(_, state)| state);
+        let stamps = observer.stamps();
+        pr_warn!(
+            "G17: render slot {} (qids {:?}) of {}: {} groups not replayed (quarantined {}, parked replays {}, recovery state {:?}, stamps {:?})\n",
+            self.slot,
+            self.qids(),
+            crate::g17::status::OwnerLabel(
+                self.active.front().map(|a| a.packet.completion.status().owner())
+            ),
+            self.active.len(),
+            self.quarantined,
+            self.replay.len(),
+            state,
+            stamps
+        );
+        for (index, active) in self.active.iter().enumerate() {
+            let completion = &active.packet.completion;
+            core::sync::atomic::fence(Ordering::Acquire);
+            let snapshot = observer.snapshot(active.ticket.ordinal);
+            let gap = if !active.outer_published {
+                Ok(Some("not published"))
+            } else if active.failed {
+                Ok(Some("failed"))
+            } else if completion.guilty() {
+                Ok(Some("guilty"))
+            } else {
+                match (snapshot, stamps, state) {
+                    (Ok(snapshot), Ok(stamps), Ok(state)) => {
+                        retirement::abandonment_gap(&active.ticket, snapshot, stamps, state, false)
+                    }
+                    (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => Err(error),
+                }
+            };
+            let (witness, error) = match gap {
+                Ok(Some(field)) => (field, None),
+                Ok(None) => ("holds", None),
+                Err(error) => ("unreadable", Some(error)),
+            };
+            pr_warn!(
+                "G17:   group {} ordinal {} spared {} replays {}: witness {} {:?} (snapshot {:?}, windows {:?}, previous {:?})\n",
+                index,
+                active.ticket.ordinal,
+                completion.spared(),
+                completion.replay_count(),
+                witness,
+                error,
+                snapshot,
+                active.ticket.windows,
+                active.ticket.previous
+            );
+        }
+    }
+
     /// The pending replay cannot proceed (closed owner, cancellation or a
     /// publication refusal). Its successors cannot run without it and fail with
     /// it. ECANCELED leaves the VM usable; any other error is the ordinary
@@ -1476,6 +1545,7 @@ impl Pair {
         if self.replay_abandoned(host, defer, false)? {
             return Ok(true);
         }
+        self.log_unreplayed(host);
         // Fallback when a live or exhausted group prevents an ordered replay: a spared (innocent) front group the firmware retired without executing during another
         // VM's recovery is retired on its own even with successors queued: on 25G83 the firmware
         // drops such groups without running them, and quarantining the pair instead left the
