@@ -35,6 +35,7 @@ extern bool dcp_swap_stats;
 /* M4 (R39 prep): page-flip event policy (bit0 raw completion time, bit1 running sequence) and fake swap timestamps */
 extern unsigned int dcp_flip_event_mode;
 extern bool dcp_swap_timestamps;
+extern bool dcp_vrr;
 extern unsigned int dcp_backlight_default_nits;
 extern unsigned long dcp_clk_hz;
 
