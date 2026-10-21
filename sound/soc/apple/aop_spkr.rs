@@ -1076,6 +1076,9 @@ fn pcm_open_dmaengine(
     if hw.formats == 0 {
         return EINVAL.to_errno();
     }
+    // The slots line up only when a prepare restarts the serializer (`Service::run`): a paused
+    // DMA restarted mid-frame by resume or pause-release would shift them, so take neither.
+    hw.info &= !(bindings::SNDRV_PCM_INFO_PAUSE | bindings::SNDRV_PCM_INFO_RESUME);
     // SAFETY: the runtime exists for the op; on success the dmaengine runtime owns `chan`.
     unsafe {
         (*(*substream).runtime).hw = hw;
