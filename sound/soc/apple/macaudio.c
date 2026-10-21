@@ -90,11 +90,6 @@ struct macaudio_platform_cfg {
 	int amp_gain;
 	int safe_vol;
 	/*
-	 * The highest unlocked speaker volume in dB (TAS5770/SN012776), 0 for
-	 * 0 dB.
-	 */
-	int max_vol;
-	/*
 	 * The speaker codec's output widget, "OUT" (the TAS and SSM
 	 * amplifiers) unless set.
 	 */
@@ -224,8 +219,8 @@ module_param(please_blow_up_my_speakers, int, 0644);
 MODULE_PARM_DESC(please_blow_up_my_speakers, "Allow unsafe or untested operating configurations");
 
 /*
- * While the speaker volumes are unlocked, their maximum is the machine's
- * max_vol, or this parameter if it is lower (a test ceiling for bring-up).
+ * While the speaker volumes are unlocked, their maximum is 0 dB, or this
+ * parameter if it is lower (a test ceiling for bring-up).
  * speakersafetyd writes each volume to 0 dB minus its reduction through the
  * control's dB range, so its writes clamp to the ceiling. A change applies at
  * the next unlock: an owner that already holds the lock keeps its limit until
@@ -233,11 +228,11 @@ MODULE_PARM_DESC(please_blow_up_my_speakers, "Allow unsafe or untested operating
  */
 static int speaker_ceiling_db;
 module_param(speaker_ceiling_db, int, 0644);
-MODULE_PARM_DESC(speaker_ceiling_db, "Lower the unlocked speaker volume ceiling to this many dB, -100..0 (0: the machine's own; TAS5770/SN012776)");
+MODULE_PARM_DESC(speaker_ceiling_db, "Lower the unlocked speaker volume ceiling to this many dB, -100..0 (0: 0 dB; TAS5770/SN012776)");
 
 static int macaudio_ceiling_db(struct macaudio_snd_data *ma)
 {
-	return clamp(min(READ_ONCE(speaker_ceiling_db), ma->cfg->max_vol), -100, 0);
+	return clamp(min(READ_ONCE(speaker_ceiling_db), 0), -100, 0);
 }
 
 SND_SOC_DAILINK_DEFS(primary,
