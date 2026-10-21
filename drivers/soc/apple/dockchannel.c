@@ -12,7 +12,6 @@
 #include <linux/irqchip/chained_irq.h>
 #include <linux/irqdomain.h>
 #include <linux/platform_device.h>
-#include <linux/pm_wakeirq.h>
 #include <linux/pm_wakeup.h>
 #include <linux/soc/apple/dockchannel.h>
 #include <linux/unaligned.h>
@@ -255,8 +254,13 @@ struct dockchannel *dockchannel_init(struct platform_device *pdev)
 	if (ret)
 		return ERR_PTR(dev_err_probe(dev, ret, "Failed to request TX IRQ"));
 
+	/*
+	 * Received data keeps being handled through system sleep, so that the
+	 * client can tell input that should wake the system from other traffic.
+	 */
 	ret = devm_request_threaded_irq(dev, dockchannel->rx_irq, dockchannel_rx_irq,
-					dockchannel_rx_irq_thread, IRQF_NO_AUTOEN,
+					dockchannel_rx_irq_thread,
+					IRQF_NO_AUTOEN | IRQF_NO_SUSPEND,
 					"apple-dockchannel-rx", dockchannel);
 	if (ret)
 		return ERR_PTR(dev_err_probe(dev, ret, "Failed to request RX IRQ"));
@@ -266,26 +270,21 @@ struct dockchannel *dockchannel_init(struct platform_device *pdev)
 EXPORT_SYMBOL(dockchannel_init);
 
 /**
- * dockchannel_init_wakeup() - Let data from the remote side wake the system
+ * dockchannel_init_wakeup() - Make the FIFO's device a wakeup source
  * @dockchannel: FIFO returned by dockchannel_init()
  *
- * Make the FIFO's device a wakeup source, enabled by default, with the
- * receive interrupt as its wake interrupt. While wakeup is enabled for the
- * device, the PM core keeps that interrupt armed across system sleep, and
- * data that arrives then wakes the system. The data itself is read after
- * resume, as usual.
+ * Make the FIFO's device a wakeup source, enabled by default. The receive
+ * interrupt is not a wake interrupt: it stays enabled through system sleep
+ * and the client keeps receiving data, so that any traffic does not end a
+ * suspend-to-idle. The client decides which data wakes the system and
+ * reports it with pm_wakeup_hard_event() on the FIFO's device, which does
+ * nothing while wakeup is disabled for the device.
  *
  * Return: 0 on success, or a negative error code.
  */
 int dockchannel_init_wakeup(struct dockchannel *dockchannel)
 {
-	int ret;
-
-	ret = devm_device_init_wakeup(dockchannel->dev);
-	if (ret)
-		return ret;
-
-	return devm_pm_set_wake_irq(dockchannel->dev, dockchannel->rx_irq);
+	return devm_device_init_wakeup(dockchannel->dev);
 }
 EXPORT_SYMBOL(dockchannel_init_wakeup);
 
