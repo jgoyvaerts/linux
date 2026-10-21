@@ -274,3 +274,35 @@
 &pinctrl_nub {
 	status = "disabled";
 };
+
+/*
+ * Not for upstream: private compatibility entries for the M4 boot loader. The
+ * old apple,t6040-* names stay as second entries on the nodes the loader may
+ * find by compatible. Its PMP publication looks up "apple,t6040-pmp-v2"; its
+ * display fix-ups edit the DCP, its mailbox and DARTs, and their source is not
+ * available to prove they match by path only; the requested AOP fix-up names
+ * the AOP by "apple,t6040-aop". Drop an entry once the loader no longer needs it.
+ */
+&pmp {
+	compatible = "apple,t6041-pmp-v2", "apple,t6040-pmp-v2", "apple,t6000-pmp-v2";
+};
+
+&{/aop@510600000} {
+	compatible = "apple,t6041-aop", "apple,t6040-aop";
+};
+
+&dcp {
+	compatible = "apple,t6041-dcp", "apple,t6040-dcp", "apple,dcp";
+};
+
+&dcp_mbox {
+	compatible = "apple,t6041-asc-mailbox", "apple,t6040-asc-mailbox", "apple,asc-mailbox-v4";
+};
+
+&dcp_dart {
+	compatible = "apple,t6041-dart", "apple,t6040-dart", "apple,t8110-dart";
+};
+
+&disp0_dart {
+	compatible = "apple,t6041-dart", "apple,t6040-dart", "apple,t8110-dart";
+};
