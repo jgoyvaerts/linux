@@ -563,7 +563,9 @@ static int t6040_usb3_run_firmware(struct t6040_usb2_phy *tphy, bool swap)
 			ret = t6040_usb3_cpu_start(tphy);
 		}
 		if (ret) {
-			dev_err(tphy->dev, "USB3: the PHY coprocessor was not %s: %d\n", how, ret);
+			dev_err(tphy->dev, "USB3: the PHY coprocessor was not %s: %d (run %#x, idle %#x, status %#x)\n",
+				how, ret, readl(cpu + T6040_CPU_RUN),
+				readl(cpu + T6040_CPU_IDLE_CTRL), readl(cpu + T6040_CPU_STATUS));
 			return ret;
 		}
 	}
