@@ -963,6 +963,17 @@ static int t6040_usb3_probe(struct t6040_usb2_phy *tphy, struct platform_device 
 	if (!of_property_present(dev->of_node, "orientation-switch"))
 		return 0;
 
+	/*
+	 * Registered first: tipd waits for the switch the DT names, so the port
+	 * keeps USB2, roles and PD even if a USB3 piece below is missing.
+	 */
+	sw = typec_switch_register(dev, &sw_desc);
+	if (IS_ERR(sw))
+		return PTR_ERR(sw);
+	ret = devm_add_action_or_reset(dev, t6040_usb3_switch_unregister, sw);
+	if (ret)
+		return ret;
+
 	for (i = 0; i < T6040_USB3_NR_REGIONS; i++) {
 		res[i] = platform_get_resource_byname(pdev, IORESOURCE_MEM,
 						      t6040_usb3_region_names[i]);
@@ -1011,13 +1022,6 @@ static int t6040_usb3_probe(struct t6040_usb2_phy *tphy, struct platform_device 
 		dev_warn(dev, "USB3: no PHY coprocessor mailbox (%d), USB2 only\n", ret);
 		return 0;
 	}
-
-	sw = typec_switch_register(dev, &sw_desc);
-	if (IS_ERR(sw))
-		return PTR_ERR(sw);
-	ret = devm_add_action_or_reset(dev, t6040_usb3_switch_unregister, sw);
-	if (ret)
-		return ret;
 
 	tphy->usb3_ok = true;
 	return 0;
