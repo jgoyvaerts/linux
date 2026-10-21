@@ -15,6 +15,7 @@
 #include <linux/mfd/macsmc.h>
 #include <linux/mutex.h>
 #include <linux/platform_device.h>
+#include <linux/pm_wakeup.h>
 #include <linux/slab.h>
 #include <linux/sizes.h>
 #include <linux/soc/apple/dockchannel.h>
@@ -114,6 +115,10 @@ struct dchid_gpio_ack {
 	u8 cmd[];
 } __packed;
 
+/* Multi-touch report 0x75: byte 23 bit 0 is the firmware's button state. */
+#define MT_REPORT_ID		0x75
+#define MT_REPORT_BUTTON	23
+
 #define STM_REPORT_ID		0x10
 #define STM_REPORT_SERIAL	0x11
 #define STM_REPORT_KEYBTYPE	0x14
@@ -195,6 +200,8 @@ struct dockchannel_hid {
 	struct apple_smc *afe_smc;
 	bool stopping;
 	bool inherited_mtp;
+	/* Between the system sleep suspend and resume callbacks */
+	bool suspended;
 
 	/* Held from probe on when the multi-touch interface uses power method 2 */
 	struct gpio_desc *afe_reset;
@@ -843,6 +850,9 @@ static int dchid_raw_request(struct hid_device *hdev,
 
 	if (READ_ONCE(iface->dchid->stopping))
 		return -ESHUTDOWN;
+	/* Fail fast: an answer that arrives in suspend-to-idle is not waited for. */
+	if (READ_ONCE(iface->dchid->suspended))
+		return -EBUSY;
 
 	switch (reqtype) {
 	case HID_REQ_GET_REPORT:
@@ -1306,6 +1316,25 @@ static void dchid_handle_ack(struct dchid_iface *iface, struct dchid_hdr *hdr, v
 	complete(&iface->out_complete);
 }
 
+/*
+ * Whether a report should wake the system: any keyboard report, and a
+ * multi-touch report only while the trackpad is clicked. Touches, the
+ * accelerometer and the other interfaces do not wake it.
+ */
+static bool dchid_wake_report(struct dchid_iface *iface, void *data)
+{
+	struct dchid_subhdr *shdr = data;
+	u8 *payload = data + sizeof(*shdr);
+
+	if (FIELD_GET(FLAGS_GROUP, shdr->flags) != HID_INPUT_REPORT)
+		return false;
+	if (!strcmp(iface->name, "keyboard"))
+		return shdr->length > 0;
+	return !strcmp(iface->name, "multi-touch") &&
+	       shdr->length > MT_REPORT_BUTTON && payload[0] == MT_REPORT_ID &&
+	       (payload[MT_REPORT_BUTTON] & 1);
+}
+
 /* Return the complete frame size, or reject a lost framing boundary. */
 static int dchid_frame_size(const struct dchid_hdr *hdr)
 {
@@ -1351,6 +1380,12 @@ static int dchid_dispatch(struct dockchannel_hid *dchid, struct dchid_hdr *hdr,
 		dchid_handle_ack(iface, hdr, data);
 		return 0;
 	case DCHID_CHANNEL_REPORT:
+		/* pm_wakeup_hard_event() does nothing while wakeup is disabled. */
+		if (READ_ONCE(dchid->suspended) &&
+		    hdr->length >= sizeof(struct dchid_subhdr) +
+				   ((struct dchid_subhdr *)data)->length &&
+		    dchid_wake_report(iface, data))
+			pm_wakeup_hard_event(dchid->dev);
 		break;
 	default:
 		dev_warn(dchid->dev, "Unknown channel 0x%x, treating as report...\n",
@@ -1648,10 +1683,11 @@ static int dockchannel_hid_probe(struct platform_device *pdev)
 	}
 
 	/*
-	 * Keyboard and trackpad input wakes the system. The coprocessor keeps
-	 * running across suspend-to-idle and keeps sending reports through
-	 * the FIFO, so its receive interrupt is the wake interrupt. Without
-	 * it the machine still works, it just cannot be woken from here.
+	 * A keypress or a trackpad click wakes the system. The coprocessor
+	 * keeps running across suspend-to-idle and keeps sending through the
+	 * FIFO, so received frames are classified (dchid_wake_report()) and
+	 * other traffic does not wake it. Without a wakeup source the machine
+	 * still works, it just cannot be woken from here.
 	 */
 	ret = dockchannel_init_wakeup(dchid->dc);
 	if (ret)
@@ -1711,6 +1747,31 @@ static void dockchannel_hid_remove(struct platform_device *pdev)
 	}
 }
 
+/*
+ * The coprocessor keeps running across suspend-to-idle: there is no known
+ * sleep command for it, and its RTKit session and the trackpad AFE power
+ * sequence are not restartable. Only mark the sleep window, in which input
+ * may wake the system and requests from the HID core fail fast.
+ */
+static int dockchannel_hid_suspend(struct device *dev)
+{
+	struct dockchannel_hid *dchid = dev_get_drvdata(dev);
+
+	WRITE_ONCE(dchid->suspended, true);
+	return 0;
+}
+
+static int dockchannel_hid_resume(struct device *dev)
+{
+	struct dockchannel_hid *dchid = dev_get_drvdata(dev);
+
+	WRITE_ONCE(dchid->suspended, false);
+	return 0;
+}
+
+static DEFINE_SIMPLE_DEV_PM_OPS(dockchannel_hid_pm_ops, dockchannel_hid_suspend,
+				dockchannel_hid_resume);
+
 static const struct of_device_id dockchannel_hid_of_match[] = {
 	{ .compatible = "apple,dockchannel-hid" },
 	{},
@@ -1724,6 +1785,7 @@ static struct platform_driver dockchannel_hid_driver = {
 		.of_match_table = dockchannel_hid_of_match,
 		/* The coprocessor announces its interfaces only once per boot. */
 		.suppress_bind_attrs = true,
+		.pm = pm_sleep_ptr(&dockchannel_hid_pm_ops),
 	},
 	.probe = dockchannel_hid_probe,
 	.remove = dockchannel_hid_remove,
