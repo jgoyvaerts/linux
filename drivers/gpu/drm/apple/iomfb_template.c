@@ -2199,7 +2199,7 @@ int DCP_FW_NAME(iomfb_modeset)(struct apple_dcp *dcp,
 	/* Keep track of suspected vrr modes */
 	dcp->use_timestamps = mode->vrr;
 	dcp->swap_submit_timestamp = 0;
-	vrr = mode->vrr && crtc_state->vrr_enabled;
+	vrr = dcp_vrr && mode->vrr && crtc_state->vrr_enabled;
 	/* M4 (R51): frame period for the flip_event_mode vblank clock; a new mode restarts the sequence epoch */
 	if (crtc_state->mode.clock && crtc_state->mode.htotal && crtc_state->mode.vtotal)
 		dcp->m4_frame_ns = div64_u64(1000000000ULL * crtc_state->mode.htotal * crtc_state->mode.vtotal,
