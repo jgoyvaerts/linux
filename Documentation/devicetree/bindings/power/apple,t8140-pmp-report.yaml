@@ -20,7 +20,7 @@ description: |
 properties:
   compatible:
     enum:
-      - apple,t6040-pmp-v2-report
+      - apple,t6041-pmp-v2-report
       - apple,t8140-pmp-v2-report
 
   reg:
@@ -49,7 +49,7 @@ patternProperties:
       compatible:
         items:
           - enum:
-              - apple,t6040-pmp-v2-report-entry
+              - apple,t6041-pmp-v2-report-entry
               - apple,t8140-pmp-v2-report-entry
           - const: apple,t6000-pmp-v2-report-entry
 

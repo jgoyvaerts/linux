@@ -25,7 +25,7 @@ description: |
 properties:
   compatible:
     enum:
-      - apple,t6040-pmc
+      - apple,t6041-pmc
       - apple,t8140-pmc
 
   reg:
@@ -113,7 +113,7 @@ patternProperties:
     properties:
       compatible:
         enum:
-          - apple,t6040-clpc
+          - apple,t6041-clpc
           - apple,t8140-clpc
 
       reg:

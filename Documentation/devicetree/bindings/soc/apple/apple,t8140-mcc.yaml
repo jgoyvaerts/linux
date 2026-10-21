@@ -20,7 +20,7 @@ properties:
     oneOf:
       - const: apple,t8140-mcc
       - items:
-          - const: apple,t6040-mcc
+          - const: apple,t6041-mcc
           - const: apple,t8140-mcc
 
   reg:

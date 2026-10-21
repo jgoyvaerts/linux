@@ -42,7 +42,7 @@ properties:
       - const: apple,t8140-admac
       - const: apple,t8132-admac
       - items:
-          - const: apple,t6040-admac
+          - const: apple,t6041-admac
           - const: apple,t8132-admac
 
   reg:
