@@ -12,8 +12,9 @@
  * that orientation and starts the PHY coprocessor (RTKit), which signals
  * that it has tuned the PHY; set_mode then moves the controller's PIPE from
  * the dummy PHY to this one, which dwc3-apple does after the core init and
- * before xHCI starts. power_off parks the PIPE again and puts the
- * coprocessor to sleep with the Power Down message, as macOS does on detach.
+ * before xHCI starts. power_off parks the PIPE again and sends the
+ * coprocessor the Power Down message, as macOS does on detach; the
+ * coprocessor keeps running for the next attach.
  * Without a plug orientation, or when the coprocessor does not come up, the
  * PIPE stays on the dummy PHY and the port keeps working at USB2.
  *
@@ -212,7 +213,6 @@ struct t6040_usb2_phy {
 	enum typec_orientation orientation;
 	bool usb3_up;		/* tuned by the coprocessor this power cycle */
 	bool pipe_switched;	/* the controller's PIPE runs on this PHY */
-	bool cpu_booted;	/* the coprocessor ran under this driver this boot */
 };
 
 static inline void t6040_usb2_mask32(void __iomem *reg, u32 mask, u32 set)
@@ -505,17 +505,45 @@ static void t6040_usb3_lanes(struct t6040_usb2_phy *tphy, bool swap)
 	}
 }
 
+static int t6040_usb3_wait_tuned(struct t6040_usb2_phy *tphy)
+{
+	u32 uc;
+
+	return readl_poll_timeout(t6040_core(tphy) + T6040_CORE_UC_CTRL, uc,
+				  uc & T6040_CORE_UC_CTRL_TNBL_DONE, 1000, USEC_PER_SEC);
+}
+
 /*
- * C: runFirmware. A stopped coprocessor is run and RTKit booted; one this
- * driver put to sleep on the last detach is woken. A coprocessor that runs
- * without this driver having booted it is not taken over. Then wait for the
- * coprocessor to have tuned the PHY and release the PHY reset (D).
+ * Run the coprocessor and boot RTKit. A CPU that already runs without a live
+ * RTKit session (an earlier driver instance, a crash) gets AppleMxWrap's stop
+ * request first and RTKit a clean state.
+ */
+static int t6040_usb3_cpu_start(struct t6040_usb2_phy *tphy)
+{
+	void __iomem *cpu = t6040_cpu(tphy);
+	int ret;
+
+	if (readl(cpu + T6040_CPU_RUN) & T6040_CPU_RUN_START) {
+		writel(~T6040_CPU_RUN_START, cpu + T6040_CPU_RUN);
+		usleep_range(1000, 2000);
+		ret = apple_rtkit_reinit(tphy->rtk);
+		if (ret)
+			return ret;
+	}
+	writel(T6040_CPU_RUN_START, cpu + T6040_CPU_RUN);
+	usleep_range(5000, 6000);
+	return apple_rtkit_boot(tphy->rtk);
+}
+
+/*
+ * C: runFirmware. macOS starts the coprocessor on the first attach of a boot
+ * and keeps it running: on detach it only sends Power Down, and on the next
+ * attach the running firmware tunes the PHY again. A coprocessor that does
+ * not (or no longer runs) is started afresh. Then release the PHY reset (D).
  */
 static int t6040_usb3_run_firmware(struct t6040_usb2_phy *tphy, bool swap)
 {
 	void __iomem *cpu = t6040_cpu(tphy);
-	bool running;
-	u32 uc;
 	int ret;
 
 	t6040_usb2_mask32(t6040_cfg(tphy) + T6040_CFG_SPARE0, T6040_CFG_SPARE0_USB_LN_SWAP,
@@ -524,39 +552,34 @@ static int t6040_usb3_run_firmware(struct t6040_usb2_phy *tphy, bool swap)
 	t6040_usb2_set32(cpu + T6040_CPU_IDLE_CTRL, T6040_CPU_IDLE_CTRL_EN);
 	fsleep(10);
 
-	running = readl(cpu + T6040_CPU_RUN) & T6040_CPU_RUN_START;
-	if (running && !tphy->cpu_booted) {
-		dev_err(tphy->dev, "USB3: the PHY coprocessor was started outside this driver\n");
-		return -EBUSY;
+	if (apple_rtkit_is_running(tphy->rtk)) {
+		dev_dbg(tphy->dev, "USB3: coprocessor running, uc %#x\n",
+			readl(t6040_core(tphy) + T6040_CORE_UC_CTRL));
+		if (!t6040_usb3_wait_tuned(tphy))
+			goto tuned;
+		dev_info(tphy->dev, "USB3: the running PHY coprocessor did not tune the PHY, restarting it\n");
 	}
-	dev_dbg(tphy->dev, "USB3: %s the PHY coprocessor\n", running ? "waking" : "starting");
-	if (running) {
-		ret = apple_rtkit_wake(tphy->rtk);
-	} else {
-		writel(T6040_CPU_RUN_START, cpu + T6040_CPU_RUN);
-		usleep_range(5000, 6000);
-		tphy->cpu_booted = true;
-		ret = apple_rtkit_boot(tphy->rtk);
-	}
+
+	ret = t6040_usb3_cpu_start(tphy);
 	if (ret) {
-		dev_err(tphy->dev, "USB3: PHY coprocessor %s failed: %d\n",
-			running ? "wake-up" : "start", ret);
+		dev_err(tphy->dev, "USB3: PHY coprocessor start failed: %d\n", ret);
+		return ret;
+	}
+	ret = t6040_usb3_wait_tuned(tphy);
+	if (ret) {
+		dev_err(tphy->dev, "USB3: the PHY coprocessor did not tune the PHY (%#x)\n",
+			readl(t6040_core(tphy) + T6040_CORE_UC_CTRL));
 		return ret;
 	}
 
-	ret = readl_poll_timeout(t6040_core(tphy) + T6040_CORE_UC_CTRL, uc,
-				 uc & T6040_CORE_UC_CTRL_TNBL_DONE, 1000, USEC_PER_SEC);
-	if (ret) {
-		dev_err(tphy->dev, "USB3: the PHY coprocessor did not tune the PHY (%#x)\n", uc);
-		return ret;
-	}
-
+tuned:
 	t6040_usb2_set32(t6040_cfg(tphy) + T6040_CFG_CTRL, T6040_CFG_CTRL_PHY_RESET_N);
 	fsleep(100);
 	return 0;
 }
 
-static void t6040_usb3_sleep_firmware(struct t6040_usb2_phy *tphy)
+/* Detach: the one message macOS sends the coprocessor. It keeps running. */
+static void t6040_usb3_firmware_power_down(struct t6040_usb2_phy *tphy)
 {
 	int ret;
 
@@ -572,10 +595,8 @@ static void t6040_usb3_sleep_firmware(struct t6040_usb2_phy *tphy)
 		ret = -ETIMEDOUT;
 	if (ret)
 		dev_warn(tphy->dev, "USB3: no Power Down acknowledge: %d\n", ret);
-
-	ret = apple_rtkit_shutdown(tphy->rtk);
-	if (ret)
-		dev_warn(tphy->dev, "USB3: PHY coprocessor sleep failed: %d\n", ret);
+	dev_dbg(tphy->dev, "USB3: after Power Down, uc %#x\n",
+		readl(t6040_core(tphy) + T6040_CORE_UC_CTRL));
 }
 
 /* Sets PHY_STATUS(_2) handshake bits in the BIST block and waits as macOS does, without failing. */
@@ -758,8 +779,6 @@ static int t6040_usb3_power_on(struct phy *phy)
 	return 0;
 
 usb2_only:
-	/* A coprocessor left running could not be woken on the next attach. */
-	t6040_usb3_sleep_firmware(tphy);
 	dev_warn(tphy->dev, "USB3 PHY bring-up failed (%d), USB2 only\n", ret);
 	return 0;
 }
@@ -780,7 +799,7 @@ static int t6040_usb3_power_off(struct phy *phy)
 	 * drops. Upgrade once the shutdown masks are known.
 	 */
 	if (tphy->usb3_up) {
-		t6040_usb3_sleep_firmware(tphy);
+		t6040_usb3_firmware_power_down(tphy);
 		tphy->usb3_up = false;
 	}
 	return 0;
