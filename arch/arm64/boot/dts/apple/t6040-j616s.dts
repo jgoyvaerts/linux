@@ -210,6 +210,25 @@
 	};
 };
 
+/*
+ * Headphone jack: the CS42L84 at 0x4b on i2c2 (ADT /arm-io/i2c2/audio-codec-output@4B). Its reset line is
+ * nub GPIO pin 58, driven high to run the codec (the driver's "reset" is an enable, as on the J514/J516); its
+ * interrupt is AP pin 106, level low. The AOP firmware runs the jack's stream on MCA cluster 2 (aop_audio's
+ * "jack" back-end, card sound-jack below). Off for now: i2c2 and the nub GPIO bank stay disabled, and so do
+ * the codec and its card until the jack has had an attended test.
+ */
+&i2c2 {
+	jack_codec: codec@4b {
+		compatible = "cirrus,cs42l84";
+		reg = <0x4b>;
+		reset-gpios = <&pinctrl_nub 58 0>;
+		interrupts-extended = <&pinctrl 106 8>;
+		#sound-dai-cells = <0>;
+		sound-name-prefix = "Jack";
+		status = "disabled";
+	};
+};
+
 /* The Type-C retimers uatcrt0..2 (ADT: atcrt at 0x18/0x19/0x1a) sit on this bus; no driver yet. */
 &i2c6 {
 	status = "okay";
@@ -246,6 +265,32 @@
 				sound-dai = <&speaker_left_woof1>, <&speaker_right_woof1>,
 					    <&speaker_left_woof2>, <&speaker_right_woof2>,
 					    <&speaker_left_tweet>, <&speaker_right_tweet>;
+			};
+		};
+	};
+
+	/*
+	 * The headphone jack's sound card: the AOP audio driver's jack back-end (DAI 4) to the CS42L84.
+	 * A card of its own, so a codec that does not answer costs the jack only, never the speakers.
+	 * Disabled with the codec.
+	 */
+	sound_jack: sound-jack {
+		compatible = "apple,j616-macaudio-jack", "apple,macaudio";
+		model = "MacBook Pro J616 Jack";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		status = "disabled";
+
+		dai-link@0 {
+			reg = <0>;
+			link-name = "Headphone Jack";
+
+			cpu {
+				sound-dai = <&aop_audio 4>;
+			};
+
+			codec {
+				sound-dai = <&jack_codec>;
 			};
 		};
 	};
