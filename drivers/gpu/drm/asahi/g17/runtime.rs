@@ -294,9 +294,16 @@ impl Registry {
             .position(Option::is_none)
             .ok_or(ENOSPC)?;
         let identity = self.identities.reserve(1)?.start;
-        let id = self
+        let id = match self
             .qids
-            .reserve(identity, DataMaster::Compute, Some(FIRST_COMPUTE_QID))?;
+            .reserve(identity, DataMaster::Compute, Some(FIRST_COMPUTE_QID))
+        {
+            Err(error) if error == ENOSPC => {
+                self.census(owner);
+                return Err(error);
+            }
+            result => result?,
+        };
         let reservation = ComputeReservation { slot, id, owner };
         self.compute[slot] = Some(ComputeEntry {
             reservation,

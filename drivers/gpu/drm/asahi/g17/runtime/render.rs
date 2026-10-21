@@ -198,6 +198,83 @@ impl RenderState {
 }
 
 impl Registry {
+    /// Read-only capacity census (G-31), logged when a compute QID is refused. The caller
+    /// holds the device mutex; the only lock taken here is the render admission lock, which
+    /// the device mutex already nests. Nothing is released or retired.
+    pub(super) fn census(&self, refused_owner: u64) {
+        let Some(n) = kick::census_dump() else {
+            return;
+        };
+        let (held, usable) = kick::qid_usage();
+        let closed = self.teardown.len();
+        let draining = (0..closed)
+            .filter(|i| self.teardown.closed(*i, 0).is_some())
+            .count();
+        let queues = self
+            .compute
+            .iter()
+            .flatten()
+            .filter(|e| e.queue.is_some())
+            .count();
+        let admission = self.admission.census();
+        let owned = admission.owners[1..].iter().filter(|id| **id != 0).count();
+        pr_info!(
+            "G17 census {}: compute QID refused for owner {} (ENOSPC): QIDs {}/{} held, {} compute queues, {} of {} render slots owned, {} closed contexts awaiting teardown ({} draining)\n",
+            n,
+            refused_owner,
+            held,
+            usable,
+            queues,
+            owned,
+            RENDER_SLOTS - 1,
+            closed,
+            draining
+        );
+        for queue in self
+            .compute
+            .iter()
+            .flatten()
+            .filter_map(|e| e.queue.as_deref())
+        {
+            queue.census(n);
+        }
+        pr_info!(
+            "G17 census {}: render flags A=active Q=quarantined s=spared K=kill-held R=released; pair Q=quarantined\n",
+            n
+        );
+        for slot in 0..RENDER_SLOTS {
+            let entry = self.render.entries.get(slot).and_then(Option::as_ref);
+            if !admission.listed(slot) && entry.is_none() {
+                continue;
+            }
+            let label = crate::g17::status::OwnerLabel(
+                entry
+                    .and_then(|entry| entry.context.as_ref())
+                    .map(|context| context.status().owner()),
+            );
+            let (pair_quarantined, groups) = entry
+                .and_then(|entry| entry.pair.as_deref())
+                .map_or((false, 0), Pair::census_state);
+            let flags = admission.flags(slot);
+            pr_info!(
+                "G17 census {}: render slot {} owner {} {} refs {} {} pair {} groups {} closed {}\n",
+                n,
+                slot,
+                admission.owners[slot],
+                label,
+                admission.refs[slot],
+                core::str::from_utf8(&flags).unwrap_or("?"),
+                if entry.is_some_and(|entry| entry.pair.is_some()) {
+                    if pair_quarantined { "Q" } else { "-" }
+                } else {
+                    "none"
+                },
+                groups,
+                entry.is_some_and(|entry| entry.closed) as u8
+            );
+        }
+    }
+
     fn ensure_render_ids(&mut self, slot: u8, owner: u64) -> Result {
         if owner == 0 || slot == 0 || usize::from(slot) >= RENDER_SLOTS {
             return Err(EINVAL);

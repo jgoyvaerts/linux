@@ -983,6 +983,10 @@ impl Pair {
             })
     }
 
+    /// Quarantine and tracked groups, for the capacity census. Log lines only.
+    pub(crate) fn census_state(&self) -> (bool, usize) {
+        (self.quarantined, self.active.len())
+    }
     pub(crate) fn contains_packet(&self, packet: &Arc<Packet>) -> bool {
         self.active
             .iter()

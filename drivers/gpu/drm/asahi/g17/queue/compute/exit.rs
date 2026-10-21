@@ -83,6 +83,16 @@ impl Transaction {
 }
 
 impl Queue {
+    /// Kill state for the capacity census. Log lines only.
+    pub(crate) fn exit_label(&self) -> &'static str {
+        match self.exit.as_ref().map(|exit| exit.phase) {
+            None => "none",
+            Some(Phase::Published) => "published",
+            Some(Phase::Acknowledged) => "acked",
+            Some(Phase::Unproven) => "unproven",
+            Some(Phase::Released) => "released",
+        }
+    }
     /// A command with ray traversal scratch is never killed. On Neo, killing a
     /// traversal that stopped making progress either crashed the GPU firmware
     /// when the queue's pool was then released, or stalled every later render

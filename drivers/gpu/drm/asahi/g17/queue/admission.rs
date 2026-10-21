@@ -101,6 +101,17 @@ impl State {
             _ => Ok(()),
         }
     }
+    fn census(&self) -> Census {
+        Census {
+            owners: self.owners,
+            refs: self.refs,
+            active: self.active,
+            quarantined: self.quarantined,
+            spared: self.spared,
+            kill_hold: self.kill_hold,
+            released: self.released,
+        }
+    }
     fn advance(&mut self, slot: usize) {
         self.epoch = self.epoch.wrapping_add(1);
         self.epochs[slot] = self.epoch;
@@ -362,7 +373,12 @@ impl Pool {
                 };
                 continue;
             }
-            state.refusal(owner)?;
+            if let Err(error) = state.refusal(owner) {
+                if error == ENOSPC {
+                    state.census().dump_refused(owner);
+                }
+                return Err(error);
+            }
             let plan = if expired {
                 Plan::Any
             } else {
@@ -435,6 +451,11 @@ impl Pool {
     pub(crate) fn warmable_sibling(&self, owner: u64, publishing: u8) -> Option<u8> {
         self.state.lock().warmable_sibling(owner, publishing)
     }
+    /// Snapshot for the capacity census. Takes only the admission lock, which the
+    /// device mutex already nests (`hold_render_slots_for_exit_kill`).
+    pub(crate) fn census(&self) -> Census {
+        self.state.lock().census()
+    }
     pub(crate) fn release_owner(&self, owner: u64) {
         let mut state = self.state.lock();
         for slot in 0..cfg::RENDER_SLOTS {
@@ -462,6 +483,66 @@ impl Pool {
         state.kill_hold = 0;
         drop(state);
         self.released.notify_all();
+    }
+}
+
+/// Copy of the render admission accounting for the capacity census (G-31). Log lines only.
+pub(crate) struct Census {
+    pub(crate) owners: [u64; cfg::RENDER_SLOTS],
+    pub(crate) refs: [u8; cfg::RENDER_SLOTS],
+    pub(crate) active: u64,
+    pub(crate) quarantined: u64,
+    pub(crate) spared: u64,
+    pub(crate) kill_hold: u64,
+    pub(crate) released: u64,
+}
+
+impl Census {
+    /// Slots with an owner or any accounting bit set; slot 0 is never admitted.
+    pub(crate) fn listed(&self, slot: usize) -> bool {
+        let bits = self.active | self.quarantined | self.kill_hold | self.released;
+        slot != 0 && (self.owners[slot] != 0 || bits & (1u64 << slot) != 0)
+    }
+    pub(crate) fn flags(&self, slot: usize) -> [u8; 5] {
+        let bit = |mask: u64, c: u8| if mask & (1u64 << slot) != 0 { c } else { b'-' };
+        [
+            bit(self.active, b'A'),
+            bit(self.quarantined, b'Q'),
+            bit(self.spared, b's'),
+            bit(self.kill_hold, b'K'),
+            bit(self.released, b'R'),
+        ]
+    }
+    /// Called with the admission lock held, where the device mutex must not be taken:
+    /// slots show logical owner identities only, not the owning process.
+    fn dump_refused(&self, owner: u64) {
+        let Some(n) = crate::g17::kick::census_dump() else {
+            return;
+        };
+        let (held, usable) = crate::g17::kick::qid_usage();
+        let owned = self.owners[1..].iter().filter(|id| **id != 0).count();
+        pr_info!(
+            "G17 census {}: render admission refused owner {} (ENOSPC): {} of {} slots owned, QIDs {}/{} held; flags A=active Q=quarantined s=spared K=kill-held R=released\n",
+            n,
+            owner,
+            owned,
+            cfg::RENDER_SLOTS - 1,
+            held,
+            usable
+        );
+        for slot in 0..cfg::RENDER_SLOTS {
+            if self.listed(slot) {
+                let flags = self.flags(slot);
+                pr_info!(
+                    "G17 census {}: render slot {} owner {} refs {} {}\n",
+                    n,
+                    slot,
+                    self.owners[slot],
+                    self.refs[slot],
+                    core::str::from_utf8(&flags).unwrap_or("?")
+                );
+            }
+        }
     }
 }
 

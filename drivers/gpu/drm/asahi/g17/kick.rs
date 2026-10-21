@@ -6,7 +6,7 @@
 //! and their ring backing stay owned until both firmware processors stop;
 //! command completion alone does not detach a hardware queue.
 
-use core::sync::atomic::{fence, Ordering};
+use core::sync::atomic::{fence, AtomicU32, AtomicUsize, Ordering};
 use kernel::prelude::*;
 
 use super::{
@@ -23,6 +23,28 @@ const COMPUTE_RENDER_RESERVE: usize = 16;
 /// The 25G83 firmware keeps QIDs below 32 for its bootstrap protocol (the G16 driver's rings
 /// refuse them); the namespace starts there and preferred indices are relative to it.
 const QID_FLOOR_25G83: usize = 32;
+
+/// Mirror of `QueueIds::leased` for the capacity census, which also runs under
+/// the render admission lock where the device mutex (and so `QueueIds`) is not held.
+static LEASED: AtomicUsize = AtomicUsize::new(0);
+static CENSUS_DUMPS: AtomicU32 = AtomicU32::new(0);
+const CENSUS_MAX_DUMPS: u32 = 8;
+
+/// QIDs held and usable QIDs, for log lines only.
+pub(crate) fn qid_usage() -> (usize, usize) {
+    let floor = if super::fw::is_25g83() {
+        QID_FLOOR_25G83
+    } else {
+        0
+    };
+    (LEASED.load(Ordering::Relaxed), QID_COUNT - floor)
+}
+
+/// Number of the next capacity census dump, or `None` once the per-boot budget is used.
+pub(crate) fn census_dump() -> Option<u32> {
+    let n = CENSUS_DUMPS.fetch_add(1, Ordering::Relaxed);
+    (n < CENSUS_MAX_DUMPS).then_some(n + 1)
+}
 
 /// Stable physical-channel identity. The owner must not be reused within a
 /// device lifetime, including after an unpublished allocation is cancelled.
@@ -118,6 +140,7 @@ impl QueueIds {
             published: false,
         });
         self.leased += 1;
+        LEASED.store(self.leased, Ordering::Relaxed);
         Ok(id)
     }
 
@@ -149,6 +172,7 @@ impl QueueIds {
             Some(entry) if entry.id == id && !entry.published => {
                 *slot = None;
                 self.leased -= 1;
+                LEASED.store(self.leased, Ordering::Relaxed);
                 Ok(())
             }
             _ => Err(EINVAL),

@@ -566,6 +566,30 @@ impl Queue {
     pub(crate) fn context(&self) -> Option<&Arc<Context>> {
         self.binding.as_ref().map(|binding| &binding.context)
     }
+    /// One read-only capacity census line (G-31): the state that keeps this queue's QID
+    /// from reuse. The caller holds the device mutex, as for every other queue access.
+    pub(crate) fn census(&self, n: u32) {
+        let label =
+            crate::g17::status::OwnerLabel(self.context().map(|context| context.status().owner()));
+        pr_info!(
+            "G17 census {}: compute qid {} {} owner {} reusable {} released {} ready {} quarantined {} awaiting {} exit {} active {} replays {} previous {} fresh {} pool {:?}\n",
+            n,
+            self.qid(),
+            label,
+            self.owner.unwrap_or(0),
+            self.reusable() as u8,
+            self.released as u8,
+            self.retirement_ready as u8,
+            self.quarantined as u8,
+            self.awaiting_witness as u8,
+            self.exit_label(),
+            self.active.len,
+            self.replays.len,
+            self.previous.is_some() as u8,
+            self.needs_fresh_backing as u8,
+            self.pool_phase
+        );
+    }
     /// Quarantined commands still retain the scheduler until their retirement witness.
     pub(crate) fn idle_for_context(&self, context: &Arc<Context>) -> bool {
         !self.context().is_some_and(|bound| Arc::ptr_eq(bound, context))
