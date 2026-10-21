@@ -316,6 +316,7 @@ struct apple_isp {
 	struct isp_firmware {
 		u64 heap_base;
 		u64 heap_top;
+		u64 data_top; /* 0 unless the bootloader loads the data */
 	} fw;
 	/* changes under video_lock once the video device is registered */
 	enum isp_fw_state fw_state;
@@ -323,6 +324,7 @@ struct apple_isp {
 	struct isp_surf *ipc_surf;
 	struct isp_surf *extra_surf;
 	struct isp_surf *data_surf;
+	struct isp_surf *main_tail_surf;
 	struct isp_surf *log_surf;
 	struct isp_surf *bt_surf;
 	struct isp_surf *meta_surfs[ISP_MAX_BUFFERS];

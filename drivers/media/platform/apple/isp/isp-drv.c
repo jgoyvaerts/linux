@@ -144,17 +144,44 @@ static int apple_isp_map_fw_mmio(struct apple_isp *isp)
 	return 0;
 }
 
+/* The IOVA range of a memory-region, from its last iommu-addresses entry. */
+static int isp_of_region_iova(struct device *dev, const char *name,
+			      phys_addr_t *base, size_t *size)
+{
+	const __be32 *maps, *end;
+	int idx, len;
+
+	idx = of_property_match_string(dev->of_node, "memory-region-names",
+				       name);
+	if (idx < 0)
+		return -ENOENT;
+
+	struct device_node *np __free(device_node) =
+		of_parse_phandle(dev->of_node, "memory-region", idx);
+	if (!np)
+		return -ENODEV;
+
+	maps = of_get_property(np, "iommu-addresses", &len);
+	if (!maps || !len)
+		return -ENODEV;
+
+	end = maps + len / sizeof(__be32);
+
+	while (maps < end) {
+		maps++;
+		maps = of_translate_dma_region(dev->of_node, maps, base, size);
+	}
+
+	return 0;
+}
+
 static int apple_isp_init_iommu(struct apple_isp *isp)
 {
 	struct device *dev = isp->dev;
-	phys_addr_t heap_base;
-	size_t heap_size;
+	phys_addr_t heap_base, data_base;
+	size_t heap_size, data_size;
 	u64 vm_size;
 	int err;
-	int idx;
-	int size;
-	struct device_node *mem_node;
-	const __be32 *maps, *end;
 
 	isp->domain = iommu_get_domain_for_dev(isp->dev);
 	if (!isp->domain)
@@ -162,30 +189,35 @@ static int apple_isp_init_iommu(struct apple_isp *isp)
 	isp->shift = __ffs(isp->domain->pgsize_bitmap);
 	isp->fw_iova_mask = isp->hw->fw_iova_mask ?: U64_MAX;
 
-	idx = of_property_match_string(dev->of_node, "memory-region-names",
-				       "heap");
-	mem_node = of_parse_phandle(dev->of_node, "memory-region", idx);
-	if (!mem_node) {
-		dev_err(dev, "No memory-region found for heap\n");
-		return -ENODEV;
-	}
-
-	maps = of_get_property(mem_node, "iommu-addresses", &size);
-	if (!maps || !size) {
+	err = isp_of_region_iova(dev, "heap", &heap_base, &heap_size);
+	if (err) {
 		dev_err(dev, "No valid iommu-addresses found for heap\n");
 		return -ENODEV;
 	}
 
-	end = maps + size / sizeof(__be32);
-
-	while (maps < end) {
-		maps++;
-		maps = of_translate_dma_region(dev->of_node, maps, &heap_base,
-					       &heap_size);
-	}
-
 	isp->fw.heap_base = heap_base;
 	isp->fw.heap_top = heap_base + heap_size;
+
+	/*
+	 * Where the bootloader loads the firmware's data, it backs the
+	 * firmware's main memory only up to the end of it. The rest, up to
+	 * the heap top, is the host's to back.
+	 */
+	err = isp_of_region_iova(dev, "data", &data_base, &data_size);
+	if (!err) {
+		isp->fw.data_top = data_base + data_size;
+		if (isp->fw.data_top <= isp->fw.heap_base ||
+		    isp->fw.data_top > isp->fw.heap_top ||
+		    !IS_ALIGNED(isp->fw.data_top, 1UL << isp->shift)) {
+			dev_err(dev, "data 0x%llx outside the heap 0x%llx-0x%llx\n",
+				isp->fw.data_top, isp->fw.heap_base,
+				isp->fw.heap_top);
+			return -EINVAL;
+		}
+	} else if (err != -ENOENT) {
+		dev_err(dev, "No valid iommu-addresses found for data\n");
+		return -ENODEV;
+	}
 
 	err = of_property_read_u64(dev->of_node, "apple,dart-vm-size",
 				   &vm_size);

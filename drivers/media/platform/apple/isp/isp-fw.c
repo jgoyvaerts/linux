@@ -474,11 +474,26 @@ int apple_isp_alloc_firmware_surface(struct apple_isp *isp)
 	dev_dbg(isp->dev, "Data surface iova: 0x%llx\n",
 		(long long)isp->data_surf->iova);
 
+	/* Without it, the firmware faults on its first writes there. */
+	if (isp->fw.data_top && isp->fw.data_top < isp->fw.heap_top) {
+		isp->main_tail_surf = isp_alloc_surface_at(isp,
+			isp->fw.data_top, isp->fw.heap_top - isp->fw.data_top);
+		if (!isp->main_tail_surf) {
+			isp_err(isp, "failed to back main memory 0x%llx-0x%llx\n",
+				isp->fw.data_top, isp->fw.heap_top);
+			isp_free_surface(isp, isp->data_surf);
+			isp_free_surface(isp, isp->ipc_surf);
+			return -ENOMEM;
+		}
+	}
+
 	return 0;
 }
 
 void apple_isp_free_firmware_surface(struct apple_isp *isp)
 {
+	if (isp->main_tail_surf)
+		isp_free_surface(isp, isp->main_tail_surf);
 	isp_free_surface(isp, isp->data_surf);
 	isp_free_surface(isp, isp->ipc_surf);
 }
