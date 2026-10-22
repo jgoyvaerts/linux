@@ -70,7 +70,7 @@ static const struct isp_setfile isp_setfiles[] = {
 	[ISP_IMX814_2123_01] = {0x814, 0x21230101, "apple/isp_2123_01XX.dat", 0xed54},
 	[ISP_IMX853_7622_01] = {0x853, 0x76220112, "apple/isp_7622_01XX.dat", 0x247f8},
 	[ISP_IMX913_7523_01] = {0x913, 0x75230107, "apple/isp_7523_01XX.dat", 0x247f8},
-	[ISP_IMX958_2924_01] = {0x958, 0x29240101, "apple/isp_2924_01XX.dat", 0xed6c},
+	[ISP_IMX958_2224_01] = {0x958, 0x22240106, "apple/isp_2224_01XX.dat", 0x6ff4},
 	[ISP_VD56G0_6221_01] = {0xd56, 0x62210102, "apple/isp_6221_01XX.dat", 0x1b80},
 	[ISP_VD56G0_6222_01] = {0xd56, 0x62220102, "apple/isp_6222_01XX.dat", 0x1b80},
 };
@@ -160,7 +160,8 @@ static int isp_ch_get_sensor_id(struct apple_isp *isp, u32 ch)
 		id = ISP_IMX913_7523_01;
 		break;
 	case 0x958:
-		id = ISP_IMX958_2924_01;
+		/* Section 0x50f of 2224 names sensor 0x958; 2924's names 0x614. */
+		id = ISP_IMX958_2224_01;
 		break;
 	case 0xd56:
 		id = ISP_VD56G0_6221_01;
@@ -254,7 +255,7 @@ static int isp_ch_cache_sensor_info(struct apple_isp *isp, u32 ch)
 	if (err ||
 	    (fmt->id != ISP_IMX248_1820_01 && fmt->id != ISP_IMX558_1921_01 &&
 	     fmt->id != ISP_IMX558_1925_03 && fmt->id != ISP_IMX364_8720_01 &&
-	     fmt->id != ISP_IMX958_2924_01)) {
+	     fmt->id != ISP_IMX958_2224_01)) {
 		dev_err(isp->dev,
 			"ch %d: unsupported sensor. Please file a bug report with hardware info & dmesg trace.\n",
 			ch);
