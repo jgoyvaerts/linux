@@ -118,6 +118,11 @@ struct macaudio_platform_cfg {
 	 * for its own card).
 	 */
 	bool fe_cpu_is_platform;
+	/*
+	 * The highest headphone volume, a "Jack DAC Playback Volume" value
+	 * (CS42L84_DAC_DB()), 0 for the codec's own maximum.
+	 */
+	int jack_max_vol;
 };
 
 static const char *volume_control_names[] = {
@@ -139,6 +144,10 @@ static const char *volume_control_names[] = {
 /* Software gain of the CPU DAI: 0.5 dB steps, 127 = the amplifier's full scale */
 #define MAX98360A_0DB 127
 #define MAX98360A_DB(x) (MAX98360A_0DB + 2 * (x))
+
+/* CS42L84 DAC: 0.5 dB steps from -128 dB, 256 = 0 dB, up to +12 dB */
+#define CS42L84_DAC_0DB 256
+#define CS42L84_DAC_DB(x) (CS42L84_DAC_0DB + 2 * (x))
 
 struct ma_codec_idle {
 	int idle_mode;
@@ -1655,6 +1664,11 @@ static int macaudio_fixup_controls(struct snd_soc_card *card)
 			 "Apple%s", p + 1);
 	}
 
+	/* Before the card registers: userspace never sees the codec's full range */
+	if (ma->cfg->jack_max_vol)
+		CHECK(snd_soc_limit_volume, "Jack DAC Playback Volume",
+		      ma->cfg->jack_max_vol, 1);
+
 	if (!ma->has_speakers)
 		return 0;
 
@@ -2024,6 +2038,13 @@ struct macaudio_platform_cfg macaudio_j616_jack_cfg = {
 	.fe_dai_names = { "j616-jack-pcm-0", "j616-jack-pcm-1" },
 	.dai_fmt = SND_SOC_DAIFMT_DSP_A | SND_SOC_DAIFMT_CBC_CFC | SND_SOC_DAIFMT_IB_NF,
 	.fe_cpu_is_platform = true,
+	/*
+	 * Above 0 dB the DAC only adds digital gain, which clips a full-scale
+	 * signal. The 6 dB below that are margin: the analog full scale of
+	 * this board's headphone output is unmeasured, and macOS adapts it to
+	 * the impedance it detects, which this driver does not.
+	 */
+	.jack_max_vol = CS42L84_DAC_DB(-6),
 };
 
 struct macaudio_platform_cfg macaudio_fallback_cfg = {
