@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only OR MIT
 
-//! J616s (T6040) internal speakers on the AOP `spkr` stream.
+//! J616s (T6040) internal speakers on the AOP `spkr` stream, and the headphone jack on its `cout`
+//! and `cin ` streams.
 //!
 //! The AOP firmware runs MCA cluster 0 for this stream (`spS `, serializer `ms00`, `mck0` from the
 //! 12 MHz crystal): a 250-bit frame at 48 kHz with six 32-bit playback slots (24 valid bits) and
@@ -36,6 +37,24 @@
 //! System sleep takes the serializer down with the streams suspended and brings it back, sense
 //! ring first, before ASoC unmutes the amps.
 //!
+//! The 3.5 mm jack is two more services of the same firmware: `cout` (MCA cluster 2, serializer
+//! `ms02`, `mck2` from `nco3` at 3.072 MHz: a 64-bit frame at 48 kHz, two 32-bit playback slots,
+//! 24 valid bits) on base-ns ADMAC channel 4 (TX2), and `cin ` (the headset microphone, one slot
+//! back on the same serializer) on channel 5 (RX2). The CS42L84 codec on i2c2 is its own driver's.
+//! The firmware arbitrates the MCA and the audio power states between the speaker and jack streams,
+//! so the two never program shared registers behind each other's back. Each service has its own
+//! attachment and power states: `pw1 ` from back-end startup, `pwrd` (output flag 2 for `cout`,
+//! input flag 1 for `cin `, as the microphones use) from prepare. System sleep takes both down
+//! with the streams suspended and brings back what ran, before ASoC unmutes the codec.
+//!
+//! The jack is a second ASoC component on the same device, for a sound card of its own (macaudio's
+//! J616 jack variant): front-ends `j616-jack-pcm-0` (the jack) and `j616-jack-pcm-1` (routes only)
+//! and the `jack` back-end, `sound-dai = <&aop_audio 4>`. A component binds to one card only, and
+//! a card binds only once every codec of it has probed: on its own card, a jack codec that never
+//! answers costs the jack, not the speakers. The speaker component is the same with or without the
+//! jack. The jack component exists only when the audio node lists the "cout" and "cin" DMA
+//! channels.
+//!
 //! The structure (component context with the descriptor as its first field, DAI tables, dmaengine
 //! front-ends) follows aurora's t8140_aop_audio.rs (Copyright (C) 2026 The Aurora Silicon
 //! Contributors).
@@ -62,6 +81,9 @@ use super::{
 
 const CALLTYPE_AUDIO_GET_PROP: u32 = 0xc3000004;
 const AUDIO_DEV_SPKR: u32 = from_fourcc(b"spkr");
+/// The jack's output and headset microphone (ADT iop-audio-controller identifiers 'tuoc', ' nic').
+const AUDIO_DEV_COUT: u32 = from_fourcc(b"cout");
+const AUDIO_DEV_CIN: u32 = from_fourcc(b"cin ");
 const PROP_POWER_STATE: u32 = 200;
 const PROP_POWER_REQUEST: u32 = 202;
 const STATE_IDLE: u32 = from_fourcc(b"idle");
@@ -69,6 +91,8 @@ const STATE_PW1: u32 = from_fourcc(b"pw1 ");
 const STATE_PWRD: u32 = from_fourcc(b"pwrd");
 /// The power request parameter for `pwrd` on an output stream (aurora: "output flag 2").
 const PWRD_OUTPUT: u32 = 2;
+/// The same for an input stream (the microphones' `pwrd` request uses 1).
+const PWRD_INPUT: u32 = 1;
 /// kIOReturnBusy: the firmware keeps an attachment for its lifetime, so a reload sees this.
 const AUDIO_RET_BUSY: u32 = 0xe00002d5;
 
@@ -118,10 +142,10 @@ pub(crate) struct Service {
     dev_id: u32,
     /// The service name in log messages.
     tag: &'static str,
-    /// The `pwrd` request parameter.
+    /// The `pwrd` request parameter: output or input.
     pwrd_param: u32,
-    /// The sense ring.
-    ring: SenseRing,
+    /// The speaker service's sense ring; `None` for the jack's services.
+    ring: Option<SenseRing>,
     #[pin]
     state: Mutex<ServiceState>,
 }
@@ -132,6 +156,7 @@ impl Service {
         dev_id: u32,
         tag: &'static str,
         pwrd_param: u32,
+        ring: bool,
     ) -> Result<Arc<Self>> {
         Arc::pin_init(
             pin_init!(Service {
@@ -139,7 +164,7 @@ impl Service {
                 dev_id,
                 tag,
                 pwrd_param,
-                ring: SenseRing::new(),
+                ring: ring.then(SenseRing::new),
                 state <- new_mutex!(ServiceState {
                     attached: false,
                     users: 0,
@@ -279,7 +304,9 @@ impl Service {
             st.running = false;
         }
         // The channel goes while the fabric is still powered.
-        self.ring.release();
+        if let Some(ring) = &self.ring {
+            ring.release();
+        }
         if let Err(e) = self.set_power(&mut st, STATE_IDLE, 0) {
             dev_err!(self.aop.dev, "{} idle failed: {:?}\n", self.tag, e);
         }
@@ -299,12 +326,19 @@ impl Service {
         if st.users == 0 {
             return Err(EINVAL);
         }
+        let Some(ring) = &self.ring else {
+            if !st.running {
+                self.set_power(&mut st, STATE_PWRD, self.pwrd_param)?;
+                st.running = true;
+            }
+            return Ok(());
+        };
         if st.running {
             quiesce();
             self.set_power(&mut st, STATE_PW1, 0)?;
             st.running = false;
         }
-        self.start_with_ring(&mut st, &self.ring)
+        self.start_with_ring(&mut st, ring)
     }
 
     /// Arms the sense ring on the stopped serializer, then `pwrd`.
@@ -334,7 +368,9 @@ impl Service {
             }
             st.running = false;
         }
-        self.ring.stop();
+        if let Some(ring) = &self.ring {
+            ring.stop();
+        }
     }
 
     /// System sleep: the front-ends are suspended (their DMA stopped) and the amps muted; the
@@ -353,7 +389,14 @@ impl Service {
         if !mem::take(&mut st.resume_run) || st.users == 0 {
             return Ok(());
         }
-        self.start_with_ring(&mut st, &self.ring)
+        match &self.ring {
+            Some(ring) => self.start_with_ring(&mut st, ring),
+            None => {
+                self.set_power(&mut st, STATE_PWRD, self.pwrd_param)?;
+                st.running = true;
+                Ok(())
+            }
+        }
     }
 }
 
@@ -652,25 +695,40 @@ unsafe extern "C" fn sense_ring_done(param: *mut c_void) {
 
 // ---- the ASoC component ----
 
-const FE_COUNT: usize = 3;
-/// DAI ids: 0 lets ASoC assign one, so the front-ends carry 1..=3 and the back-end 10.
+const FE_COUNT: usize = 5;
+/// DAI ids: 0 lets ASoC assign one, so the front-ends carry 1..=5 (the speaker component's three,
+/// then the jack component's two) and the back-ends 10 and 11.
 const FE_DAI_ID_BASE: u32 = 1;
 const BE_DAI_ID_SPKR: u32 = 10;
-/// A front-end stream: its channel name on the audio node and its sample formats.
+const BE_DAI_ID_JACK: u32 = 11;
+/// The jack back-end's `sound-dai` argument on the audio node: 0..=3 are the speaker component's
+/// DAIs by table index.
+const DT_DAI_JACK: u32 = 4;
+/// Which service's power a front-end stream needs.
+#[derive(Clone, Copy)]
+enum Svc {
+    Spkr,
+    Cout,
+    Cin,
+}
+/// A front-end stream: its channel name on the audio node, its service and its sample formats.
 struct FeStream {
     dma: &'static CStr,
+    svc: Svc,
     formats: u64,
     /// The sense: served from the service's ring, not from a channel of its own.
     ring: bool,
 }
-/// Per front-end and stream [playback, capture]: j616-pcm-0 is macaudio's "Primary" (the jack on
-/// other machines; none here), j616-pcm-1 its "Secondary", the speakers, j616-pcm-2 the speaker
-/// sense.
+/// Per front-end and stream [playback, capture]. The speaker card: j616-pcm-0 is macaudio's
+/// "Primary" (the jack on other machines; none here), j616-pcm-1 its "Secondary", the speakers,
+/// j616-pcm-2 the speaker sense. The jack card: j616-jack-pcm-0 its "Primary", the jack,
+/// j616-jack-pcm-1 its "Secondary" (none).
 static FE_STREAMS: [[Option<FeStream>; 2]; FE_COUNT] = [
     [None, None],
     [
         Some(FeStream {
             dma: c_str!("spkr"),
+            svc: Svc::Spkr,
             formats: PLAYBACK_FORMATS,
             ring: false,
         }),
@@ -680,21 +738,42 @@ static FE_STREAMS: [[Option<FeStream>; 2]; FE_COUNT] = [
         None,
         Some(FeStream {
             dma: c_str!("sense"),
+            svc: Svc::Spkr,
             formats: SENSE_FORMATS,
             ring: true,
         }),
     ],
+    [
+        Some(FeStream {
+            dma: c_str!("cout"),
+            svc: Svc::Cout,
+            formats: PLAYBACK_FORMATS,
+            ring: false,
+        }),
+        Some(FeStream {
+            dma: c_str!("cin"),
+            svc: Svc::Cin,
+            formats: PLAYBACK_FORMATS,
+            ring: false,
+        }),
+    ],
+    [None, None],
 ];
 const SPKR_CHANNELS: u32 = 6;
 const SENSE_CHANNELS: u32 = 12;
+const JACK_CHANNELS: u32 = 2;
+const HEADSET_CHANNELS: u32 = 1;
 /// The serializer takes 24-bit samples from the low bits of each 32-bit DMA word (as the AOP's
-/// other 24-in-32 streams do); the sense words are 16-bit. SNDRV_PCM_FMTBIT_S24_LE and _S16_LE
-/// (formats 6 and 2; the bindings only carry the float one).
+/// other 24-in-32 streams do; the jack's records say 24 valid bits as well); the sense words are
+/// 16-bit. SNDRV_PCM_FMTBIT_S24_LE and _S16_LE (formats 6 and 2; the bindings only carry the float
+/// one).
 const PLAYBACK_FORMATS: u64 = 1 << 6;
 const SENSE_FORMATS: u64 = 1 << 2;
 const PCM_BUFFER_MAX: usize = 1024 * 1024;
 const PCM_PERIOD_BYTES_MIN: usize = 256;
 const PCM_PERIOD_BYTES_MAX: usize = 0x10000;
+/// One ADMAC frame (FRAME_4_WORDS): the jack's 8- and 4-byte frames need whole bursts per period.
+const ADMAC_BURST_BYTES: u32 = 16;
 
 /// Everything ASoC keeps pointers into, one per component; C retains the address of `component`,
 /// so this lives from before registration until unregistration has finished every callback.
@@ -702,6 +781,8 @@ const PCM_PERIOD_BYTES_MAX: usize = 0x10000;
 struct AsocContext {
     component: bindings::snd_soc_component_driver,
     spkr: Arc<Service>,
+    cout: Arc<Service>,
+    cin: Arc<Service>,
     dais: KVec<Opaque<bindings::snd_soc_dai_driver>>,
     _ops: KBox<DaiOps>,
 }
@@ -717,8 +798,18 @@ unsafe fn context<'a>(component: *mut bindings::snd_soc_component) -> &'a AsocCo
     unsafe { &*(*component).driver.cast::<AsocContext>() }
 }
 
+impl AsocContext {
+    fn service(&self, svc: Svc) -> &Service {
+        match svc {
+            Svc::Spkr => &self.spkr,
+            Svc::Cout => &self.cout,
+            Svc::Cin => &self.cin,
+        }
+    }
+}
+
 /// The service behind a back-end DAI and direction, and whether its prepare runs the serializer:
-/// the speaker sense rides on the playback's `pwrd`.
+/// the speaker sense rides on the playback's `pwrd`, the jack's directions are separate services.
 ///
 /// # Safety
 ///
@@ -728,8 +819,18 @@ unsafe fn be_service<'a>(
     substream: *mut bindings::snd_pcm_substream,
 ) -> (&'a Service, bool) {
     // SAFETY: by the caller's contract.
-    let (ctx, playback) = unsafe { (context((*dai).component), is_playback(substream)) };
-    (&ctx.spkr, playback)
+    let (ctx, id, playback) = unsafe {
+        (
+            context((*dai).component),
+            (*dai).id as u32,
+            is_playback(substream),
+        )
+    };
+    match (id, playback) {
+        (BE_DAI_ID_JACK, true) => (&ctx.cout, true),
+        (BE_DAI_ID_JACK, false) => (&ctx.cin, true),
+        (_, playback) => (&ctx.spkr, playback),
+    }
 }
 
 /// The front-end stream of a runtime and substream, `None` for a back-end or a stream this machine
@@ -808,7 +909,7 @@ unsafe fn sense_ring<'a>(
     if !stream.ring {
         return None;
     }
-    Some(&ctx.spkr.ring)
+    ctx.service(stream.svc).ring.as_ref()
 }
 
 /// The sense front-end's buffer: plain memory the ring callback copies whole frames into.
@@ -874,17 +975,17 @@ unsafe extern "C" fn pcm_open(
     let Some((fe, stream)) = (unsafe { fe_stream(rtd, substream) }) else {
         return ENODEV.to_errno();
     };
-    let svc = &ctx.spkr;
+    let svc = ctx.service(stream.svc);
     if let Err(e) = svc.get() {
         return e.to_errno();
     }
-    if stream.ring {
+    if let (true, Some(ring)) = (stream.ring, &svc.ring) {
         let ret = sense_open(substream);
         if ret < 0 {
             svc.put();
             return ret;
         }
-        svc.ring.attach(substream);
+        ring.attach(substream);
         return 0;
     }
     // SAFETY: the device is live and the name NUL-terminated.
@@ -905,7 +1006,24 @@ unsafe extern "C" fn pcm_open(
             return e.to_errno();
         }
     };
-    let ret = pcm_open_dmaengine(substream, chan, stream.formats);
+    let mut ret = pcm_open_dmaengine(substream, chan, stream.formats);
+    if ret >= 0 && !matches!(stream.svc, Svc::Spkr) {
+        // SAFETY: the runtime exists for the op.
+        ret = unsafe {
+            bindings::snd_pcm_hw_constraint_step(
+                (*substream).runtime,
+                0,
+                bindings::SNDRV_PCM_HW_PARAM_PERIOD_BYTES as _,
+                ADMAC_BURST_BYTES as _,
+            )
+        };
+        if ret < 0 {
+            // SAFETY: the dmaengine runtime owns the channel since the open succeeded.
+            unsafe { bindings::snd_dmaengine_pcm_close_release_chan(substream) };
+            svc.put();
+            return ret;
+        }
+    }
     if ret < 0 {
         // SAFETY: the channel was requested above and is not attached to the substream.
         unsafe { bindings::dma_release_channel(chan) };
@@ -978,10 +1096,10 @@ unsafe extern "C" fn pcm_close(
     let Some((_, stream)) = (unsafe { fe_stream(rtd, substream) }) else {
         return 0;
     };
-    let svc = &ctx.spkr;
-    if stream.ring {
+    let svc = ctx.service(stream.svc);
+    if let (true, Some(ring)) = (stream.ring, &svc.ring) {
         // SAFETY: the attached sense front-end, in its close.
-        unsafe { svc.ring.detach(substream) };
+        unsafe { ring.detach(substream) };
         svc.put();
         return 0;
     }
@@ -993,7 +1111,7 @@ unsafe extern "C" fn pcm_close(
 }
 
 /// The ADMAC moves one frame per burst of up to four words: FRAME_4_WORDS for every stream, as the
-/// ADT's records for these streams select (0x22 32-bit, 0x21 16-bit).
+/// ADT's records for these streams select (0x22 32-bit, 0x21 16-bit; the jack's records list both).
 ///
 /// # Safety
 ///
@@ -1299,6 +1417,64 @@ fn speaker_dais(ops: &DaiOps) -> [bindings::snd_soc_dai_driver; 4] {
     dais
 }
 
+/// The jack component: [0] the jack's front-end, [1] the second front-end macaudio's fixed routes
+/// need, [2] the back-end (`sound-dai = <&aop_audio 4>`, see `jack_of_xlate_dai_name`).
+fn jack_dais(ops: &DaiOps) -> [bindings::snd_soc_dai_driver; 3] {
+    let mut dais = [
+        bindings::snd_soc_dai_driver {
+            name: c_str!("j616-jack-pcm-0").as_char_ptr(),
+            id: FE_DAI_ID_BASE + 3,
+            ops: &ops.fe,
+            playback: stream(c_str!("PCM0 TX"), PLAYBACK_FORMATS, JACK_CHANNELS),
+            capture: stream(c_str!("PCM0 RX"), PLAYBACK_FORMATS, HEADSET_CHANNELS),
+            ..Default::default()
+        },
+        bindings::snd_soc_dai_driver {
+            name: c_str!("j616-jack-pcm-1").as_char_ptr(),
+            id: FE_DAI_ID_BASE + 4,
+            ops: &ops.fe,
+            // No stream: "PCM1 TX" exists for macaudio's fixed routes; opening it fails (ENODEV).
+            playback: stream(c_str!("PCM1 TX"), PLAYBACK_FORMATS, JACK_CHANNELS),
+            ..Default::default()
+        },
+        bindings::snd_soc_dai_driver {
+            name: c_str!("jack").as_char_ptr(),
+            id: BE_DAI_ID_JACK,
+            ops: &ops.be,
+            playback: stream(c_str!("JACK TX"), PLAYBACK_FORMATS, JACK_CHANNELS),
+            capture: stream(c_str!("JACK RX"), PLAYBACK_FORMATS, HEADSET_CHANNELS),
+            ..Default::default()
+        },
+    ];
+    // Both directions share the serializer's frame.
+    dais[2].set_symmetric_rate(1);
+    dais
+}
+
+/// Both components sit on the audio node, and ASoC resolves a `sound-dai` there by asking each
+/// component in turn (newest first) until one answers. The speaker component answers 0..=3 by
+/// table index and refuses 4 (EINVAL, out of range). This one answers 4 and defers the rest: a
+/// speaker card that probes after this component registered but before the speaker component did
+/// must wait for it, not fail.
+///
+/// # Safety
+///
+/// Called by ASoC with live arguments.
+unsafe extern "C" fn jack_of_xlate_dai_name(
+    _component: *mut bindings::snd_soc_component,
+    args: *const bindings::of_phandle_args,
+    dai_name: *mut *const kernel::ffi::c_char,
+) -> i32 {
+    // SAFETY: by the caller's contract.
+    unsafe {
+        if (*args).args_count != 1 || (*args).args[0] != DT_DAI_JACK {
+            return EPROBE_DEFER.to_errno();
+        }
+        *dai_name = c_str!("jack").as_char_ptr();
+    }
+    0
+}
+
 /// One registered component; dropping it unregisters it (and with it any card that uses its DAIs).
 struct Registration {
     dev: ARef<device::Device>,
@@ -1308,16 +1484,19 @@ struct Registration {
 impl Registration {
     fn new(
         aop: &SndSocAopData,
-        spkr: &Arc<Service>,
+        services: [&Arc<Service>; 3],
         component: bindings::snd_soc_component_driver,
         dai_drivers: fn(&DaiOps) -> Result<KVec<Opaque<bindings::snd_soc_dai_driver>>>,
     ) -> Result<Self> {
         let ops = KBox::new(DaiOps::new(), GFP_KERNEL)?;
         let dais = dai_drivers(&ops)?;
+        let [spkr, cout, cin] = services.map(Arc::clone);
         let ctx = KBox::new(
             AsocContext {
                 component,
-                spkr: spkr.clone(),
+                spkr,
+                cout,
+                cin,
                 dais,
                 _ops: ops,
             },
@@ -1398,26 +1577,87 @@ unsafe extern "C" fn spkr_resume(component: *mut bindings::snd_soc_component) ->
     }
 }
 
-/// The speaker component.
+/// System sleep for the jack's services: both directions share the jack's serializer.
+///
+/// # Safety
+///
+/// Called by ASoC on the registered jack component.
+unsafe extern "C" fn jack_suspend(component: *mut bindings::snd_soc_component) -> i32 {
+    // SAFETY: by the caller's contract.
+    let ctx = unsafe { context(component) };
+    ctx.cin.suspend();
+    ctx.cout.suspend();
+    0
+}
+
+/// # Safety
+///
+/// Called by ASoC on the registered jack component.
+unsafe extern "C" fn jack_resume(component: *mut bindings::snd_soc_component) -> i32 {
+    // SAFETY: by the caller's contract.
+    let ctx = unsafe { context(component) };
+    let cout = ctx.cout.resume();
+    let cin = ctx.cin.resume();
+    match cout.and(cin) {
+        Ok(()) => 0,
+        Err(e) => e.to_errno(),
+    }
+}
+
+/// The speaker component, and the jack's where the audio node lists its DMA channels.
 pub(crate) struct SpeakerComponent {
     _spkr: Registration,
+    _jack: Option<Registration>,
 }
 
 impl SpeakerComponent {
     pub(crate) fn register(aop: Arc<SndSocAopData>) -> Result<Self> {
-        let spkr = Service::new(aop.clone(), AUDIO_DEV_SPKR, "spkr", PWRD_OUTPUT)?;
+        let spkr = Service::new(aop.clone(), AUDIO_DEV_SPKR, "spkr", PWRD_OUTPUT, true)?;
+        let cout = Service::new(aop.clone(), AUDIO_DEV_COUT, "cout", PWRD_OUTPUT, false)?;
+        let cin = Service::new(aop.clone(), AUDIO_DEV_CIN, "cin", PWRD_INPUT, false)?;
+        let services = [&spkr, &cout, &cin];
+        let has_jack = [c_str!("cout"), c_str!("cin")].iter().all(|name| {
+            aop.fwnode
+                .property_match_string(c_str!("dma-names"), name)
+                .is_ok()
+        });
+        // The jack goes first (see `jack_of_xlate_dai_name`); its failure costs the jack only.
+        let jack = if has_jack {
+            let mut driver = component_driver(c_str!("t6040-aop-jack"));
+            driver.of_xlate_dai_name = Some(jack_of_xlate_dai_name);
+            driver.suspend = Some(jack_suspend);
+            driver.resume = Some(jack_resume);
+            match Registration::new(&aop, services, driver, |ops| to_kvec(jack_dais(ops))) {
+                Ok(r) => Some(r),
+                Err(e) => {
+                    dev_err!(
+                        aop.dev,
+                        "Unable to register the jack ASoC component: {:?}\n",
+                        e
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let mut spkr_driver = component_driver(c_str!("t6040-aop-spkr"));
         spkr_driver.suspend = Some(spkr_suspend);
         spkr_driver.resume = Some(spkr_resume);
-        let spkr = Registration::new(&aop, &spkr, spkr_driver, |ops| to_kvec(speaker_dais(ops)))
-            .inspect_err(|e| {
-                dev_err!(
-                    aop.dev,
-                    "Unable to register the speaker ASoC component: {}\n",
-                    e.to_errno()
-                )
-            })?;
-        Ok(Self { _spkr: spkr })
+        let spkr = Registration::new(&aop, services, spkr_driver, |ops| {
+            to_kvec(speaker_dais(ops))
+        })
+        .inspect_err(|e| {
+            dev_err!(
+                aop.dev,
+                "Unable to register the speaker ASoC component: {}\n",
+                e.to_errno()
+            )
+        })?;
+        Ok(Self {
+            _spkr: spkr,
+            _jack: jack,
+        })
     }
 }
 

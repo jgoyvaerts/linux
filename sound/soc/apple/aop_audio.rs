@@ -738,7 +738,7 @@ impl SndSocAopData {
 
 struct SndSocAopDriver {
     card: *mut bindings::snd_card,
-    /// The J616s speaker stream's ASoC component (T6040, where the node has a "spkr" DMA channel)
+    /// The J616s speaker and jack ASoC components (T6040, where the node has a "spkr" DMA channel)
     spkr: Option<aop_spkr::SpeakerComponent>,
 }
 
