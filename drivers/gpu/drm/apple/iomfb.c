@@ -554,7 +554,7 @@ static int dcp_modeset_fw(struct apple_dcp *dcp, struct drm_crtc_state *crtc_sta
 }
 
 int dcp_crtc_atomic_modeset(struct drm_crtc *crtc,
-			    struct drm_atomic_state *state)
+			    struct drm_atomic_commit *state)
 {
 	struct apple_crtc *apple_crtc = to_apple_crtc(crtc);
 	struct apple_dcp *dcp = platform_get_drvdata(apple_crtc->dcp);
@@ -617,7 +617,7 @@ bool dcp_crtc_mode_fixup(struct drm_crtc *crtc,
 }
 
 
-void dcp_flush(struct drm_crtc *crtc, struct drm_atomic_state *state)
+void dcp_flush(struct drm_crtc *crtc, struct drm_atomic_commit *state)
 {
 	struct platform_device *pdev = to_apple_crtc(crtc)->dcp;
 	struct apple_dcp *dcp = platform_get_drvdata(pdev);
