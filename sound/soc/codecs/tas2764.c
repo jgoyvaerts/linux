@@ -134,6 +134,9 @@ static int tas2764_group_join(struct device *dev, struct tas2764_priv *tas2764)
 	/* A group needs the shared supply to act on: a shutdown GPIO of the amp's own would bypass it */
 	if (tas2764->sdz_gpio)
 		return dev_err_probe(dev, -EINVAL, "SDZ group with a shutdown GPIO of its own\n");
+	/* Without its fault interrupt the amp could never take the group down */
+	if (!tas2764->irq)
+		return dev_err_probe(dev, -EINVAL, "SDZ group without a fault interrupt\n");
 	supply = of_parse_phandle(dev->of_node, "SDZ-supply", 0);
 	if (!supply)
 		return dev_err_probe(dev, -EINVAL, "SDZ group without an SDZ supply\n");
