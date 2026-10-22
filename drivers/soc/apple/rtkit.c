@@ -1692,27 +1692,6 @@ int apple_rtkit_idle(struct apple_rtkit *rtk)
 }
 EXPORT_SYMBOL_GPL(apple_rtkit_idle);
 
-int apple_rtkit_resume_idle(struct apple_rtkit *rtk)
-{
-	int ret;
-
-	if (rtk->iop_power_state != APPLE_RTKIT_PWR_STATE_IDLE ||
-	    rtk->ap_power_state != APPLE_RTKIT_PWR_STATE_IDLE)
-		return -EINVAL;
-
-	/*
-	 * The session is kept: no HELLO or endpoint discovery, unlike
-	 * apple_rtkit_wake(). The reverse of apple_rtkit_idle(): the AP is back
-	 * before the IOP is asked to run again.
-	 */
-	ret = apple_rtkit_set_ap_power_state(rtk, APPLE_RTKIT_PWR_STATE_ON);
-	if (ret)
-		return ret;
-
-	return apple_rtkit_set_iop_power_state(rtk, APPLE_RTKIT_PWR_STATE_ON);
-}
-EXPORT_SYMBOL_GPL(apple_rtkit_resume_idle);
-
 int apple_rtkit_quiesce(struct apple_rtkit *rtk)
 {
 	int ret;
