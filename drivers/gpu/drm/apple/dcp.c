@@ -565,7 +565,7 @@ void dcp_send_message(struct apple_dcp *dcp, u8 endpoint, u64 message)
 				 true);
 }
 
-int dcp_crtc_atomic_check(struct drm_crtc *crtc, struct drm_atomic_state *state)
+int dcp_crtc_atomic_check(struct drm_crtc *crtc, struct drm_atomic_commit *state)
 {
 	struct platform_device *pdev = to_apple_crtc(crtc)->dcp;
 	struct apple_dcp *dcp = platform_get_drvdata(pdev);

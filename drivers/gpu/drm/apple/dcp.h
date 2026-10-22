@@ -32,7 +32,7 @@ struct apple_encoder {
 void dcp_poweroff(struct platform_device *pdev);
 void dcp_poweron(struct platform_device *pdev);
 int dcp_set_crc(struct drm_crtc *crtc, bool enabled);
-int dcp_crtc_atomic_check(struct drm_crtc *crtc, struct drm_atomic_state *state);
+int dcp_crtc_atomic_check(struct drm_crtc *crtc, struct drm_atomic_commit *state);
 int dcp_get_connector_type(struct platform_device *pdev);
 bool dcp_fw_compat_is_12_x(struct platform_device *pdev);
 unsigned int dcp_gamma_lut_size(struct platform_device *pdev);
@@ -43,7 +43,7 @@ int dcp_start(struct platform_device *pdev);
 int dcp_takeover_trial(struct platform_device *pdev, const char **reason);
 void dcp_backlight_takeover_registered(struct platform_device *pdev);
 int dcp_wait_ready(struct platform_device *pdev, u64 timeout);
-void dcp_flush(struct drm_crtc *crtc, struct drm_atomic_state *state);
+void dcp_flush(struct drm_crtc *crtc, struct drm_atomic_commit *state);
 bool dcp_is_initialized(struct platform_device *pdev);
 void apple_crtc_vblank(struct apple_crtc *apple);
 void dcp_drm_crtc_vblank(struct apple_crtc *crtc);
@@ -51,7 +51,7 @@ int dcp_get_modes(struct drm_connector *connector);
 enum drm_mode_status dcp_mode_valid(struct drm_connector *connector,
 				    const struct drm_display_mode *mode);
 int dcp_crtc_atomic_modeset(struct drm_crtc *crtc,
-			    struct drm_atomic_state *state);
+			    struct drm_atomic_commit *state);
 bool dcp_crtc_mode_fixup(struct drm_crtc *crtc,
 			 const struct drm_display_mode *mode,
 			 struct drm_display_mode *adjusted_mode);
