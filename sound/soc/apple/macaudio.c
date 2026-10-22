@@ -26,6 +26,7 @@
 #include <linux/atomic.h>
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
+#include <linux/suspend.h>
 #include <sound/core.h>
 #include <sound/jack.h>
 #include <sound/pcm.h>
@@ -174,6 +175,9 @@ struct macaudio_snd_data {
 	ktime_t speaker_lock_remain;
 	struct delayed_work lock_timeout_work;
 	struct work_struct lock_update_work;
+	/* Between PM_SUSPEND_PREPARE and PM_POST_SUSPEND: the speaker volumes stay locked */
+	bool pm_quiesced;
+	struct notifier_block pm_nb;
 
 	/*
 	 * Software-gain amplifier: a lower gain cannot change samples that
@@ -442,6 +446,18 @@ static void macaudio_vlimit_update(struct macaudio_snd_data *ma)
 		unlock = false;
 	}
 
+	/*
+	 * System sleep: userspace is frozen long before the card suspends (over
+	 * half a second on J616s), and a playback stream left running then plays
+	 * out its stale buffer and stops on an xrun into the still unmuted amps.
+	 * Lock the volumes before the freeze instead of when the frozen daemon's
+	 * lease runs out.
+	 */
+	if (ma->pm_quiesced) {
+		reason = "System suspend";
+		unlock = false;
+	}
+
 	/* Check that *every* limited control is locked by the same owner */
 	list_for_each_entry(kctl, &ma->card.snd_card->controls, list) {
 		if(!snd_soc_control_matches(kctl, volume_control_names[ma->cfg->amp]))
@@ -461,7 +477,9 @@ static void macaudio_vlimit_update(struct macaudio_snd_data *ma)
 			dev_info(ma->card.dev, "Speaker volumes unlocked\n");
 		} else  {
 			dev_info(ma->card.dev, "Speaker volumes locked: %s\n", reason);
-			ma->speaker_volume_was_locked = true;
+			/* The system-sleep lock is the kernel's own, not a lease the daemon lost */
+			if (!ma->pm_quiesced)
+				ma->speaker_volume_was_locked = true;
 		}
 
 		macaudio_vlimit_unlock(ma, unlock);
@@ -474,6 +492,44 @@ static void macaudio_vlimit_update(struct macaudio_snd_data *ma)
 		snd_ctl_notify(ma->card.snd_card, SNDRV_CTL_EVENT_MASK_VALUE,
 			       &ma->speaker_lock_kctl->id);
 	}
+}
+
+static int macaudio_pm_notify(struct notifier_block *nb, unsigned long action,
+			      void *data)
+{
+	struct macaudio_snd_data *ma = container_of(nb, struct macaudio_snd_data, pm_nb);
+	bool quiesce;
+
+	switch (action) {
+	case PM_SUSPEND_PREPARE:
+	case PM_HIBERNATION_PREPARE:
+		quiesce = true;
+		break;
+	case PM_POST_SUSPEND:
+	case PM_POST_HIBERNATION:
+	case PM_POST_RESTORE:
+		quiesce = false;
+		break;
+	default:
+		return NOTIFY_DONE;
+	}
+
+	mutex_lock(&ma->volume_lock_mutex);
+	ma->pm_quiesced = quiesce;
+	/*
+	 * The lease ends here, so after the resume the volumes stay locked until
+	 * the daemon's next ping. Its clock (CLOCK_MONOTONIC) stops across s2idle:
+	 * a lease left running would unlock them at resume and expire before the
+	 * thawed daemon pings, which reports a lost lock and restarts it cold.
+	 */
+	if (quiesce) {
+		cancel_delayed_work(&ma->lock_timeout_work);
+		ma->speaker_lock_remain = 0;
+	}
+	macaudio_vlimit_update(ma);
+	mutex_unlock(&ma->volume_lock_mutex);
+
+	return NOTIFY_OK;
 }
 
 static void macaudio_vlimit_enable_timeout(struct macaudio_snd_data *ma)
@@ -1482,6 +1538,15 @@ static int macaudio_late_probe(struct snd_soc_card *card)
 		mutex_unlock(&ma->volume_lock_mutex);
 	}
 
+	/* The notifier walks the card's controls: only while the card is bound */
+	return register_pm_notifier(&ma->pm_nb);
+}
+
+static int macaudio_card_remove(struct snd_soc_card *card)
+{
+	struct macaudio_snd_data *ma = snd_soc_card_get_drvdata(card);
+
+	unregister_pm_notifier(&ma->pm_nb);
 	return 0;
 }
 
@@ -1698,6 +1763,12 @@ static int macaudio_slk_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_v
 		ma->speaker_volume_was_locked = false;
 		mutex_unlock(&ma->volume_lock_mutex);
 		return -ETIMEDOUT;
+	}
+
+	/* Between suspend-prepare and the freeze: the lease starts again after the resume */
+	if (ma->pm_quiesced) {
+		mutex_unlock(&ma->volume_lock_mutex);
+		return 0;
 	}
 
 	cancel_delayed_work(&ma->lock_timeout_work);
@@ -1997,6 +2068,7 @@ static int macaudio_snd_platform_probe(struct platform_device *pdev)
 	card->num_controls = ARRAY_SIZE(macaudio_controls);
 	card->probe = macaudio_probe;
 	card->late_probe = macaudio_late_probe;
+	card->remove = macaudio_card_remove;
 	card->component_chaining = true;
 	card->fully_routed = true;
 
@@ -2038,6 +2110,7 @@ static int macaudio_snd_platform_probe(struct platform_device *pdev)
 	atomic_set(&data->sw_gain_prepared_epoch, -1);
 	atomic_set(&data->sw_gain_limit_failed, 0);
 
+	data->pm_nb.notifier_call = macaudio_pm_notify;
 	return snd_soc_register_card(card);
 }
 
