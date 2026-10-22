@@ -43,7 +43,8 @@
 //! The firmware arbitrates the MCA and the audio power states between the speaker and jack streams,
 //! so the two never program shared registers behind each other's back. Each service has its own
 //! attachment and power states: `pw1 ` from back-end startup, `pwrd` (output flag 2 for `cout`,
-//! input flag 1 for `cin `, as the microphones use) from prepare.
+//! input flag 1 for `cin `, as the microphones use) from prepare. System sleep takes both down
+//! with the streams suspended and brings back what ran, before ASoC unmutes the codec.
 //!
 //! The jack is a second ASoC component on the same device, for a sound card of its own (macaudio's
 //! J616 jack variant): front-ends `j616-jack-pcm-0` (the jack) and `j616-jack-pcm-1` (routes only)
@@ -1584,6 +1585,33 @@ unsafe extern "C" fn spkr_resume(component: *mut bindings::snd_soc_component) ->
     }
 }
 
+/// System sleep for the jack's services: both directions share the jack's serializer.
+///
+/// # Safety
+///
+/// Called by ASoC on the registered jack component.
+unsafe extern "C" fn jack_suspend(component: *mut bindings::snd_soc_component) -> i32 {
+    // SAFETY: by the caller's contract.
+    let ctx = unsafe { context(component) };
+    ctx.cin.suspend();
+    ctx.cout.suspend();
+    0
+}
+
+/// # Safety
+///
+/// Called by ASoC on the registered jack component.
+unsafe extern "C" fn jack_resume(component: *mut bindings::snd_soc_component) -> i32 {
+    // SAFETY: by the caller's contract.
+    let ctx = unsafe { context(component) };
+    let cout = ctx.cout.resume();
+    let cin = ctx.cin.resume();
+    match cout.and(cin) {
+        Ok(()) => 0,
+        Err(e) => e.to_errno(),
+    }
+}
+
 /// The speaker component, and the jack's where the audio node lists its DMA channels.
 pub(crate) struct SpeakerComponent {
     _spkr: Registration,
@@ -1611,6 +1639,8 @@ impl SpeakerComponent {
         let jack = if has_jack {
             let mut driver = component_driver(c_str!("t6040-aop-jack"));
             driver.of_xlate_dai_name = Some(jack_of_xlate_dai_name);
+            driver.suspend = Some(jack_suspend);
+            driver.resume = Some(jack_resume);
             match Registration::new(&aop, services, driver, |ops| to_kvec(jack_dais(ops))) {
                 Ok(r) => {
                     dev_info!(
