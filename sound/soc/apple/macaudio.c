@@ -2010,6 +2010,22 @@ struct macaudio_platform_cfg macaudio_j616_cfg = {
 	.fe_cpu_is_platform = true,
 };
 
+/*
+ * The J616s headphone jack, a card of its own: a CS42L84 on the AOP's
+ * "jack" back-end, which the firmware runs on MCA cluster 2 as a 64-SCLK
+ * frame at 48 kHz (3.072 MHz, the primary front-end's ratio) with a
+ * one-SCLK FSYNC pulse, two 32-bit slots and data launched on the rising
+ * SCLK edge: DSP_A with an inverted bit clock, as on the J700. A card binds
+ * only once all of its codecs have probed; apart from the speaker card, a
+ * codec that never answers costs the jack only. The second front-end only
+ * satisfies the fixed routes: the AOP component refuses to open it.
+ */
+struct macaudio_platform_cfg macaudio_j616_jack_cfg = {
+	.fe_dai_names = { "j616-jack-pcm-0", "j616-jack-pcm-1" },
+	.dai_fmt = SND_SOC_DAIFMT_DSP_A | SND_SOC_DAIFMT_CBC_CFC | SND_SOC_DAIFMT_IB_NF,
+	.fe_cpu_is_platform = true,
+};
+
 struct macaudio_platform_cfg macaudio_fallback_cfg = {
 	false,	AMP_NONE,	SPKR_NONE,	false,	0,	0,
 };
@@ -2071,6 +2087,8 @@ static const struct of_device_id macaudio_snd_device_id[]  = {
 	/* j615    AID21   sn012776    15      2x 2W+1T Compat: apple,j415-macaudio */
 	/* j616    AID35   sn012776    15      2x 2W+1T (AOP-fed, one serializer) */
 	{ .compatible = "apple,j616-macaudio", .data = &macaudio_j616_cfg },
+	/* j616    AID35   cs42l84     -       the jack, a card of its own (AOP-fed) */
+	{ .compatible = "apple,j616-macaudio-jack", .data = &macaudio_j616_jack_cfg },
 	/* j700    AID44   max98360a   -       2x 1W    (AOP-fed, software gain) */
 	{ .compatible = "apple,j700-macaudio", .data = &macaudio_j700_cfg },
 	/* Fallback, jack only */
@@ -2126,6 +2144,14 @@ static int macaudio_snd_platform_probe(struct platform_device *pdev)
 	ret = macaudio_parse_of(data);
 	if (ret)
 		return ret;
+
+	/*
+	 * Without sense the PCM2 link is gone, and a card whose front-ends
+	 * are not the MCA's (the J616 jack) has no PCM2 RX widget at all.
+	 * The sense route is the table's last entry.
+	 */
+	if (!data->has_sense)
+		card->num_dapm_routes--;
 
 	/* Remove useless controls */
 	if (!data->has_speakers) /* No speakers, remove both */
