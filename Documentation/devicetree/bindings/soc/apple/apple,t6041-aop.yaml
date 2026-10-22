@@ -49,6 +49,7 @@ properties:
 
   audio:
     type: object
+    $ref: /schemas/sound/apple,t6041-aop-audio.yaml#
     description: The audio service.
 
   als:
