@@ -1330,7 +1330,7 @@
 
 	pcie_dart: iommu@410000000 {
 		compatible = "apple,t6041-dart", "apple,t8110-dart";
-		reg = <4 0x10000000 0 0x4000>;
+		reg = <4 0x10000000 0 0x20000>;
 		interrupts = <0 0x6bc 4>;
 		interrupt-parent = <&aic>;
 		#iommu-cells = <1>;
