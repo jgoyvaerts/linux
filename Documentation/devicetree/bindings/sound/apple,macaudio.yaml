@@ -21,6 +21,7 @@ properties:
           - apple,j293-macaudio
           - apple,j314-macaudio
           - apple,j616-macaudio
+          - apple,j616-macaudio-jack
           - apple,j700-macaudio
       - const: apple,macaudio
 
