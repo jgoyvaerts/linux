@@ -513,7 +513,9 @@ static void macaudio_vlimit_update(struct macaudio_snd_data *ma)
 				 macaudio_ceiling_db(ma));
 		} else  {
 			dev_info(ma->card.dev, "Speaker volumes locked: %s\n", reason);
-			ma->speaker_volume_was_locked = true;
+			/* The system-sleep lock is the kernel's own, not a lease the daemon lost */
+			if (!ma->pm_quiesced)
+				ma->speaker_volume_was_locked = true;
 		}
 
 		macaudio_vlimit_unlock(ma, unlock);
@@ -550,7 +552,16 @@ static int macaudio_pm_notify(struct notifier_block *nb, unsigned long action,
 
 	mutex_lock(&ma->volume_lock_mutex);
 	ma->pm_quiesced = quiesce;
-	/* Unlocking again after resume waits for the daemon's next ping, as after any timeout */
+	/*
+	 * The lease ends here, so after the resume the volumes stay locked until
+	 * the daemon's next ping. Its clock (CLOCK_MONOTONIC) stops across s2idle:
+	 * a lease left running would unlock them at resume and expire before the
+	 * thawed daemon pings, which reports a lost lock and restarts it cold.
+	 */
+	if (quiesce) {
+		cancel_delayed_work(&ma->lock_timeout_work);
+		ma->speaker_lock_remain = 0;
+	}
 	macaudio_vlimit_update(ma);
 	mutex_unlock(&ma->volume_lock_mutex);
 
@@ -1799,6 +1810,12 @@ static int macaudio_slk_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_v
 		ma->speaker_volume_was_locked = false;
 		mutex_unlock(&ma->volume_lock_mutex);
 		return -ETIMEDOUT;
+	}
+
+	/* Between suspend-prepare and the freeze: the lease starts again after the resume */
+	if (ma->pm_quiesced) {
+		mutex_unlock(&ma->volume_lock_mutex);
+		return 0;
 	}
 
 	cancel_delayed_work(&ma->lock_timeout_work);
