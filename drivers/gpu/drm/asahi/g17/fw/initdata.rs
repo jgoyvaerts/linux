@@ -27,6 +27,8 @@ use kernel::prelude::*;
 
 use super::clear;
 
+pub(crate) mod v25g83;
+
 /// Interface version at root `+0x00`; the firmware rejects any other.
 pub(crate) const INTERFACE_VERSION: [u16; 4] = [0x04c0, 0x0396, 0xa322, 0x0c8a];
 
@@ -215,6 +217,21 @@ impl SecondaryRoot {
     pub(crate) fn new(args: &RootArgs, power_state_va: u64, config_va: u64) -> Self {
         Self {
             root: Root::new(Role::Secondary, args, 0),
+            power_state_va,
+            config_va,
+        }
+    }
+
+    /// Returns the root of a single instance that carries both roles: the primary root, with
+    /// status B, extended by the power-state and configuration pointers.
+    pub(crate) fn merged(
+        args: &RootArgs,
+        status_b_va: u64,
+        power_state_va: u64,
+        config_va: u64,
+    ) -> Self {
+        Self {
+            root: Root::new(Role::Primary, args, status_b_va),
             power_state_va,
             config_va,
         }
@@ -1190,6 +1207,35 @@ pub(crate) const CONTEXT_SWITCH_TIMER_MASK: u32 = 0;
 /// scheduling pass.
 pub(crate) const CONTEXT_SWITCH_TIMER_MULTIPLIER: u8 = 1;
 
+/// The values of region C that differ between SoCs and firmware builds.
+pub(crate) struct RegionCConfig {
+    /// A18 Pro: 0xffff.
+    pub(crate) unk_54: u16,
+    /// A18 Pro: 1 in every entry.
+    pub(crate) unk_78: [u32; 3],
+    /// Highest GPU power, in mW (A18 Pro: 9550).
+    pub(crate) max_power_mw: u32,
+    /// A18 Pro: 0x3000_001d.
+    pub(crate) unk_9c: u32,
+    /// A18 Pro: 0x3100_0002.
+    pub(crate) unk_a0: u32,
+    /// A18 Pro: 0x7d0 (2000).
+    pub(crate) unk_7c4: u32,
+    /// A18 Pro: zero.
+    pub(crate) unk_9e0: [u32; 8],
+}
+
+/// Region C of the A18 Pro firmware (26A428).
+pub(crate) const REGION_C_26A428: RegionCConfig = RegionCConfig {
+    unk_54: 0xffff,
+    unk_78: [1; 3],
+    max_power_mw: 9550,
+    unk_9c: 0x3000_001d,
+    unk_a0: 0x3100_0002,
+    unk_7c4: 0x7d0,
+    unk_9e0: [0; 8],
+};
+
 /// Region C: firmware policy settings shared by both instances.
 ///
 /// Three fields are live. The host updates [`Self::effort`] while it submits
@@ -1218,7 +1264,7 @@ pub(crate) struct RegionC {
     /// Required: 0x78 (120).
     pub(crate) unk_3c: u32,
     pub(crate) unk_40: [u8; 0x14],
-    /// Required: 0xffff.
+    /// See [`RegionCConfig::unk_54`].
     pub(crate) unk_54: u16,
     /// Required: 0x28 (40).
     pub(crate) unk_56: u16,
@@ -1234,10 +1280,10 @@ pub(crate) struct RegionC {
     /// Period of the context-switch timer ([`CONTEXT_SWITCH_TIMER_MULTIPLIER`]).
     pub(crate) context_switch_timer_multiplier: u8,
     pub(crate) unk_6b: [u8; 0xd],
-    /// Required: 1 in every entry.
+    /// See [`RegionCConfig::unk_78`].
     pub(crate) unk_78: [u32; 3],
-    /// Required: 0x254e (9550).
-    pub(crate) unk_84: u32,
+    /// Highest GPU power, in mW.
+    pub(crate) max_power_mw: u32,
     /// Required: 0x3e8 (1000).
     pub(crate) unk_88: u32,
     /// Required: 0x3e8 (1000).
@@ -1245,9 +1291,9 @@ pub(crate) struct RegionC {
     pub(crate) unk_90: [u8; 8],
     /// Required: 0x3e8 (1000).
     pub(crate) unk_98: u32,
-    /// Required: 0x3000_001d.
+    /// See [`RegionCConfig::unk_9c`].
     pub(crate) unk_9c: u32,
-    /// Required: 0x3100_0002.
+    /// See [`RegionCConfig::unk_a0`].
     pub(crate) unk_a0: u32,
     pub(crate) unk_a4: [u8; 0x40],
     /// Performance-floor request (live, see the type documentation).
@@ -1255,7 +1301,7 @@ pub(crate) struct RegionC {
     /// Live; the host stores zero here whenever it stores [`Self::effort`].
     pub(crate) unk_e8: u32,
     pub(crate) unk_ec: [u8; 0x6d8],
-    /// Required: 0x7d0 (2000).
+    /// See [`RegionCConfig::unk_7c4`].
     pub(crate) unk_7c4: u32,
     /// Required: 0x3f80_0000 (1.0 as an IEEE-754 single).
     pub(crate) unk_7c8: u32,
@@ -1306,7 +1352,10 @@ pub(crate) struct RegionC {
     pub(crate) compute_watchdog: u32,
     /// Required: 1.
     pub(crate) unk_9d0: u32,
-    pub(crate) unk_9d4: [u8; 0x449],
+    pub(crate) unk_9d4: [u8; 0xc],
+    /// See [`RegionCConfig::unk_9e0`].
+    pub(crate) unk_9e0: [u32; 8],
+    pub(crate) unk_a00: [u8; 0x41d],
     /// Required: 1.
     pub(crate) unk_e1d: u32,
     pub(crate) unk_e21: [u8; 0x18],
@@ -1340,28 +1389,28 @@ impl RegionC {
     pub(crate) const POWER_ASSERT_TALLY: usize = core::mem::offset_of!(Self, power_assert_tally);
 
     /// Initializes region C.
-    pub(crate) fn init(&mut self) {
+    pub(crate) fn init(&mut self, cfg: &RegionCConfig) {
         clear(self);
         self.context_switch_timer_mask = CONTEXT_SWITCH_TIMER_MASK;
         self.unk_24 = 0xbb8;
         self.idle_power_off = 1;
         self.unk_34 = 1;
         self.unk_3c = 0x78;
-        self.unk_54 = 0xffff;
+        self.unk_54 = cfg.unk_54;
         self.unk_56 = 0x28;
         self.unk_58 = 0xffff;
         self.unk_5e = 1;
         self.unk_62 = 1;
         self.unk_66 = 3;
         self.context_switch_timer_multiplier = CONTEXT_SWITCH_TIMER_MULTIPLIER;
-        self.unk_78 = [1; 3];
-        self.unk_84 = 0x254e;
+        self.unk_78 = cfg.unk_78;
+        self.max_power_mw = cfg.max_power_mw;
         self.unk_88 = 0x3e8;
         self.unk_8c = 0x3e8;
         self.unk_98 = 0x3e8;
-        self.unk_9c = 0x3000_001d;
-        self.unk_a0 = 0x3100_0002;
-        self.unk_7c4 = 0x7d0;
+        self.unk_9c = cfg.unk_9c;
+        self.unk_a0 = cfg.unk_a0;
+        self.unk_7c4 = cfg.unk_7c4;
         self.unk_7c8 = 0x3f80_0000;
         self.unk_7cc = 0x3f4c_cccd;
         self.unk_7d0 = 0x3e4c_cccd;
@@ -1385,6 +1434,7 @@ impl RegionC {
         self.unk_9c8 = 0x28;
         self.compute_watchdog = 50;
         self.unk_9d0 = 1;
+        self.unk_9e0 = cfg.unk_9e0;
         self.unk_e1d = 1;
         self.unk_e39 = 3;
         self.unk_e3d = 1;
@@ -1432,7 +1482,7 @@ impl StatusBlock {
 /// Size of the firmware-control page named by the primary status B.
 pub(crate) const FWCTL_SIZE: usize = 0x4000;
 /// Offset of the firmware-control ring in its page.
-const FWCTL_RING: u64 = 0x40;
+pub(crate) const FWCTL_RING: u64 = 0x40;
 
 /// One firmware-written recovery-info entry. The host reads each word separately after the
 /// recovery handshake reaches state 3; it never copies the live table as a structure.
