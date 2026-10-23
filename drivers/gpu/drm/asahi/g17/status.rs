@@ -3,8 +3,8 @@
 //! VM admission errors and client failure reporting. No firmware state is accessed here.
 
 use crate::gem;
-use core::sync::atomic::{AtomicI32, Ordering};
-use kernel::{new_mutex, prelude::*, sync::Mutex};
+use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use kernel::{new_mutex, prelude::*, str::BStr, sync::Mutex, task::Pid};
 
 const MIRROR_MAX_SIZE: usize = 64 * 1024;
 
@@ -15,6 +15,11 @@ const MIRROR_MAX_SIZE: usize = 64 * 1024;
 pub(crate) struct VmStatus {
     error: AtomicI32,
     reported_error: AtomicI32,
+    /// The client's VM handle is gone (`release_mirror`).
+    closed: AtomicBool,
+    /// The process that created the VM, named in the failure report.
+    tgid: Pid,
+    comm: [u8; 16],
     /// The client's mapped status word, retained with its object only while the
     /// client's VM handle exists; released by `release_mirror` at VM close.
     #[pin]
@@ -31,10 +36,21 @@ struct Mirror {
 unsafe impl Send for Mirror {}
 
 impl VmStatus {
+    /// Called from the creating client's ioctl: the VM records who it belongs to.
     pub(crate) fn new() -> impl PinInit<Self> {
+        let task = kernel::current!();
+        // SAFETY: `comm` is a fixed array inside the live current task. A concurrent rename by
+        // another thread of the process may tear the copy, as with C's unlocked `current->comm`.
+        let comm: [u8; 16] = unsafe {
+            core::ptr::read_volatile(core::ptr::addr_of!((*task.as_ptr()).comm).cast())
+        };
+        let tgid = task.tgid();
         pin_init!(Self {
             error: AtomicI32::new(0),
             reported_error: AtomicI32::new(0),
+            closed: AtomicBool::new(false),
+            tgid,
+            comm,
             mirror <- new_mutex!(None, "Asahi VM status mirror"),
         })
     }
@@ -74,13 +90,20 @@ impl VmStatus {
             Ordering::SeqCst,
         ) {
             Ok(_) => {
-                let at = core::panic::Location::caller();
-                pr_warn!(
-                    "GPU work of a client failed ({:?}, reported at {}:{}); the client sees a lost device\n",
-                    error,
-                    at.file().rsplit("asahi/").next().unwrap_or(at.file()),
-                    at.line()
-                );
+                // ENOENT after close is accepted work of a destroyed VM being cancelled: no
+                // client is left to see it.
+                if !(error == ENOENT && self.closed.load(Ordering::Acquire)) {
+                    let at = core::panic::Location::caller();
+                    let len = self.comm.iter().position(|&b| b == 0).unwrap_or(self.comm.len());
+                    pr_warn!(
+                        "GPU work of a client failed ({:?}, reported at {}:{}, client {}[{}]); the client sees a lost device\n",
+                        error,
+                        at.file().rsplit("asahi/").next().unwrap_or(at.file()),
+                        at.line(),
+                        BStr::from_bytes(&self.comm[..len]),
+                        self.tgid
+                    );
+                }
                 error.to_errno()
             }
             Err(first) => first,
@@ -133,6 +156,7 @@ impl VmStatus {
     /// The client's VM handle is gone and nobody reads the mirror any more. The
     /// mapping and object reference drop outside the mutex (GEM release may sleep).
     pub(crate) fn release_mirror(&self) {
+        self.closed.store(true, Ordering::Release);
         let taken = self.mirror.lock().take();
         drop(taken);
     }
