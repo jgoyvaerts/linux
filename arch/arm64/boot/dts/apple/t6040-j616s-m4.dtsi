@@ -1,0 +1,374 @@
+// SPDX-License-Identifier: GPL-2.0+ OR MIT
+/*
+ * Not for upstream: what the daily J616s tree adds on top of the public
+ * t6040.dtsi, t6040-pmgr.dtsi and t6040-j616s.dts. Included last from
+ * t6040-j616s.dts in the daily tree only; the public files are not edited.
+ *
+ * 1. The M4 boot loader's contract (loader rev 11 and later). The loader
+ *    edits the tree by node path; a missing placeholder makes it boot the
+ *    rescue set (bad-board-dtb). Filled in at boot from the ADT and its own
+ *    layout (src/standalone/fixups.c):
+ *      /memory: reg (single multi-range node), /memreserve map
+ *      /chosen: bootargs, linux,initrd-*, rng-seed, m4,* records, lab,*
+ *        descriptor; framebuffer node reg/format/size/stride/status
+ *      /reserved-memory: reg of direct-smp-*, direct-desktop-*, aop-*;
+ *        dcp-map pool (name, reg, compatible, iommu-addresses);
+ *        memory-region lists
+ *      the display stack: status okay once the display capture is accepted
+ *      /cpus/cpu@*: cpu-release-addr from the SMP peer records
+ *      bluetooth@0,1: local-bd-address, brcm,taurus-bf-cal-blob;
+ *        wifi@0,0: brcm,cal-blob, apple,antenna-sku (ADT)
+ *      headphone-codec-probe: status, lab,admission-result,
+ *        lab,current-adt-validated (ADT contract)
+ *      keyboard: hid-country-code (ADT)
+ *    No kernel driver reads headphone-codec-probe, apple,m4-bt-otp-probe or
+ *    apple,m4-bt-admission-policy any more, but the loader's media fix-ups
+ *    and Bluetooth admission run on this tree and their source is not
+ *    available to prove they ignore them, so they stay until the loader is
+ *    checked. The NVMe node is the partition-guarded driver binding
+ *    (lab,write-lba-range limits writes to the Linux partitions: slot 6 and
+ *    slot 3).
+ * 2. The old apple,t6040-* names as second compatible entries on the nodes
+ *    the loader may find by compatible. Its PMP publication looks up
+ *    "apple,t6040-pmp-v2"; its display fix-ups edit the DCP, its mailbox and
+ *    DARTs, and their source is not available to prove they match by path
+ *    only; the requested AOP fix-up names the AOP by "apple,t6040-aop".
+ * 3. Hardware the public tree leaves out: the MagSafe 3 PD controller,
+ *    the AOP and ISP DART address filters (apple,dapf-entries) and three
+ *    DCP iomfb properties.
+ * 4. Properties the booted tree has that the public tree leaves out: the
+ *    AIC, AOP and DCP cell counts, the DCP firmware version the loader
+ *    rewrites on every boot, the disp0_piodma alias, and the phandles the
+ *    PCIe node carries, so they stay as booted.
+ * Drop an entry once the loader, or an upstream binding, no longer needs it.
+ */
+
+/* 1. The boot loader's contract */
+
+/ {
+
+	reserved-memory {
+		ranges;
+		#address-cells = <2>;
+		#size-cells = <2>;
+
+		aop-oslog {
+			no-map;
+		};
+
+		aop-etext {
+			no-map;
+		};
+
+		direct-desktop-host1 {
+			no-map;
+		};
+
+		direct-desktop-host0 {
+			no-map;
+		};
+
+		direct-desktop-capture {
+			no-map;
+		};
+
+		direct-smp-peers {
+			no-map;
+		};
+
+		direct-smp-stacks {
+			no-map;
+		};
+
+		direct-smp-records {
+			no-map;
+		};
+
+		direct-smp-code {
+			no-map;
+		};
+
+		direct-smp-vector {
+			no-map;
+		};
+
+		dcp-map-pool0 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool1 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool2 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool3 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool4 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool5 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool6 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool7 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool8 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool9 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool10 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool11 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool12 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool13 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool14 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool15 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+	};
+
+	headphone-codec-probe {
+		compatible = "lab,j616s-headphone-control-v1";
+		reg = <4 0x29018000 0 0x4000 5 0x81e4000 0 0x4000>;
+		clock-frequency = <0x16e3600>;
+		codec-address = <0x4b>;
+		status = "disabled";
+	};
+};
+
+&nvme {
+	compatible = "lab,j616-nvme-partition-25g83";
+	/* slot 6 (this root), slot 3 (HP) */
+	lab,write-lba-range = <0 0xd9bd800 0 0xe7b5c00>,
+			      <0 0xc020f8c 0 0xce11402>;
+};
+
+&{/pcie@1cb0000000/pci@0,0/bluetooth@0,1} {
+	apple,m4-bt-otp-probe;
+	apple,m4-bt-admission-policy = "runtime-after-cold-reset-v1";
+};
+
+/* 2. The loader's apple,t6040-* names */
+
+&pmp {
+	compatible = "apple,t6041-pmp-v2", "apple,t6040-pmp-v2", "apple,t6000-pmp-v2";
+};
+
+&aop {
+	compatible = "apple,t6041-aop", "apple,t6040-aop";
+};
+
+&dcp {
+	compatible = "apple,t6041-dcp", "apple,t6040-dcp", "apple,dcp";
+};
+
+&dcp_mbox {
+	compatible = "apple,t6041-asc-mailbox", "apple,t6040-asc-mailbox", "apple,asc-mailbox-v4";
+};
+
+&dcp_dart {
+	compatible = "apple,t6041-dart", "apple,t6040-dart", "apple,t8110-dart";
+};
+
+&disp0_dart {
+	compatible = "apple,t6041-dart", "apple,t6040-dart", "apple,t8110-dart";
+};
+
+/* 3. Hardware without an upstream binding yet */
+
+/*
+ * hpm5, the MagSafe 3 port's PD controller on nub-spmi-a0 (ADT port-type
+ * 0x11, "Power In", no USB data path, no connector). tipd takes the port's
+ * capabilities from the controller and registers a Type-C port and a power
+ * supply for it, as for MagSafe on the M1 Pro/Max and the M2 Airs. Select
+ * is irq + 2.
+ */
+&nub_spmi_a0 {
+	usb-pd@8 {
+		compatible = "apple,sn201202x";
+		reg = <0x8 SPMI_USID>;
+		interrupts = <63 IRQ_TYPE_EDGE_RISING>,
+			     <65 IRQ_TYPE_EDGE_RISING>,
+			     <69 IRQ_TYPE_EDGE_RISING>,
+			     <71 IRQ_TYPE_EDGE_RISING>;
+		interrupt-names = "irq", "select", "sleep", "wake";
+	};
+};
+
+/*
+ * The AOP and ISP DARTs' address filters (DAPF), programmed from the J616s
+ * ADT's filter data: <start end r0 r4 r20>. The second register range is
+ * the filter block.
+ */
+&aop_dart {
+	reg = <0x5 0x10f00000 0x0 0xc000>, <0x5 0x10f10000 0x0 0x4000>;
+	apple,dapf-entries = /bits/ 64 <
+		0x5081e4020 0x5081e4043 0x31 0x0 0x1
+		0x5081e4880 0x5081e4c50 0x31 0x0 0x1
+		0x508240004 0x508240373 0x31 0x0 0x1
+		0x508304000 0x50830416b 0x31 0x0 0x1
+		0x508320280 0x50832048b 0x31 0x0 0x1
+		0x508370000 0x5083709a3 0x31 0x0 0x1
+		0x508900014 0x508900017 0x31 0x0 0x1
+		0x50c618110 0x50c61881f 0x31 0x0 0x1
+		0x50c634000 0x50c634003 0x31 0x0 0x1
+		0x50de00000 0x50defffff 0x31 0x0 0x1
+		0x508018000 0x50801bfff 0x31 0x0 0x1
+		0x50801c000 0x50801ffff 0x31 0x0 0x1
+	>;
+};
+
+&isp_dart0 {
+	reg = <0x5 0x828c0000 0x0 0xc000>, <0x5 0x828d0000 0x0 0x4000>;
+	apple,dapf-entries = /bits/ 64 <
+		0x502284000 0x50228402b 0x31 0x0 0x1
+		0x502880000 0x502887fff 0x31 0x0 0x1
+		0x500e3c000 0x500e3c003 0x31 0x0 0x1
+		0x51062c000 0x510648003 0x31 0x0 0x1
+		0x485660000 0x485660003 0x31 0x0 0x1
+		0x220004000 0x2201d62fc 0x31 0x0 0x1
+		0x222004000 0x2221d62fc 0x31 0x0 0x1
+		0x224004000 0x2241d62fc 0x31 0x0 0x1
+		0x226004000 0x2261d62fc 0x31 0x0 0x1
+		0x504824000 0x504824004 0x31 0x0 0x1
+		0x5003c0000 0x5003e4000 0x31 0x0 0x1
+	>;
+};
+
+/* The surface layout the imported M4 display driver reads */
+&dcp {
+	apple,iomfb-surface-order = <0 1>;
+	apple,iomfb-primary-surface = <0>;
+	apple,iomfb-max-layers = <2>;
+};
+
+/* 4. Kept as the booted tree has them */
+
+&aic {
+	#address-cells = <0>;
+};
+
+&aop {
+	#address-cells = <2>;
+	#size-cells = <2>;
+};
+
+&dcp {
+	#address-cells = <2>;
+	#size-cells = <2>;
+	/* The 26.6.2 boot firmware; the display handoff checks the ADT's build first. */
+	apple,firmware-version = <0x1a 6 2>;
+	apple,firmware-compat = <0x1a 6 2>;
+};
+
+/*
+ * The GPU driver identifies its firmware build by this, on its own node. The loader does not
+ * write it yet (its next revision writes os_firmware here, as m1n1 does): 26.6.2 for now.
+ */
+&gpu {
+	apple,firmware-version = <0x1a 6 2>;
+};
+
+/ {
+	aliases {
+		disp0_piodma = &disp0_piodma;
+	};
+};
+
+/*
+ * The PCIe node's phandles as the booted tree has them: the loader's
+ * Bluetooth admission runs on that node (rev 14 and later read only its
+ * config window and bus-range, so the extra port and PHY windows are
+ * fine). These are the phandles it carries or names (the AIC in msi-ranges
+ * and interrupt-parent, the DART, the CLKREQ pin, the SMC GPIO and AP pin
+ * controller, the port and itself).
+ */
+&aic {
+	phandle = <0x1>;
+};
+
+&pinctrl {
+	phandle = <0x49>;
+};
+
+&wifi_clkreq {
+	phandle = <0x78>;
+};
+
+&pcie_dart {
+	phandle = <0x79>;
+};
+
+&pcie0 {
+	phandle = <0x7a>;
+};
+
+&port00 {
+	phandle = <0x7b>;
+};
+
+&smc_gpio {
+	phandle = <0x7c>;
+};
