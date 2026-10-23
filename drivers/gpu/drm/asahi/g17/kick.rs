@@ -30,7 +30,15 @@ pub(super) const QID_COUNT: usize = QID_MAX as usize + 1;
 // channels are shared after exact retirement, rather than pinned per client.
 const COMPUTE_RENDER_RESERVE: usize = 2 * crate::mmu::MAX_EXECUTION_CONTEXTS as usize + 2;
 pub(super) const COMPUTE_CHANNELS: usize = QID_COUNT - COMPUTE_RENDER_RESERVE;
+/// Logical queues that can each hold a render pair: what the render reserve leaves beside the
+/// two bootstrap reservations once the QIDs below `floor`, which the firmware keeps, are gone
+/// (every execution context with no floor).
+pub(super) const fn queue_limit(floor: usize) -> u32 {
+    ((COMPUTE_RENDER_RESERVE - 2 - floor) / 2) as u32
+}
+
 const _: () = {
+    assert!(queue_limit(0) == crate::mmu::MAX_EXECUTION_CONTEXTS);
     assert!(COMPUTE_CHANNELS >= 4);
     assert!(crate::hw::t8140::queues::RENDER_PAIRS_PER_OWNER == 1);
 };
@@ -65,15 +73,19 @@ pub(crate) struct QueueIds {
     initial_render: [Option<Id>; 2],
     compute_publication: u64,
     leased: usize,
+    /// First QID the host may use ([`crate::g17::fw::Variant::qid_floor`]).
+    floor: usize,
 }
 
 impl QueueIds {
-    pub(crate) fn new() -> impl Init<Self, Error> {
+    pub(crate) fn new(floor: usize) -> impl Init<Self, Error> {
         kernel::try_init!(Self {
             entries <- pin_init::init_array_from_fn(|_| None),
             initial_render: [None; 2],
             compute_publication: 0,
             leased: 0,
+            // The reserve must keep render capacity above the floor.
+            floor: if floor < COMPUTE_RENDER_RESERVE { floor } else { return Err(EINVAL) },
         })
     }
 
@@ -117,7 +129,11 @@ impl QueueIds {
                 Err(EINVAL)
             };
         }
-        let initial = if engine == DataMaster::Compute && self.leased == QID_COUNT {
+        // The QIDs below the floor are never the host's; the reserve shrinks
+        // with them, so the compute channel count stays the same.
+        let total = QID_COUNT - self.floor;
+        let reserve = COMPUTE_RENDER_RESERVE - self.floor;
+        let initial = if engine == DataMaster::Compute && self.leased == total {
             self.initial_render
                 .iter()
                 .copied()
@@ -145,16 +161,22 @@ impl QueueIds {
             // Include that transition when protecting render's minimum, and
             // count the replacement as available compute capacity.
             let replacement = usize::from(initial.is_some());
-            if QID_COUNT - self.leased + replacement
-                <= COMPUTE_RENDER_RESERVE.saturating_sub(render - replacement)
+            if total - self.leased + replacement
+                <= reserve.saturating_sub(render - replacement)
             {
                 return Err(crate::g17::capacity::refused(crate::g17::capacity::Site::ComputeReserve));
             }
         }
         let index = preferred
-            .map(usize::from)
+            .map(|index| usize::from(index) + self.floor)
             .filter(|index| self.entries.get(*index).is_some_and(Option::is_none))
-            .or_else(|| self.entries.iter().position(Option::is_none))
+            .or_else(|| {
+                self.entries
+                    .iter()
+                    .skip(self.floor)
+                    .position(Option::is_none)
+                    .map(|index| index + self.floor)
+            })
             .or_else(|| initial.map(|(_, id)| usize::from(id.qid)))
             .ok_or_else(|| crate::g17::capacity::refused(crate::g17::capacity::Site::PhysicalQids))?;
         let id = Id {
@@ -220,7 +242,7 @@ mod accounting_tests {
     use super::*;
 
     fn table() -> KBox<QueueIds> {
-        KBox::init(QueueIds::new(), GFP_KERNEL).unwrap()
+        KBox::init(QueueIds::new(0), GFP_KERNEL).unwrap()
     }
 
     #[test]

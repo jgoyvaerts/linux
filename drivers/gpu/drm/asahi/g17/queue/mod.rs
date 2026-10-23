@@ -56,10 +56,16 @@ pub(crate) struct Frontend {
     allocation_failure: Fence,
     range: Range<u64>,
     window: UscWindow,
+    variant: &'static crate::g17::fw::Variant,
 }
 
 impl Frontend {
-    pub(crate) fn new(priority: u32, usc_base: u64, range: Range<u64>) -> Result<Self> {
+    pub(crate) fn new(
+        priority: u32,
+        usc_base: u64,
+        range: Range<u64>,
+        variant: &'static crate::g17::fw::Variant,
+    ) -> Result<Self> {
         if priority > 3 {
             return Err(EINVAL);
         }
@@ -71,6 +77,7 @@ impl Frontend {
             allocation_failure,
             range,
             window,
+            variant,
         })
     }
 }
@@ -85,6 +92,7 @@ pub(crate) struct Queue<B: Backend> {
     allocation_failure: Fence,
     range: Range<u64>,
     window: UscWindow,
+    variant: &'static crate::g17::fw::Variant,
     proof: Proof,
     sequence: [u64; 2],
     frontiers: [KVec<(u64, Fences)>; 2],
@@ -109,6 +117,7 @@ impl<B: Backend> Queue<B> {
             allocation_failure,
             range,
             window,
+            variant,
         } = frontend;
         let render = Some(Scheduler::new(dev, backend.clone(), Engine::Render)?);
         Ok(Self {
@@ -121,6 +130,7 @@ impl<B: Backend> Queue<B> {
             allocation_failure,
             range,
             window,
+            variant,
             proof: Proof::new(),
             sequence: [0; 2],
             frontiers: core::array::from_fn(|_| KVec::new()),
@@ -334,6 +344,7 @@ impl<B: Backend> Queue<B> {
                 self.context.vm(),
                 self.range.clone(),
                 &self.window,
+                self.variant,
                 &command.payload,
             )?;
             let engine = match &payload {

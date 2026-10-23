@@ -161,6 +161,8 @@ pub(crate) struct Config {
     pub(crate) recovery_slot_keys: Option<u64>,
     /// GPU generation reported to userspace.
     pub(crate) gpu_generation: hw::GpuGen,
+    /// The firmware build this SoC runs.
+    pub(crate) variant: &'static fw::Variant,
 }
 
 /// A firmware coprocessor instance.
@@ -487,6 +489,7 @@ struct Firmware {
     recovery: recovery::State,
     effort: power::Effort,
     registration_power_release_pending: bool,
+    variant: &'static fw::Variant,
     queues: runtime::Registry,
     pool: Arc<object::Pool>,
     /// Render kick ring storage, kept and reused for the life of the device.
@@ -631,6 +634,7 @@ struct Shared {
     drm: Mutex<Option<AsahiDevRef>>,
     clusters: u32,
     active_cores: u32,
+    variant: &'static fw::Variant,
     descriptor_flags: [u32; 2],
     crashed: AtomicBool,
     feed: Arc<feed::Feed>,
@@ -896,6 +900,7 @@ impl Gpu {
                 dev: dev.as_ref().as_ref().into(),
                 clusters: id.num_clusters,
                 active_cores,
+                variant: cfg.variant,
                 descriptor_flags: [id.perf_control, id.perf_map[0]],
                 crashed: AtomicBool::new(false),
                 feed,
@@ -1007,7 +1012,12 @@ impl Gpu {
                 recovery: recovery::State::new(),
                 effort: power::Effort::new(),
                 registration_power_release_pending: false,
-                queues <- runtime::Registry::new(shared.clusters, shared.descriptor_flags),
+                variant: cfg.variant,
+                queues <- runtime::Registry::new(
+                    shared.clusters,
+                    shared.descriptor_flags,
+                    shared.variant,
+                ),
                 pool: object::Pool::new()?,
                 render_rings: kick::RenderRings::new()?,
                 render_ids: Arc::new(freelist::RenderIds::new(), GFP_KERNEL)?,
@@ -1132,10 +1142,17 @@ impl gpu::Gpu for Gpu {
         params.features |=
             u64::from(uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_PER_COMMAND_INPUT_SYNCS)
                 | u64::from(uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_EXACT_PRIOR_BARRIERS)
-                | u64::from(uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_FEW_PRIMITIVES)
                 | u64::from(uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_FRAGMENT_BARRIERS)
-                | u64::from(uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_RENDER_RAY_QUERY)
                 | u64::from(uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_BOUNDED_AS_BUILD);
+        let variant = self.cfg.variant;
+        if variant.few_primitives {
+            params.features |=
+                u64::from(uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_FEW_PRIMITIVES);
+        }
+        if variant.ray_traversal {
+            params.features |=
+                u64::from(uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_RENDER_RAY_QUERY);
+        }
         params.gpu_generation = self.cfg.gpu_generation as u32;
         params.gpu_variant = self.cfg.identity.gpu_variant as u32;
         params.gpu_revision = self.id.gpu_rev as u32;
@@ -1176,7 +1193,7 @@ impl gpu::Gpu for Gpu {
 
     fn queue_limits(&self) -> Option<uapi::drm_asahi_queue_limits> {
         Some(uapi::drm_asahi_queue_limits {
-            max_queues: mmu::MAX_EXECUTION_CONTEXTS,
+            max_queues: kick::queue_limit(self.shared.variant.qid_floor),
             max_in_flight_per_queue: hw::t8140::queues::RENDER_PAIRS_PER_OWNER as u32,
             ..Default::default()
         })
@@ -1215,8 +1232,12 @@ impl gpu::Gpu for Gpu {
     ) -> Result<KBox<dyn crate::queue::Queue>> {
         let dev = self.shared.drm()?;
         let owner = self.ids.queue.next();
-        let frontend =
-            queue::Frontend::new(priority, usc_exec_base, self.geometry.user_usable_range())?;
+        let frontend = queue::Frontend::new(
+            priority,
+            usc_exec_base,
+            self.geometry.user_usable_range(),
+            self.cfg.variant,
+        )?;
         let policy = scheduling_policy(priority)?;
         let admission_started = now_ns();
         let (backend, slot) = loop {

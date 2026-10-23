@@ -155,6 +155,7 @@ pub(crate) struct Pair {
     graph_started: bool,
     clusters: u32,
     descriptor_flags: [u32; 2],
+    variant: &'static crate::g17::fw::Variant,
     installed: [bool; 2],
     configs: [Option<crate::g17::fw::queue::QueueConfig>; 2],
     cursors: [u32; 2],
@@ -200,6 +201,7 @@ impl Pair {
         first: &Arc<Packet>,
         clusters: u32,
         descriptor_flags: [u32; 2],
+        variant: &'static crate::g17::fw::Variant,
     ) -> Result<KBox<Self>> {
         if slot == 0
             || usize::from(slot) >= queues::RENDER_SLOTS
@@ -240,6 +242,7 @@ impl Pair {
             pm_generation,
             0,
             word,
+            variant,
         )?;
         storage.write_init(kernel::try_init!(Self {
             kick_aliases: Some([ta_alias, fragment_alias]),
@@ -256,6 +259,7 @@ impl Pair {
             graph_started: false,
             clusters,
             descriptor_flags,
+            variant,
             installed: [false; 2],
             configs: [None; 2],
             cursors: [0; 2],
@@ -426,9 +430,14 @@ impl Pair {
             },
         };
         self.memory.graph.claim(ordinal)?;
+        // Without an MCache table kick-entry bit 58 stays clear.
+        let attachments = match self.variant.mcache {
+            true => attachments[1].as_slice(),
+            false => &[][..],
+        };
         let result = self.memory.write_descriptors(
             &args,
-            attachments[1].as_slice(),
+            attachments,
             packet.context.id().try_into()?,
         );
         let mcache = match result {
@@ -1719,6 +1728,7 @@ impl Pair {
                 pm_generation,
                 self.ordinal,
                 first.completion.work_state()?.word(),
+                self.variant,
             )?;
             (Some(memory), Some(persistent), Some(aliases))
         };

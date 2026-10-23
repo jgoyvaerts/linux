@@ -351,6 +351,7 @@ impl Payload {
     pub(crate) fn validate(
         &self,
         window: &UscWindow,
+        variant: &super::fw::Variant,
         space: &impl AddressSpace,
     ) -> Result<Validated> {
         match self {
@@ -424,7 +425,7 @@ impl Payload {
                     scissor_va: cmd.isp_scissor_base,
                     depth_bias_va: cmd.isp_dbias_base,
                     depth_bias_is_int: cmd.flags & DBIAS_INT != 0,
-                    few_primitives: cmd.flags & FEW_PRIMITIVES != 0,
+                    few_primitives: cmd.flags & FEW_PRIMITIVES != 0 && variant.few_primitives,
                     fragment_barriers: cmd.flags & FRAGMENT_BARRIERS != 0,
                     occlusion_query_va: cmd.isp_oclqry_base,
                     sampler_heap_va: cmd.sampler_heap,
@@ -457,6 +458,11 @@ impl Payload {
                     rsrc_spec_hi: cmd.flags & RSRC_SPEC_HI != 0,
                 };
                 for stage in ray_query {
+                    if (stage.intersection.enabled() || stage.scratch.enabled())
+                        && !variant.ray_traversal
+                    {
+                        return Err(refuse_ray_traversal());
+                    }
                     if stage.intersection.enabled() {
                         require_range(space, stage.intersection.pool, stage.intersection.pool_bytes, Access::Read)?;
                         let code = stage.intersection.default_program & 0x0000_ffff_ffff_ffff;
@@ -489,6 +495,10 @@ impl Payload {
                 )?;
                 sampler(space, cmd.sampler_heap, cmd.sampler_count)?;
                 attachments.validate(space)?;
+                let scratch = ScratchRequest::new(cmd.scs_layout)?;
+                if (scratch.enabled() || intersection.enabled()) && !variant.ray_traversal {
+                    return Err(refuse_ray_traversal());
+                }
                 if intersection.enabled() {
                     require_range(space, intersection.pool, intersection.pool_bytes, Access::Read)?;
                     let code = intersection.default_program & 0x0000_ffff_ffff_ffff;
@@ -497,7 +507,7 @@ impl Payload {
                 Ok(Validated::Compute {
                     long_job: super::timeout::select(intersection.enabled(), [false; 2], as_build),
                     intersection: *intersection,
-                    scratch: ScratchRequest::new(cmd.scs_layout)?,
+                    scratch,
                     usc_base: window.base,
                     cdm_va: cmd.cdm_ctrl_stream_base,
                     cdm_end_va: cmd.cdm_ctrl_stream_end - 4,
@@ -508,4 +518,10 @@ impl Payload {
             }
         }
     }
+}
+
+/// Ray-traversal work on a firmware build that does not run it ([`super::fw::Variant`]).
+fn refuse_ray_traversal() -> Error {
+    kernel::pr_warn_once!("G17: ray-traversal work refused on this firmware\n");
+    Error::from_errno(-(kernel::bindings::EOPNOTSUPP as i32))
 }
