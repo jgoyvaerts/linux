@@ -1,0 +1,1501 @@
+// SPDX-License-Identifier: GPL-2.0+ OR MIT
+/*
+ * Not for upstream: what the daily J616s tree adds on top of the public
+ * t6040.dtsi, t6040-pmgr.dtsi and t6040-j616s.dts. Included last from
+ * t6040-j616s.dts in the daily tree only; the public files are not edited.
+ *
+ * 1. The M4 boot loader's contract (loader rev 11 and later). The loader
+ *    edits the tree by node path; a missing placeholder makes it boot the
+ *    rescue set (bad-board-dtb). Filled in at boot from the ADT and its own
+ *    layout (src/standalone/fixups.c):
+ *      /memory: reg (single multi-range node), /memreserve map
+ *      /chosen: bootargs, linux,initrd-*, rng-seed, m4,* records, lab,*
+ *        descriptor; framebuffer node reg/format/size/stride/status
+ *      /reserved-memory: reg of direct-smp-*, direct-desktop-*, aop-*;
+ *        dcp-map pool (name, reg, compatible, iommu-addresses);
+ *        memory-region lists
+ *      the display stack: status okay once the display capture is accepted
+ *      /cpus/cpu@*: cpu-release-addr from the SMP peer records
+ *      bluetooth@0,1: local-bd-address, brcm,taurus-bf-cal-blob;
+ *        wifi@0,0: brcm,cal-blob, apple,antenna-sku (ADT)
+ *      headphone-codec-probe: status, lab,admission-result,
+ *        lab,current-adt-validated (ADT contract)
+ *      keyboard: hid-country-code (ADT)
+ *    No kernel driver reads headphone-codec-probe, apple,m4-bt-otp-probe or
+ *    apple,m4-bt-admission-policy any more, but the loader's media fix-ups
+ *    and Bluetooth admission run on this tree and their source is not
+ *    available to prove they ignore them, so they stay until the loader is
+ *    checked. The NVMe node is the partition-guarded driver binding
+ *    (lab,write-lba-range limits writes to the Linux partitions: slot 6 and
+ *    slot 3).
+ * 2. The old apple,t6040-* names as second compatible entries on the nodes
+ *    the loader may find by compatible. Its PMP publication looks up
+ *    "apple,t6040-pmp-v2"; its display fix-ups edit the DCP, its mailbox and
+ *    DARTs, and their source is not available to prove they match by path
+ *    only; the requested AOP fix-up names the AOP by "apple,t6040-aop".
+ * 3. Hardware the public tree leaves out because no binding for it exists
+ *    yet: the three USB-C ports (the T6040 ATC PHY and DWC3 with their
+ *    tunables, the PD controllers, MagSafe), the AOP and ISP DART address
+ *    filters (apple,dapf-entries), the trackpad AFE's SMC power key and
+ *    three DCP iomfb properties.
+ * 4. Properties the booted tree has that the public tree leaves out: the
+ *    AIC, AOP and DCP cell counts, the DCP firmware version the loader
+ *    rewrites on every boot, the disp0_piodma alias, and the phandles the
+ *    PCIe node carries, so they stay as booted.
+ * Drop an entry once the loader, or an upstream binding, no longer needs it.
+ */
+
+/* 1. The boot loader's contract */
+
+/ {
+
+	reserved-memory {
+		ranges;
+		#address-cells = <2>;
+		#size-cells = <2>;
+
+		aop-oslog {
+			no-map;
+		};
+
+		aop-etext {
+			no-map;
+		};
+
+		direct-desktop-host1 {
+			no-map;
+		};
+
+		direct-desktop-host0 {
+			no-map;
+		};
+
+		direct-desktop-capture {
+			no-map;
+		};
+
+		direct-smp-peers {
+			no-map;
+		};
+
+		direct-smp-stacks {
+			no-map;
+		};
+
+		direct-smp-records {
+			no-map;
+		};
+
+		direct-smp-code {
+			no-map;
+		};
+
+		direct-smp-vector {
+			no-map;
+		};
+
+		dcp-map-pool0 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool1 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool2 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool3 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool4 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool5 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool6 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool7 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool8 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool9 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool10 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool11 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool12 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool13 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool14 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+
+		dcp-map-pool15 {
+			compatible = "apple,asc-mem";
+			no-map;
+			status = "disabled";
+		};
+	};
+
+	headphone-codec-probe {
+		compatible = "lab,j616s-headphone-control-v1";
+		reg = <4 0x29018000 0 0x4000 5 0x81e4000 0 0x4000>;
+		clock-frequency = <0x16e3600>;
+		codec-address = <0x4b>;
+		status = "disabled";
+	};
+};
+
+&nvme {
+	compatible = "lab,j616-nvme-partition-25g83";
+	/* slot 6 (this root), slot 3 (HP) */
+	lab,write-lba-range = <0 0xd9bd800 0 0xe7b5c00>,
+			      <0 0xc020f8c 0 0xce11402>;
+};
+
+&{/pcie@1cb0000000/pci@0,0/bluetooth@0,1} {
+	apple,m4-bt-otp-probe;
+	apple,m4-bt-admission-policy = "runtime-after-cold-reset-v1";
+};
+
+/* 2. The loader's apple,t6040-* names */
+
+&pmp {
+	compatible = "apple,t6041-pmp-v2", "apple,t6040-pmp-v2", "apple,t6000-pmp-v2";
+};
+
+&aop {
+	compatible = "apple,t6041-aop", "apple,t6040-aop";
+};
+
+&dcp {
+	compatible = "apple,t6041-dcp", "apple,t6040-dcp", "apple,dcp";
+};
+
+&dcp_mbox {
+	compatible = "apple,t6041-asc-mailbox", "apple,t6040-asc-mailbox", "apple,asc-mailbox-v4";
+};
+
+&dcp_dart {
+	compatible = "apple,t6041-dart", "apple,t6040-dart", "apple,t8110-dart";
+};
+
+&disp0_dart {
+	compatible = "apple,t6041-dart", "apple,t6040-dart", "apple,t8110-dart";
+};
+
+/* 3. Hardware without an upstream binding yet */
+
+/*
+ * The USB-C ports: three ATC blocks (right ATC2, left-front ATC1, left-back
+ * ATC0), each a PD controller on SPMI, the Type-C PHY with its coprocessor
+ * mailbox, the DWC3 and its two DARTs; MagSafe 3 is a PD controller on
+ * nub-spmi-a0 without a data path. The T6040 PHY and DWC3 bindings, and the
+ * driver support they describe, have not been submitted.
+ */
+/ {
+	spmi_atc2: spmi@509198000 {
+		compatible = "apple,t6041-spmi", "apple,spmi";
+		reg = <5 0x9198000 0 0x100>;
+		#address-cells = <2>;
+		#size-cells = <0>;
+		interrupt-controller;
+		#interrupt-cells = <2>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x364 4>;
+		power-domains = <&ps_nub_spmi_a1>;
+
+		usb-pd@c {
+			compatible = "apple,sn201202x";
+			reg = <0xc 0>;
+			interrupts = <0xb 1 0xd 1 0x11 1 0x13 1>;
+			interrupt-names = "irq", "select", "sleep", "wake";
+
+			connector {
+				compatible = "usb-c-connector";
+				label = "USB-C Right";
+				power-role = "dual";
+				data-role = "dual";
+
+				/*
+				 * The HS endpoint names the dwc3 role switch: tipd looks it up at probe and defers
+				 * until dwc3-apple has registered it.
+				 */
+				ports {
+					#address-cells = <1>;
+					#size-cells = <0>;
+
+					port@0 {
+						reg = <0>;
+						typec2_connector_hs: endpoint {
+							remote-endpoint = <&dwc3_2_hs>;
+						};
+					};
+					port@1 {
+						reg = <1>;
+						typec2_connector_ss: endpoint {
+							remote-endpoint = <&atcphy2_ss>;
+						};
+					};
+				};
+			};
+		};
+	};
+
+	usb_drd2: usb@392280000 {
+		compatible = "apple,t6040-dwc3", "apple,t8103-dwc3";
+		reg = <3 0x92280000 0 0xcd00 3 0x9228cd00 0 0x3200 3 0x92200000 0 0x4000>;
+		reg-names = "dwc3-core", "dwc3-apple", "drd-cfg";
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x693 4>;
+		/*
+		 * Role switch, not a fixed host: the PD controller resets the eUSB2 repeater on every CC connect, so the
+		 * USB2 PHY and the core must start after the attach and stop on detach. The PHY has no device mode.
+		 */
+		dr_mode = "otg";
+		usb-role-switch;
+		role-switch-default-mode = "host";
+		iommus = <&atc2_dart0 0 &atc2_dart1 1>;
+		power-domains = <&ps_atc2_usb>;
+		resets = <&atcphy2>;
+		phys = <&atcphy2 3>, <&atcphy2 4>;
+		phy-names = "usb2-phy", "usb3-phy";
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+				dwc3_2_hs: endpoint {
+					remote-endpoint = <&typec2_connector_hs>;
+				};
+			};
+		};
+	};
+
+	atcphy2: phy@392a90000 {
+		compatible = "apple,t6040-atcphy";
+		reg = <3 0x92a90000 0 0x4000>, <3 0x92800000 0 0x4000>, <3 0x92a84000 0 0x4000>,
+		      <3 0x93000000 0 0x30000>, <3 0x93200000 0 0x4000>, <3 0x93140000 0 0x4000>,
+		      <3 0x930c0000 0 0x10000>, <3 0x90000000 0 0x8000>, <3 0x90020000 0 0x4000>,
+		      <3 0x93244000 0 0x4000>, <3 0x93250000 0 0x4000>;
+		reg-names = "bank0", "bank1", "pipehandler", "core", "cfg", "cpu",
+			    "cpu-data", "axi2af", "axi2af-lioa", "fabric", "common-cfg";
+		#phy-cells = <1>;
+		#reset-cells = <0>;
+		power-domains = <&ps_atc2_common_dp>;
+		mboxes = <&atcphy2_mbox>;
+		mbox-names = "phy-cpu";
+		/* As the USB3 bring-up was tested: every PHY write completes before the next. */
+		nonposted-mmio;
+		orientation-switch;
+
+		port {
+			atcphy2_ss: endpoint {
+				remote-endpoint = <&typec2_connector_ss>;
+			};
+		};
+	};
+
+	/*
+	 * The PHY coprocessor (ADT acio-phy-cpuN, "iop,mxwrap", RTKit) runs the SuperSpeed
+	 * bring-up; its ASC v4 mailbox. ADT lists the IRQs as 1, 0, 3, 2 of the block,
+	 * as for AOP: send-empty is the lowest.
+	 */
+	atcphy2_mbox: mailbox@393148000 {
+		compatible = "apple,t6041-asc-mailbox", "apple,asc-mailbox-v4";
+		reg = <3 0x93148000 0 0x4000>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x3be 4 0 0x3bf 4 0 0x3c0 4 0 0x3c1 4>;
+		interrupt-names = "send-empty", "send-not-empty", "recv-empty", "recv-not-empty";
+		#mbox-cells = <0>;
+		power-domains = <&ps_atc2_phymxwrap>;
+	};
+
+	atc2_dart1: iommu@392f80000 {
+		compatible = "apple,t6041-dart", "apple,t8110-dart";
+		reg = <3 0x92f80000 0 0xc000>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x697 4>;
+		power-domains = <&ps_atc2_usb>;
+		#iommu-cells = <1>;
+	};
+
+	atc2_dart0: iommu@392f00000 {
+		compatible = "apple,t6041-dart", "apple,t8110-dart";
+		reg = <3 0x92f00000 0 0xc000>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x697 4>;
+		power-domains = <&ps_atc2_usb>;
+		#iommu-cells = <1>;
+	};
+
+	/*
+	 * The two left USB-C ports: left-front ATC1 (PD controller hpm1, SID 0xa) and left-back ATC0 (hpm0, SID 0xc),
+	 * both PD controllers on nub-spmi-a0. Every ATCn address is ATC2's minus (2 - n) * 0x8000000 and every IRQ
+	 * ATC2's minus (2 - n) * 0x20. The ADT lists only irq/sleep/wake; select is irq + 2, as on hpm2.
+	 * nub-spmi-a0 also carries hpm5, the MagSafe 3 port (SID 8).
+	 */
+	nub_spmi_a0: spmi@509188000 {
+		compatible = "apple,t6041-spmi", "apple,spmi";
+		reg = <5 0x9188000 0 0x100>;
+		#address-cells = <2>;
+		#size-cells = <0>;
+		interrupt-controller;
+		#interrupt-cells = <2>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x362 4>;
+		power-domains = <&ps_nub_spmi_a0>;
+
+		/*
+		 * hpm5, the MagSafe 3 port's PD controller (ADT port-type 0x11, "Power In",
+		 * no USB data path, no connector). tipd takes the port's capabilities from
+		 * the controller and registers a Type-C port and a power supply for it, as
+		 * for MagSafe on the M1 Pro/Max and the M2 Airs. Select is irq + 2.
+		 */
+		usb-pd@8 {
+			compatible = "apple,sn201202x";
+			reg = <0x8 0>;
+			interrupts = <0x3f 1 0x41 1 0x45 1 0x47 1>;
+			interrupt-names = "irq", "select", "sleep", "wake";
+		};
+
+		usb-pd@a {
+			compatible = "apple,sn201202x";
+			reg = <0xa 0>;
+			interrupts = <0x25 1 0x27 1 0x2b 1 0x2d 1>;
+			interrupt-names = "irq", "select", "sleep", "wake";
+
+			connector {
+				compatible = "usb-c-connector";
+				label = "USB-C Left Front";
+				power-role = "dual";
+				data-role = "dual";
+
+				ports {
+					#address-cells = <1>;
+					#size-cells = <0>;
+
+					port@0 {
+						reg = <0>;
+						typec1_connector_hs: endpoint {
+							remote-endpoint = <&dwc3_1_hs>;
+						};
+					};
+					port@1 {
+						reg = <1>;
+						typec1_connector_ss: endpoint {
+							remote-endpoint = <&atcphy1_ss>;
+						};
+					};
+				};
+			};
+		};
+
+		/*
+		 * hpm0, the left-back port's PD controller. DFU belongs to the boot ROM,
+		 * before any OS runs, and macOS uses this port as a plain USB port too.
+		 */
+		usb-pd@c {
+			compatible = "apple,sn201202x";
+			reg = <0xc 0>;
+			interrupts = <0xb 1 0xd 1 0x11 1 0x13 1>;
+			interrupt-names = "irq", "select", "sleep", "wake";
+
+			connector {
+				compatible = "usb-c-connector";
+				label = "USB-C Left Back";
+				power-role = "dual";
+				data-role = "dual";
+
+				ports {
+					#address-cells = <1>;
+					#size-cells = <0>;
+
+					port@0 {
+						reg = <0>;
+						typec0_connector_hs: endpoint {
+							remote-endpoint = <&dwc3_0_hs>;
+						};
+					};
+					port@1 {
+						reg = <1>;
+						typec0_connector_ss: endpoint {
+							remote-endpoint = <&atcphy0_ss>;
+						};
+					};
+				};
+			};
+		};
+	};
+
+	usb_drd1: usb@38a280000 {
+		compatible = "apple,t6040-dwc3", "apple,t8103-dwc3";
+		reg = <3 0x8a280000 0 0xcd00 3 0x8a28cd00 0 0x3200 3 0x8a200000 0 0x4000>;
+		reg-names = "dwc3-core", "dwc3-apple", "drd-cfg";
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x673 4>;
+		dr_mode = "otg";
+		usb-role-switch;
+		role-switch-default-mode = "host";
+		iommus = <&atc1_dart0 0 &atc1_dart1 1>;
+		power-domains = <&ps_atc1_usb>;
+		resets = <&atcphy1>;
+		phys = <&atcphy1 3>, <&atcphy1 4>;
+		phy-names = "usb2-phy", "usb3-phy";
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+				dwc3_1_hs: endpoint {
+					remote-endpoint = <&typec1_connector_hs>;
+				};
+			};
+		};
+	};
+
+	atcphy1: phy@38aa90000 {
+		compatible = "apple,t6040-atcphy";
+		reg = <3 0x8aa90000 0 0x4000>, <3 0x8a800000 0 0x4000>, <3 0x8aa84000 0 0x4000>,
+		      <3 0x8b000000 0 0x30000>, <3 0x8b200000 0 0x4000>, <3 0x8b140000 0 0x4000>,
+		      <3 0x8b0c0000 0 0x10000>, <3 0x88000000 0 0x8000>, <3 0x88020000 0 0x4000>,
+		      <3 0x8b244000 0 0x4000>, <3 0x8b250000 0 0x4000>;
+		reg-names = "bank0", "bank1", "pipehandler", "core", "cfg", "cpu",
+			    "cpu-data", "axi2af", "axi2af-lioa", "fabric", "common-cfg";
+		#phy-cells = <1>;
+		#reset-cells = <0>;
+		power-domains = <&ps_atc1_common_dp>;
+		mboxes = <&atcphy1_mbox>;
+		mbox-names = "phy-cpu";
+		/* As the USB3 bring-up was tested: every PHY write completes before the next. */
+		nonposted-mmio;
+		orientation-switch;
+
+		port {
+			atcphy1_ss: endpoint {
+				remote-endpoint = <&typec1_connector_ss>;
+			};
+		};
+	};
+
+	atcphy1_mbox: mailbox@38b148000 {
+		compatible = "apple,t6041-asc-mailbox", "apple,asc-mailbox-v4";
+		reg = <3 0x8b148000 0 0x4000>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x3b4 4 0 0x3b5 4 0 0x3b6 4 0 0x3b7 4>;
+		interrupt-names = "send-empty", "send-not-empty", "recv-empty", "recv-not-empty";
+		#mbox-cells = <0>;
+		power-domains = <&ps_atc1_phymxwrap>;
+	};
+
+	atc1_dart1: iommu@38af80000 {
+		compatible = "apple,t6041-dart", "apple,t8110-dart";
+		reg = <3 0x8af80000 0 0xc000>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x677 4>;
+		power-domains = <&ps_atc1_usb>;
+		#iommu-cells = <1>;
+	};
+
+	atc1_dart0: iommu@38af00000 {
+		compatible = "apple,t6041-dart", "apple,t8110-dart";
+		reg = <3 0x8af00000 0 0xc000>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x677 4>;
+		power-domains = <&ps_atc1_usb>;
+		#iommu-cells = <1>;
+	};
+
+	usb_drd0: usb@382280000 {
+		compatible = "apple,t6040-dwc3", "apple,t8103-dwc3";
+		reg = <3 0x82280000 0 0xcd00 3 0x8228cd00 0 0x3200 3 0x82200000 0 0x4000>;
+		reg-names = "dwc3-core", "dwc3-apple", "drd-cfg";
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x653 4>;
+		dr_mode = "otg";
+		usb-role-switch;
+		role-switch-default-mode = "host";
+		iommus = <&atc0_dart0 0 &atc0_dart1 1>;
+		power-domains = <&ps_atc0_usb>;
+		resets = <&atcphy0>;
+		phys = <&atcphy0 3>, <&atcphy0 4>;
+		phy-names = "usb2-phy", "usb3-phy";
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+				dwc3_0_hs: endpoint {
+					remote-endpoint = <&typec0_connector_hs>;
+				};
+			};
+		};
+	};
+
+	atcphy0: phy@382a90000 {
+		compatible = "apple,t6040-atcphy";
+		reg = <3 0x82a90000 0 0x4000>, <3 0x82800000 0 0x4000>, <3 0x82a84000 0 0x4000>,
+		      <3 0x83000000 0 0x30000>, <3 0x83200000 0 0x4000>, <3 0x83140000 0 0x4000>,
+		      <3 0x830c0000 0 0x10000>, <3 0x80000000 0 0x8000>, <3 0x80020000 0 0x4000>,
+		      <3 0x83244000 0 0x4000>, <3 0x83250000 0 0x4000>;
+		reg-names = "bank0", "bank1", "pipehandler", "core", "cfg", "cpu",
+			    "cpu-data", "axi2af", "axi2af-lioa", "fabric", "common-cfg";
+		#phy-cells = <1>;
+		#reset-cells = <0>;
+		power-domains = <&ps_atc0_common_dp>;
+		mboxes = <&atcphy0_mbox>;
+		mbox-names = "phy-cpu";
+		/* As the USB3 bring-up was tested: every PHY write completes before the next. */
+		nonposted-mmio;
+		orientation-switch;
+
+		port {
+			atcphy0_ss: endpoint {
+				remote-endpoint = <&typec0_connector_ss>;
+			};
+		};
+	};
+
+	atcphy0_mbox: mailbox@383148000 {
+		compatible = "apple,t6041-asc-mailbox", "apple,asc-mailbox-v4";
+		reg = <3 0x83148000 0 0x4000>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x3aa 4 0 0x3ab 4 0 0x3ac 4 0 0x3ad 4>;
+		interrupt-names = "send-empty", "send-not-empty", "recv-empty", "recv-not-empty";
+		#mbox-cells = <0>;
+		power-domains = <&ps_atc0_phymxwrap>;
+	};
+
+	atc0_dart1: iommu@382f80000 {
+		compatible = "apple,t6041-dart", "apple,t8110-dart";
+		reg = <3 0x82f80000 0 0xc000>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x657 4>;
+		power-domains = <&ps_atc0_usb>;
+		#iommu-cells = <1>;
+	};
+
+	atc0_dart0: iommu@382f00000 {
+		compatible = "apple,t6041-dart", "apple,t8110-dart";
+		reg = <3 0x82f00000 0 0xc000>;
+		interrupt-parent = <&aic>;
+		interrupts = <0 0x657 4>;
+		power-domains = <&ps_atc0_usb>;
+		#iommu-cells = <1>;
+	};
+};
+
+&pmgr_mini {
+	ps_atc2_common_dp: power-controller@b0 {
+		compatible = "apple,t8103-pmgr-pwrstate";
+		reg = <0xb0 4>;
+		label = "atc2_common_dp";
+		#power-domain-cells = <0>;
+		#reset-cells = <0>;
+		power-domains = <&ps_atc2_phymxwrap>;
+	};
+
+	ps_atc2_phymxwrap: power-controller@160 {
+		compatible = "apple,t8103-pmgr-pwrstate";
+		reg = <0x160 4>;
+		label = "atc2_phymxwrap";
+		#power-domain-cells = <0>;
+		#reset-cells = <0>;
+		power-domains = <&ps_atc2_common &ps_atc2_usb_aon>;
+	};
+
+	ps_atc2_usb: power-controller@140 {
+		compatible = "apple,t8103-pmgr-pwrstate";
+		reg = <0x140 4>;
+		label = "atc2_usb";
+		#power-domain-cells = <0>;
+		#reset-cells = <0>;
+		power-domains = <&ps_atc2_common &ps_atc2_usb_aon>;
+	};
+
+	ps_atc2_usb_aon: power-controller@d8 {
+		compatible = "apple,t8103-pmgr-pwrstate";
+		reg = <0xd8 4>;
+		label = "atc2_usb_aon";
+		#power-domain-cells = <0>;
+		#reset-cells = <0>;
+		apple,always-on;
+	};
+
+	ps_nub_spmi_a1: power-controller@70 {
+		compatible = "apple,t8103-pmgr-pwrstate";
+		reg = <0x70 4>;
+		label = "nub_spmi_a1";
+		#power-domain-cells = <0>;
+		#reset-cells = <0>;
+		apple,always-on;
+	};
+
+	/* The left-front port: the ATC2 shapes at the ATC1 offsets (ADT PS window 3). */
+	ps_atc1_common_dp: power-controller@a8 {
+		compatible = "apple,t8103-pmgr-pwrstate";
+		reg = <0xa8 4>;
+		label = "atc1_common_dp";
+		#power-domain-cells = <0>;
+		#reset-cells = <0>;
+		power-domains = <&ps_atc1_phymxwrap>;
+	};
+
+	ps_atc1_phymxwrap: power-controller@158 {
+		compatible = "apple,t8103-pmgr-pwrstate";
+		reg = <0x158 4>;
+		label = "atc1_phymxwrap";
+		#power-domain-cells = <0>;
+		#reset-cells = <0>;
+		power-domains = <&ps_atc1_common &ps_atc1_usb_aon>;
+	};
+
+	ps_atc1_usb: power-controller@120 {
+		compatible = "apple,t8103-pmgr-pwrstate";
+		reg = <0x120 4>;
+		label = "atc1_usb";
+		#power-domain-cells = <0>;
+		#reset-cells = <0>;
+		power-domains = <&ps_atc1_common &ps_atc1_usb_aon>;
+	};
+
+	ps_atc1_usb_aon: power-controller@d0 {
+		compatible = "apple,t8103-pmgr-pwrstate";
+		reg = <0xd0 4>;
+		label = "atc1_usb_aon";
+		#power-domain-cells = <0>;
+		#reset-cells = <0>;
+		apple,always-on;
+	};
+
+	ps_nub_spmi_a0: power-controller@68 {
+		compatible = "apple,t8103-pmgr-pwrstate";
+		reg = <0x68 4>;
+		label = "nub_spmi_a0";
+		#power-domain-cells = <0>;
+		#reset-cells = <0>;
+		apple,always-on;
+	};
+
+	/* The left-back port: the ATC2 shapes at the ATC0 offsets (ADT PS window 3). */
+	ps_atc0_common_dp: power-controller@a0 {
+		compatible = "apple,t8103-pmgr-pwrstate";
+		reg = <0xa0 4>;
+		label = "atc0_common_dp";
+		#power-domain-cells = <0>;
+		#reset-cells = <0>;
+		power-domains = <&ps_atc0_phymxwrap>;
+	};
+
+	ps_atc0_phymxwrap: power-controller@150 {
+		compatible = "apple,t8103-pmgr-pwrstate";
+		reg = <0x150 4>;
+		label = "atc0_phymxwrap";
+		#power-domain-cells = <0>;
+		#reset-cells = <0>;
+		power-domains = <&ps_atc0_common &ps_atc0_usb_aon>;
+	};
+
+	ps_atc0_usb: power-controller@118 {
+		compatible = "apple,t8103-pmgr-pwrstate";
+		reg = <0x118 4>;
+		label = "atc0_usb";
+		#power-domain-cells = <0>;
+		#reset-cells = <0>;
+		power-domains = <&ps_atc0_common &ps_atc0_usb_aon>;
+	};
+
+	ps_atc0_usb_aon: power-controller@c8 {
+		compatible = "apple,t8103-pmgr-pwrstate";
+		reg = <0xc8 4>;
+		label = "atc0_usb_aon";
+		#power-domain-cells = <0>;
+		#reset-cells = <0>;
+		apple,always-on;
+	};
+};
+
+&pmgr_aux {
+	/*
+	 * Always-on: the firmware leaves atc2_usb on while its parent atc2_common is power-gated, and genpd
+	 * refuses an active child under an off parent (-EINVAL). Its fabric parents are on at boot.
+	 */
+	ps_atc2_common: power-controller@3e0 {
+		compatible = "apple,t8103-pmgr-pwrstate";
+		reg = <0x3e0 4>;
+		label = "atc2_common";
+		#power-domain-cells = <0>;
+		#reset-cells = <0>;
+		apple,always-on;
+	};
+
+	/*
+	 * The left-front port's ATC1_COMMON (ADT 0x6b, PS 0x5_028003b8): always-on for the
+	 * same reason as atc2_common above. Whether the firmware also leaves ATC1_USB on
+	 * under it is unknown, and an inconsistent pair stops genpd with -EINVAL.
+	 */
+	ps_atc1_common: power-controller@3b8 {
+		compatible = "apple,t8103-pmgr-pwrstate";
+		reg = <0x3b8 4>;
+		label = "atc1_common";
+		#power-domain-cells = <0>;
+		#reset-cells = <0>;
+		apple,always-on;
+	};
+
+	/* The left-back port's ATC0_COMMON (ADT 0x66, PS 0x5_02800390): as atc1_common. */
+	ps_atc0_common: power-controller@390 {
+		compatible = "apple,t8103-pmgr-pwrstate";
+		reg = <0x390 4>;
+		label = "atc0_common";
+		#power-domain-cells = <0>;
+		#reset-cells = <0>;
+		apple,always-on;
+	};
+};
+
+&atcphy0 {
+	apple,tunable-axi2af =
+		<0x0 0x800000ff 0x8000001d>,
+		<0x4 0x80ff00ff 0x801d0003>,
+		<0x8 0x80ff00ff 0x801d0003>,
+		<0xc 0x80ff00ff 0x801d0005>,
+		<0x10 0x80ff00ff 0x801d0003>,
+		<0x14 0x80ff00ff 0x801d0003>,
+		<0x18 0x80ff00ff 0x801d0003>,
+		<0x1c 0x80ff00ff 0x801d0003>,
+		<0x20 0x800000ff 0x80000016>,
+		<0x24 0x800000ff 0x8000003a>,
+		<0x28 0x80ff00ff 0x803a0006>,
+		<0x2c 0x80ff00ff 0x803a0006>,
+		<0x30 0x80ff00ff 0x803a0006>,
+		<0x34 0x80ff00ff 0x803a0006>,
+		<0x38 0x80ff00ff 0x803a0006>,
+		<0x3c 0x80ff00ff 0x803a0006>,
+		<0x40 0x800000ff 0x80000016>,
+		<0x44 0x800000ff 0x80000016>,
+		<0x48 0x800000ff 0x80000016>,
+		<0x100 0x000000ff 0x000000ff>,
+		<0x108 0xffff0006 0x00100000>,
+		<0x304 0x3f3f0000 0x04040000>,
+		<0x308 0x000fffff 0x00001681>,
+		<0x30c 0x000fffff 0x00001680>,
+		<0x310 0x70000fff 0x000001e0>,
+		<0x314 0xf0000fff 0x800001e0>,
+		<0x318 0x70000fff 0x000001e0>,
+		<0x31c 0xf0000fff 0x800001e0>,
+		<0x320 0x70000fff 0x000005a0>,
+		<0x324 0xf0000fff 0x800005a0>,
+		<0x328 0x70000fff 0x000005a0>,
+		<0x32c 0xf0000fff 0x800005a0>,
+		<0x330 0x70000fff 0x000005a0>,
+		<0x334 0xf0000fff 0x800005a0>,
+		<0x338 0x70000fff 0x000005a0>,
+		<0x33c 0x70000fff 0x000005a0>,
+		<0x340 0x70000fff 0x000005a0>,
+		<0x344 0x70000fff 0x000005a0>,
+		<0x348 0x70000fff 0x000005a0>,
+		<0x34c 0x70000fff 0x000005a0>,
+		<0x350 0x70000fff 0x000005a0>,
+		<0x358 0xffffffff 0x0000ffff>,
+		<0x35c 0xffffffff 0x0000ffff>,
+		<0x408 0xffff0020 0x00190020>,
+		<0x40c 0x000fffff 0x00001681>,
+		<0x410 0x000fffff 0x00001680>,
+		<0x414 0x70000fff 0x000001e0>,
+		<0x418 0x70000fff 0x000001e0>,
+		<0x41c 0x70000fff 0x000001e0>,
+		<0x420 0x70000fff 0x000001e0>,
+		<0x424 0x70000fff 0x000005a0>,
+		<0x428 0x70000fff 0x000005a0>,
+		<0x42c 0x70000fff 0x000005a0>,
+		<0x430 0x70000fff 0x000005a0>,
+		<0x434 0x70000fff 0x000005a0>,
+		<0x438 0x70000fff 0x000005a0>,
+		<0x43c 0x70000fff 0x000005a0>,
+		<0x440 0x70000fff 0x000005a0>,
+		<0x444 0x70000fff 0x000005a0>,
+		<0x448 0x70000fff 0x000005a0>,
+		<0x44c 0x70000fff 0x000005a0>,
+		<0x450 0x70000fff 0x000005a0>,
+		<0x454 0x70000fff 0x000005a0>,
+		<0x948 0x07ff07ff 0x00280000>,
+		<0xa48 0x07ff07ff 0x00400040>,
+		<0xb48 0x07ff07ff 0x00b8010e>,
+		<0xc48 0x07ff07ff 0x00400020>,
+		<0xd48 0x07ff07ff 0x008a008a>,
+		<0x1000 0xffffffff 0x7fffffff>,
+		<0x4008 0x00000001 0x00000001>,
+		<0x400c 0x00000001 0x00000001>,
+		<0x4014 0x00000001 0x00000001>,
+		<0x4018 0x00000001 0x00000000>,
+		<0x401c 0x00000001 0x00000001>;
+	apple,tunable-fabric =
+		<0x4 0x003f003f 0x00200020>,
+		<0xc 0x000000f1 0x000000a1>,
+		<0x10 0x0000801f 0x00000004>,
+		<0x18 0x003f003f 0x00200020>,
+		<0x20 0x000000f1 0x000000a1>,
+		<0x24 0x0000801f 0x00000004>,
+		<0x2c 0x00ff00ff 0x00960096>,
+		<0x34 0x000000f1 0x00000071>,
+		<0x38 0x0000801f 0x00000004>,
+		<0x40 0x0000003f 0x00000020>,
+		<0x48 0x0000801f 0x00000004>,
+		<0x50 0x007f007f 0x00450045>,
+		<0x58 0x0000801f 0x00000004>,
+		<0x60 0x0000003f 0x00000020>,
+		<0x68 0x0000801f 0x00000004>,
+		<0x70 0x00000001 0x00000001>,
+		<0x74 0x0000801f 0x00000004>,
+		<0x7c 0x007f007f 0x00400040>,
+		<0x80 0x000000f1 0x00000011>,
+		<0x84 0x00000001 0x00000001>,
+		<0x88 0x00000001 0x00000001>,
+		<0x8c 0x0000801f 0x00000004>,
+		<0x94 0x001f001f 0x00100010>,
+		<0x98 0x000000f1 0x00000011>,
+		<0x9c 0x0000801f 0x00000004>,
+		<0xa4 0x000000ff 0x000000e0>,
+		<0xa8 0x0000801f 0x00000004>,
+		<0xb0 0x0000003f 0x00000020>,
+		<0xb8 0x0000801f 0x00000004>,
+		<0xc0 0x0000003f 0x00000020>,
+		<0xc8 0x0000801f 0x00000004>,
+		<0xd0 0x001f001f 0x00100010>,
+		<0xd8 0x00000001 0x00000001>,
+		<0xdc 0x00000001 0x00000001>,
+		<0xe0 0x0000801f 0x00000004>,
+		<0xe8 0x0000000f 0x00000008>,
+		<0xec 0x0000801f 0x00000004>,
+		<0xf4 0xffffffff 0x01010101>,
+		<0xf8 0x0000801f 0x00000004>,
+		<0x100 0x00000001 0x00000001>,
+		<0x104 0x00000001 0x00000001>,
+		<0x108 0x0000801f 0x00000004>,
+		<0x110 0x0000801f 0x00000004>,
+		<0x118 0x0000801f 0x00000004>,
+		<0x120 0x00000001 0x00000001>,
+		<0x124 0x00000001 0x00000001>,
+		<0x128 0x0000801f 0x00000004>,
+		<0x130 0xffffffff 0x01010101>,
+		<0x134 0x0000801f 0x00000004>,
+		<0x13c 0x00000001 0x00000001>,
+		<0x140 0x00000001 0x00000001>,
+		<0x144 0x0000801f 0x00000004>,
+		<0x14c 0x00000001 0x00000001>,
+		<0x150 0x00000001 0x00000001>,
+		<0x154 0x0000801f 0x00000004>,
+		<0x15c 0x0000801f 0x00000004>,
+		<0x164 0xffffffff 0x01010101>,
+		<0x168 0x0000ffff 0x00000101>,
+		<0x16c 0x0000801f 0x00000004>,
+		<0x174 0x00000001 0x00000001>,
+		<0x178 0x00000001 0x00000001>,
+		<0x17c 0x0000801f 0x00000004>,
+		<0x184 0x00000001 0x00000001>,
+		<0x188 0x00000001 0x00000001>,
+		<0x18c 0x0000801f 0x00000004>;
+	apple,tunable-common-cfg =
+		<0x8 0x00000001 0x00000001>;
+	apple,tunable-axi2af-lioa =
+		<0x28 0x0000fe2f 0x00000000>,
+		<0x2c 0x00000007 0x00000000>,
+		<0x30 0x0000007f 0x00000000>,
+		<0x34 0x000000ff 0x00000000>,
+		<0x58 0x0000010b 0x00000000>;
+	apple,tunable-lane0 =
+		<0xd094 0x00080000 0x00080000>,
+		<0xd098 0x00080000 0x00080000>,
+		<0xd0a4 0x00800000 0x00800000>,
+		<0xd0a8 0x00200000 0x00200000>;
+	apple,tunable-lane1 =
+		<0x1d094 0x00080000 0x00080000>,
+		<0x1d098 0x00080000 0x00080000>,
+		<0x1d0a4 0x00800000 0x00800000>,
+		<0x1d0a8 0x00200000 0x00200000>;
+	apple,tunable-aus40cmn-shm =
+		<0xa04 0x0000007c 0x00000048>;
+	apple,tunable-auspll =
+		<0x3224 0x00000c00 0x00000800>,
+		<0x3230 0x0000001f 0x0000000f>,
+		<0x3240 0x07d8007f 0x04000059>,
+		<0x32b0 0x0b800000 0x01800000>,
+		<0x32e8 0x00060001 0x00040001>,
+		<0x3338 0x0f800000 0x07800000>;
+	apple,tunable-cio4pll =
+		<0x3a30 0x0000001f 0x0000000f>,
+		<0x3a4c 0x0000fe7f 0x0000501e>,
+		<0x3ab0 0x00700000 0x00300000>,
+		<0x3ae8 0x00060000 0x00020000>;
+	apple,tunable-pipehandler = <0x44 0x4 0x4>;
+};
+
+&atcphy1 {
+	apple,tunable-axi2af =
+		<0x0 0x800000ff 0x8000001c>,
+		<0x4 0x80ff00ff 0x801b0003>,
+		<0x8 0x80ff00ff 0x801b0003>,
+		<0xc 0x80ff00ff 0x801b0005>,
+		<0x10 0x80ff00ff 0x801b0003>,
+		<0x14 0x80ff00ff 0x801b0003>,
+		<0x18 0x80ff00ff 0x801b0003>,
+		<0x1c 0x80ff00ff 0x801b0003>,
+		<0x20 0x800000ff 0x80000015>,
+		<0x24 0x800000ff 0x80000038>,
+		<0x28 0x80ff00ff 0x80380006>,
+		<0x2c 0x80ff00ff 0x80380006>,
+		<0x30 0x80ff00ff 0x80380006>,
+		<0x34 0x80ff00ff 0x80380006>,
+		<0x38 0x80ff00ff 0x80380006>,
+		<0x3c 0x80ff00ff 0x80380006>,
+		<0x40 0x800000ff 0x80000015>,
+		<0x44 0x800000ff 0x80000015>,
+		<0x48 0x800000ff 0x80000015>,
+		<0x100 0x000000ff 0x000000ff>,
+		<0x108 0xffff0006 0x00100000>,
+		<0x304 0x3f3f0000 0x04040000>,
+		<0x308 0x000fffff 0x00001681>,
+		<0x30c 0x000fffff 0x00001680>,
+		<0x310 0x70000fff 0x000001e0>,
+		<0x314 0xf0000fff 0x800001e0>,
+		<0x318 0x70000fff 0x000001e0>,
+		<0x31c 0xf0000fff 0x800001e0>,
+		<0x320 0x70000fff 0x000005a0>,
+		<0x324 0xf0000fff 0x800005a0>,
+		<0x328 0x70000fff 0x000005a0>,
+		<0x32c 0xf0000fff 0x800005a0>,
+		<0x330 0x70000fff 0x000005a0>,
+		<0x334 0xf0000fff 0x800005a0>,
+		<0x338 0x70000fff 0x000005a0>,
+		<0x33c 0x70000fff 0x000005a0>,
+		<0x340 0x70000fff 0x000005a0>,
+		<0x344 0x70000fff 0x000005a0>,
+		<0x348 0x70000fff 0x000005a0>,
+		<0x34c 0x70000fff 0x000005a0>,
+		<0x350 0x70000fff 0x000005a0>,
+		<0x358 0xffffffff 0x0000ffff>,
+		<0x35c 0xffffffff 0x0000ffff>,
+		<0x408 0xffff0020 0x00180020>,
+		<0x40c 0x000fffff 0x00001681>,
+		<0x410 0x000fffff 0x00001680>,
+		<0x414 0x70000fff 0x000001e0>,
+		<0x418 0x70000fff 0x000001e0>,
+		<0x41c 0x70000fff 0x000001e0>,
+		<0x420 0x70000fff 0x000001e0>,
+		<0x424 0x70000fff 0x000005a0>,
+		<0x428 0x70000fff 0x000005a0>,
+		<0x42c 0x70000fff 0x000005a0>,
+		<0x430 0x70000fff 0x000005a0>,
+		<0x434 0x70000fff 0x000005a0>,
+		<0x438 0x70000fff 0x000005a0>,
+		<0x43c 0x70000fff 0x000005a0>,
+		<0x440 0x70000fff 0x000005a0>,
+		<0x444 0x70000fff 0x000005a0>,
+		<0x448 0x70000fff 0x000005a0>,
+		<0x44c 0x70000fff 0x000005a0>,
+		<0x450 0x70000fff 0x000005a0>,
+		<0x454 0x70000fff 0x000005a0>,
+		<0x948 0x07ff07ff 0x00280000>,
+		<0xa48 0x07ff07ff 0x00400040>,
+		<0xb48 0x07ff07ff 0x00b8010e>,
+		<0xc48 0x07ff07ff 0x00400020>,
+		<0xd48 0x07ff07ff 0x008a008a>,
+		<0x1000 0xffffffff 0x7fffffff>,
+		<0x4008 0x00000001 0x00000001>,
+		<0x400c 0x00000001 0x00000001>,
+		<0x4014 0x00000001 0x00000001>,
+		<0x4018 0x00000001 0x00000000>,
+		<0x401c 0x00000001 0x00000001>;
+	apple,tunable-fabric =
+		<0x4 0x003f003f 0x00200020>,
+		<0xc 0x000000f1 0x000000a1>,
+		<0x10 0x0000801f 0x00000004>,
+		<0x18 0x003f003f 0x00200020>,
+		<0x20 0x000000f1 0x000000a1>,
+		<0x24 0x0000801f 0x00000004>,
+		<0x2c 0x00ff00ff 0x00960096>,
+		<0x34 0x000000f1 0x00000071>,
+		<0x38 0x0000801f 0x00000004>,
+		<0x40 0x0000003f 0x00000020>,
+		<0x48 0x0000801f 0x00000004>,
+		<0x50 0x007f007f 0x00450045>,
+		<0x58 0x0000801f 0x00000004>,
+		<0x60 0x0000003f 0x00000020>,
+		<0x68 0x0000801f 0x00000004>,
+		<0x70 0x00000001 0x00000001>,
+		<0x74 0x0000801f 0x00000004>,
+		<0x7c 0x007f007f 0x00400040>,
+		<0x80 0x000000f1 0x00000011>,
+		<0x84 0x00000001 0x00000001>,
+		<0x88 0x00000001 0x00000001>,
+		<0x8c 0x0000801f 0x00000004>,
+		<0x94 0x001f001f 0x00100010>,
+		<0x98 0x000000f1 0x00000011>,
+		<0x9c 0x0000801f 0x00000004>,
+		<0xa4 0x000000ff 0x000000e0>,
+		<0xa8 0x0000801f 0x00000004>,
+		<0xb0 0x0000003f 0x00000020>,
+		<0xb8 0x0000801f 0x00000004>,
+		<0xc0 0x0000003f 0x00000020>,
+		<0xc8 0x0000801f 0x00000004>,
+		<0xd0 0x001f001f 0x00100010>,
+		<0xd8 0x00000001 0x00000001>,
+		<0xdc 0x00000001 0x00000001>,
+		<0xe0 0x0000801f 0x00000004>,
+		<0xe8 0x0000000f 0x00000008>,
+		<0xec 0x0000801f 0x00000004>,
+		<0xf4 0xffffffff 0x01010101>,
+		<0xf8 0x0000801f 0x00000004>,
+		<0x100 0x00000001 0x00000001>,
+		<0x104 0x00000001 0x00000001>,
+		<0x108 0x0000801f 0x00000004>,
+		<0x110 0x0000801f 0x00000004>,
+		<0x118 0x0000801f 0x00000004>,
+		<0x120 0x00000001 0x00000001>,
+		<0x124 0x00000001 0x00000001>,
+		<0x128 0x0000801f 0x00000004>,
+		<0x130 0xffffffff 0x01010101>,
+		<0x134 0x0000801f 0x00000004>,
+		<0x13c 0x00000001 0x00000001>,
+		<0x140 0x00000001 0x00000001>,
+		<0x144 0x0000801f 0x00000004>,
+		<0x14c 0x00000001 0x00000001>,
+		<0x150 0x00000001 0x00000001>,
+		<0x154 0x0000801f 0x00000004>,
+		<0x15c 0x0000801f 0x00000004>,
+		<0x164 0xffffffff 0x01010101>,
+		<0x168 0x0000ffff 0x00000101>,
+		<0x16c 0x0000801f 0x00000004>,
+		<0x174 0x00000001 0x00000001>,
+		<0x178 0x00000001 0x00000001>,
+		<0x17c 0x0000801f 0x00000004>,
+		<0x184 0x00000001 0x00000001>,
+		<0x188 0x00000001 0x00000001>,
+		<0x18c 0x0000801f 0x00000004>;
+	apple,tunable-common-cfg =
+		<0x8 0x00000001 0x00000001>;
+	apple,tunable-axi2af-lioa =
+		<0x28 0x0000fe2f 0x00000000>,
+		<0x2c 0x00000007 0x00000000>,
+		<0x30 0x0000007f 0x00000000>,
+		<0x34 0x000000ff 0x00000000>,
+		<0x58 0x0000010b 0x00000000>;
+	apple,tunable-lane0 =
+		<0xd094 0x00080000 0x00080000>,
+		<0xd098 0x00080000 0x00080000>,
+		<0xd0a4 0x00800000 0x00800000>,
+		<0xd0a8 0x00200000 0x00200000>;
+	apple,tunable-lane1 =
+		<0x1d094 0x00080000 0x00080000>,
+		<0x1d098 0x00080000 0x00080000>,
+		<0x1d0a4 0x00800000 0x00800000>,
+		<0x1d0a8 0x00200000 0x00200000>;
+	apple,tunable-aus40cmn-shm =
+		<0xa04 0x0000007c 0x0000004c>;
+	apple,tunable-auspll =
+		<0x3224 0x00000c00 0x00000800>,
+		<0x3230 0x0000001f 0x0000000f>,
+		<0x3240 0x07d8007f 0x04000049>,
+		<0x32b0 0x0b800000 0x01800000>,
+		<0x32e8 0x00060001 0x00040001>,
+		<0x3338 0x0f800000 0x07800000>;
+	apple,tunable-cio4pll =
+		<0x3a30 0x0000001f 0x0000000f>,
+		<0x3a4c 0x0000fe7f 0x0000501e>,
+		<0x3ab0 0x00700000 0x00300000>,
+		<0x3ae8 0x00060000 0x00020000>;
+	apple,tunable-pipehandler = <0x44 0x4 0x4>;
+};
+
+&atcphy2 {
+	apple,tunable-axi2af =
+		<0x0 0x800000ff 0x80000020>,
+		<0x4 0x80ff00ff 0x801f0003>,
+		<0x8 0x80ff00ff 0x801f0003>,
+		<0xc 0x80ff00ff 0x801f0005>,
+		<0x10 0x80ff00ff 0x801f0003>,
+		<0x14 0x80ff00ff 0x801f0003>,
+		<0x18 0x80ff00ff 0x801f0003>,
+		<0x1c 0x80ff00ff 0x801f0003>,
+		<0x20 0x800000ff 0x80000019>,
+		<0x24 0x800000ff 0x80000040>,
+		<0x28 0x80ff00ff 0x80400006>,
+		<0x2c 0x80ff00ff 0x80400006>,
+		<0x30 0x80ff00ff 0x80400006>,
+		<0x34 0x80ff00ff 0x80400006>,
+		<0x38 0x80ff00ff 0x80400006>,
+		<0x3c 0x80ff00ff 0x80400006>,
+		<0x40 0x800000ff 0x80000019>,
+		<0x44 0x800000ff 0x80000019>,
+		<0x48 0x800000ff 0x80000019>,
+		<0x100 0x000000ff 0x000000ff>,
+		<0x108 0xffff0006 0x00100000>,
+		<0x304 0x3f3f0000 0x04040000>,
+		<0x308 0x000fffff 0x00001681>,
+		<0x30c 0x000fffff 0x00001680>,
+		<0x310 0x70000fff 0x000001e0>,
+		<0x314 0xf0000fff 0x800001e0>,
+		<0x318 0x70000fff 0x000001e0>,
+		<0x31c 0xf0000fff 0x800001e0>,
+		<0x320 0x70000fff 0x000005a0>,
+		<0x324 0xf0000fff 0x800005a0>,
+		<0x328 0x70000fff 0x000005a0>,
+		<0x32c 0xf0000fff 0x800005a0>,
+		<0x330 0x70000fff 0x000005a0>,
+		<0x334 0xf0000fff 0x800005a0>,
+		<0x338 0x70000fff 0x000005a0>,
+		<0x33c 0x70000fff 0x000005a0>,
+		<0x340 0x70000fff 0x000005a0>,
+		<0x344 0x70000fff 0x000005a0>,
+		<0x348 0x70000fff 0x000005a0>,
+		<0x34c 0x70000fff 0x000005a0>,
+		<0x350 0x70000fff 0x000005a0>,
+		<0x358 0xffffffff 0x0000ffff>,
+		<0x35c 0xffffffff 0x0000ffff>,
+		<0x408 0xffff0020 0x001c0020>,
+		<0x40c 0x000fffff 0x00001681>,
+		<0x410 0x000fffff 0x00001680>,
+		<0x414 0x70000fff 0x000001e0>,
+		<0x418 0x70000fff 0x000001e0>,
+		<0x41c 0x70000fff 0x000001e0>,
+		<0x420 0x70000fff 0x000001e0>,
+		<0x424 0x70000fff 0x000005a0>,
+		<0x428 0x70000fff 0x000005a0>,
+		<0x42c 0x70000fff 0x000005a0>,
+		<0x430 0x70000fff 0x000005a0>,
+		<0x434 0x70000fff 0x000005a0>,
+		<0x438 0x70000fff 0x000005a0>,
+		<0x43c 0x70000fff 0x000005a0>,
+		<0x440 0x70000fff 0x000005a0>,
+		<0x444 0x70000fff 0x000005a0>,
+		<0x448 0x70000fff 0x000005a0>,
+		<0x44c 0x70000fff 0x000005a0>,
+		<0x450 0x70000fff 0x000005a0>,
+		<0x454 0x70000fff 0x000005a0>,
+		<0x948 0x07ff07ff 0x00280000>,
+		<0xa48 0x07ff07ff 0x00400040>,
+		<0xb48 0x07ff07ff 0x00b8010e>,
+		<0xc48 0x07ff07ff 0x00400020>,
+		<0xd48 0x07ff07ff 0x008a008a>,
+		<0x1000 0xffffffff 0x7fffffff>,
+		<0x4008 0x00000001 0x00000001>,
+		<0x400c 0x00000001 0x00000001>,
+		<0x4014 0x00000001 0x00000001>,
+		<0x4018 0x00000001 0x00000000>,
+		<0x401c 0x00000001 0x00000001>;
+	apple,tunable-fabric =
+		<0x4 0x003f003f 0x00200020>,
+		<0xc 0x000000f1 0x000000a1>,
+		<0x10 0x0000801f 0x00000004>,
+		<0x18 0x003f003f 0x00200020>,
+		<0x20 0x000000f1 0x000000a1>,
+		<0x24 0x0000801f 0x00000004>,
+		<0x2c 0x00ff00ff 0x00960096>,
+		<0x34 0x000000f1 0x00000071>,
+		<0x38 0x0000801f 0x00000004>,
+		<0x40 0x0000003f 0x00000020>,
+		<0x48 0x0000801f 0x00000004>,
+		<0x50 0x007f007f 0x00450045>,
+		<0x58 0x0000801f 0x00000004>,
+		<0x60 0x0000003f 0x00000020>,
+		<0x68 0x0000801f 0x00000004>,
+		<0x70 0x00000001 0x00000001>,
+		<0x74 0x0000801f 0x00000004>,
+		<0x7c 0x007f007f 0x00400040>,
+		<0x80 0x000000f1 0x00000011>,
+		<0x84 0x00000001 0x00000001>,
+		<0x88 0x00000001 0x00000001>,
+		<0x8c 0x0000801f 0x00000004>,
+		<0x94 0x001f001f 0x00100010>,
+		<0x98 0x000000f1 0x00000011>,
+		<0x9c 0x0000801f 0x00000004>,
+		<0xa4 0x000000ff 0x000000e0>,
+		<0xa8 0x0000801f 0x00000004>,
+		<0xb0 0x0000003f 0x00000020>,
+		<0xb8 0x0000801f 0x00000004>,
+		<0xc0 0x0000003f 0x00000020>,
+		<0xc8 0x0000801f 0x00000004>,
+		<0xd0 0x001f001f 0x00100010>,
+		<0xd8 0x00000001 0x00000001>,
+		<0xdc 0x00000001 0x00000001>,
+		<0xe0 0x0000801f 0x00000004>,
+		<0xe8 0x0000000f 0x00000008>,
+		<0xec 0x0000801f 0x00000004>,
+		<0xf4 0xffffffff 0x01010101>,
+		<0xf8 0x0000801f 0x00000004>,
+		<0x100 0x00000001 0x00000001>,
+		<0x104 0x00000001 0x00000001>,
+		<0x108 0x0000801f 0x00000004>,
+		<0x110 0x0000801f 0x00000004>,
+		<0x118 0x0000801f 0x00000004>,
+		<0x120 0x00000001 0x00000001>,
+		<0x124 0x00000001 0x00000001>,
+		<0x128 0x0000801f 0x00000004>,
+		<0x130 0xffffffff 0x01010101>,
+		<0x134 0x0000801f 0x00000004>,
+		<0x13c 0x00000001 0x00000001>,
+		<0x140 0x00000001 0x00000001>,
+		<0x144 0x0000801f 0x00000004>,
+		<0x14c 0x00000001 0x00000001>,
+		<0x150 0x00000001 0x00000001>,
+		<0x154 0x0000801f 0x00000004>,
+		<0x15c 0x0000801f 0x00000004>,
+		<0x164 0xffffffff 0x01010101>,
+		<0x168 0x0000ffff 0x00000101>,
+		<0x16c 0x0000801f 0x00000004>,
+		<0x174 0x00000001 0x00000001>,
+		<0x178 0x00000001 0x00000001>,
+		<0x17c 0x0000801f 0x00000004>,
+		<0x184 0x00000001 0x00000001>,
+		<0x188 0x00000001 0x00000001>,
+		<0x18c 0x0000801f 0x00000004>;
+	apple,tunable-common-cfg =
+		<0x8 0x00000001 0x00000001>;
+	apple,tunable-axi2af-lioa =
+		<0x28 0x0000fe2f 0x00000000>,
+		<0x2c 0x00000007 0x00000000>,
+		<0x30 0x0000007f 0x00000000>,
+		<0x34 0x000000ff 0x00000000>,
+		<0x58 0x0000010b 0x00000000>;
+	apple,tunable-lane0 =
+		<0xd094 0x00080000 0x00080000>,
+		<0xd098 0x00080000 0x00080000>,
+		<0xd0a4 0x00800000 0x00800000>,
+		<0xd0a8 0x00200000 0x00200000>;
+	apple,tunable-lane1 =
+		<0x1d094 0x00080000 0x00080000>,
+		<0x1d098 0x00080000 0x00080000>,
+		<0x1d0a4 0x00800000 0x00800000>,
+		<0x1d0a8 0x00200000 0x00200000>;
+	apple,tunable-aus40cmn-shm =
+		<0xa04 0x0000007c 0x00000058>;
+	apple,tunable-auspll =
+		<0x3224 0x00000c00 0x00000800>,
+		<0x3230 0x0000001f 0x0000000f>,
+		<0x3240 0x07d8007f 0x04000049>,
+		<0x32b0 0x0b800000 0x01800000>,
+		<0x32e8 0x00060001 0x00040001>,
+		<0x3338 0x0f800000 0x07800000>;
+	apple,tunable-cio4pll =
+		<0x3a30 0x0000001f 0x0000000f>,
+		<0x3a4c 0x0000fe7f 0x00005220>,
+		<0x3ab0 0x00700000 0x00300000>,
+		<0x3ae8 0x00060000 0x00020000>;
+	apple,tunable-pipehandler = <0x44 0x4 0x4>;
+};
+
+&usb_drd0 {
+	/* DRD_USB31_GBL_DEFAULT, then GCTL.PWRDNSCALE = 0xd as macOS's controller reset() sets it */
+	apple,tunable-gbl-default = <0x64 0x2 0x0>, <0x10 0xfff80000 0x00680000>;
+	apple,tunable-gbl-host = <0x4 0x0001ef00 0x00002f00>, <0x1c 0x00000100 0x0>,
+		<0x2c 0x000a07ff 0x000800c8>, <0x100 0x02000100 0x02000100>,
+		<0x504 0x00001000 0x0>, <0x528 0xff0000ff 0x06000006>,
+		<0x52c 0xff0000ff 0x08000008>, <0x538 0x00000800 0x00000800>,
+		<0x580 0xffffffff 0x6f000006>;
+	apple,tunable-dbg = <0x0 0x8 0x8>;
+	apple,tunable-cfg-host = <0x20 0xff 0x1b>;
+	apple,tunable-link = <0x20 0x7ff00000 0x4e900000>, <0x24 0x001f8000 0x000b8000>,
+		<0x60 0x0003ffff 0x00000600>;
+};
+
+&usb_drd1 {
+	/* DRD_USB31_GBL_DEFAULT, then GCTL.PWRDNSCALE = 0xd as macOS's controller reset() sets it */
+	apple,tunable-gbl-default = <0x64 0x2 0x0>, <0x10 0xfff80000 0x00680000>;
+	apple,tunable-gbl-host = <0x4 0x0001ef00 0x00002f00>, <0x1c 0x00000100 0x0>,
+		<0x2c 0x000a07ff 0x000800c8>, <0x100 0x02000100 0x02000100>,
+		<0x504 0x00001000 0x0>, <0x528 0xff0000ff 0x06000006>,
+		<0x52c 0xff0000ff 0x08000008>, <0x538 0x00000800 0x00000800>,
+		<0x580 0xffffffff 0x6f000006>;
+	apple,tunable-dbg = <0x0 0x8 0x8>;
+	apple,tunable-cfg-host = <0x20 0xff 0x1b>;
+	apple,tunable-link = <0x20 0x7ff00000 0x4e900000>, <0x24 0x001f8000 0x000b8000>,
+		<0x60 0x0003ffff 0x00000600>;
+};
+
+&usb_drd2 {
+	/* DRD_USB31_GBL_DEFAULT, then GCTL.PWRDNSCALE = 0xd as macOS's controller reset() sets it */
+	apple,tunable-gbl-default = <0x64 0x2 0x0>, <0x10 0xfff80000 0x00680000>;
+	apple,tunable-gbl-host = <0x4 0x0001ef00 0x00002f00>, <0x1c 0x00000100 0x0>,
+		<0x2c 0x000a07ff 0x000800c8>, <0x100 0x02000100 0x02000100>,
+		<0x504 0x00001000 0x0>, <0x528 0xff0000ff 0x06000006>,
+		<0x52c 0xff0000ff 0x08000008>, <0x538 0x00000800 0x00000800>,
+		<0x580 0xffffffff 0x6f000006>;
+	apple,tunable-dbg = <0x0 0x8 0x8>;
+	apple,tunable-cfg-host = <0x20 0xff 0x1b>;
+	apple,tunable-link = <0x20 0x7ff00000 0x4e900000>, <0x24 0x001f8000 0x000b8000>,
+		<0x60 0x0003ffff 0x00000600>;
+};
+
+/*
+ * The AOP and ISP DARTs' address filters (DAPF), programmed from the J616s
+ * ADT's filter data: <start end r0 r4 r20>. The second register range is
+ * the filter block.
+ */
+&aop_dart {
+	reg = <0x5 0x10f00000 0x0 0xc000>, <0x5 0x10f10000 0x0 0x4000>;
+	apple,dapf-entries = /bits/ 64 <
+		0x5081e4020 0x5081e4043 0x31 0x0 0x1
+		0x5081e4880 0x5081e4c50 0x31 0x0 0x1
+		0x508240004 0x508240373 0x31 0x0 0x1
+		0x508304000 0x50830416b 0x31 0x0 0x1
+		0x508320280 0x50832048b 0x31 0x0 0x1
+		0x508370000 0x5083709a3 0x31 0x0 0x1
+		0x508900014 0x508900017 0x31 0x0 0x1
+		0x50c618110 0x50c61881f 0x31 0x0 0x1
+		0x50c634000 0x50c634003 0x31 0x0 0x1
+		0x50de00000 0x50defffff 0x31 0x0 0x1
+		0x508018000 0x50801bfff 0x31 0x0 0x1
+		0x50801c000 0x50801ffff 0x31 0x0 0x1
+	>;
+};
+
+&isp_dart0 {
+	reg = <0x5 0x828c0000 0x0 0xc000>, <0x5 0x828d0000 0x0 0x4000>;
+	apple,dapf-entries = /bits/ 64 <
+		0x502284000 0x50228402b 0x31 0x0 0x1
+		0x502880000 0x502887fff 0x31 0x0 0x1
+		0x500e3c000 0x500e3c003 0x31 0x0 0x1
+		0x51062c000 0x510648003 0x31 0x0 0x1
+		0x485660000 0x485660003 0x31 0x0 0x1
+		0x220004000 0x2201d62fc 0x31 0x0 0x1
+		0x222004000 0x2221d62fc 0x31 0x0 0x1
+		0x224004000 0x2241d62fc 0x31 0x0 0x1
+		0x226004000 0x2261d62fc 0x31 0x0 0x1
+		0x504824000 0x504824004 0x31 0x0 0x1
+		0x5003c0000 0x5003e4000 0x31 0x0 0x1
+	>;
+};
+
+/* SMC key gp1c powers the trackpad analog front end. */
+&mtp_hid {
+	apple,afe-smc = <&smc>;
+};
+
+/* The surface layout the imported M4 display driver reads */
+&dcp {
+	apple,iomfb-surface-order = <0 1>;
+	apple,iomfb-primary-surface = <0>;
+	apple,iomfb-max-layers = <2>;
+};
+
+/* 4. Kept as the booted tree has them */
+
+&aic {
+	#address-cells = <0>;
+};
+
+&aop {
+	#address-cells = <2>;
+	#size-cells = <2>;
+};
+
+&dcp {
+	#address-cells = <2>;
+	#size-cells = <2>;
+	/* rewritten by the loader on every boot */
+	apple,firmware-version = <0x1a 6 2>;
+	apple,firmware-compat = <0x1a 6 2>;
+};
+
+/ {
+	aliases {
+		disp0_piodma = &disp0_piodma;
+	};
+};
+
+/*
+ * The PCIe node's phandles as the booted tree has them: the loader's
+ * Bluetooth admission runs on that node (rev 14 and later read only its
+ * config window and bus-range, so the extra port and PHY windows are
+ * fine). These are the phandles it carries or names (the AIC in msi-ranges
+ * and interrupt-parent, the DART, the CLKREQ pin, the SMC GPIO and AP pin
+ * controller, the port and itself).
+ */
+&aic {
+	phandle = <0x1>;
+};
+
+&pinctrl {
+	phandle = <0x49>;
+};
+
+&wifi_clkreq {
+	phandle = <0x78>;
+};
+
+&pcie_dart {
+	phandle = <0x79>;
+};
+
+&pcie0 {
+	phandle = <0x7a>;
+};
+
+&port00 {
+	phandle = <0x7b>;
+};
+
+&smc_gpio {
+	phandle = <0x7c>;
+};
