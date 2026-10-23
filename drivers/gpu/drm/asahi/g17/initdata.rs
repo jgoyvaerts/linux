@@ -1273,6 +1273,11 @@ impl InitData {
         Ok(())
     }
 
+    /// Whether a firmware that acknowledges in status A accepted the graph (`+0x14` = 1).
+    pub(super) fn init_accepted(&self) -> Result<bool> {
+        Ok(self.status_word(Role::Primary, 0x14)?.load(Ordering::Acquire) == 1)
+    }
+
     pub(super) fn status_word(&self, role: Role, offset: usize) -> Result<&AtomicU32> {
         self.object(self.cluster)?.word(
             Self::status_offset(role)

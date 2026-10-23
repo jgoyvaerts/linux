@@ -18,8 +18,22 @@ pub(crate) struct PointerLayout {
     pub(crate) recovery_target: Option<usize>,
 }
 
+/// How a firmware build acknowledges the initialization root the host hands it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum InitAck {
+    /// With an `INITDATA_ACK` message on the firmware endpoint.
+    Message,
+    /// By setting word `+0x14` of the primary status A to 1; it sends no message.
+    Status,
+}
+
 /// The layouts and rules of one G17 firmware build.
 pub(crate) struct Variant {
+    /// How the firmware acknowledges its initialization.
+    pub(crate) init_ack: InitAck,
+    /// The host ends the power-on transition with `POWER_ON_DONE` once every coprocessor
+    /// is initialized.
+    pub(crate) power_on_done: bool,
     /// First QID the host may use; the firmware keeps the lower ones for itself.
     pub(crate) qid_floor: usize,
     /// Host words of a queue's pointer block.
@@ -36,6 +50,8 @@ pub(crate) struct Variant {
 
 /// The A18 Pro firmware (26A428).
 pub(crate) const V26A428: Variant = Variant {
+    init_ack: InitAck::Message,
+    power_on_done: true,
     qid_floor: 0,
     pointers: PointerLayout {
         producer: 0x40,
