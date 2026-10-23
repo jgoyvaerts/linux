@@ -196,6 +196,66 @@ static void dchid_unaligned_checksum_test(struct kunit *test)
 	}
 }
 
+/* A ring whose next frame straddles the end of the data area. */
+static void *dchid_test_ring(struct kunit *test, u32 consumer, u32 producer)
+{
+	struct dockchannel_hid *dchid = ((struct dchid_iface *)test->priv)->dchid;
+	u32 *indices;
+
+	dchid->ring = kunit_kzalloc(test, DCHID_RING_SIZE, GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, dchid->ring);
+	indices = dchid->ring;
+	indices[0] = producer;
+	indices[1] = consumer;
+	dchid->ring_read = consumer;
+	dchid->ring_registered = true;
+	dchid->use_ring = true;
+	return dchid->ring + DCHID_RING_HEADER_SIZE;
+}
+
+static void dchid_ring_wrap_test(struct kunit *test)
+{
+	struct dchid_iface *iface = test->priv;
+	const u32 capacity = DCHID_RING_SIZE - DCHID_RING_HEADER_SIZE;
+	const u32 consumer = capacity - 12;
+	struct {
+		struct dchid_hdr hdr;
+		struct dchid_subhdr sub;
+		u8 id;
+		u8 pad[3];
+		__le32 checksum;
+	} __packed frame = {
+		.hdr = { .hdr_len = sizeof(struct dchid_hdr), .channel = DCHID_CHANNEL_CMD,
+			 .length = sizeof(struct dchid_subhdr) + 4, .seq = 7, .iface = 1 },
+		.sub = { .flags = 0x80, .length = 1 },
+		.id = 0x10,
+	};
+	u8 *data;
+
+	/* A complete, checksummed acknowledgment of the pending command. */
+	frame.checksum = cpu_to_le32(U32_MAX - dchid_checksum(&frame, sizeof(frame) - 4));
+	data = dchid_test_ring(test, consumer, sizeof(frame) - 12);
+	memcpy(data + consumer, &frame, 12);
+	memcpy(data, (u8 *)&frame + 12, sizeof(frame) - 12);
+
+	KUNIT_EXPECT_EQ(test, dchid_drain_ring(iface->dchid), 0);
+	/* The frame arrived whole: its acknowledgment matched the pending command. */
+	KUNIT_EXPECT_TRUE(test, completion_done(&iface->out_complete));
+	KUNIT_EXPECT_EQ(test, iface->dchid->ring_read, sizeof(frame) - 12);
+	KUNIT_EXPECT_EQ(test, ((u32 *)iface->dchid->ring)[1], sizeof(frame) - 12);
+}
+
+static void dchid_ring_bad_header_test(struct kunit *test)
+{
+	struct dchid_iface *iface = test->priv;
+	struct dchid_hdr hdr = { .hdr_len = sizeof(hdr) + 1, .length = 4 };
+	u8 *data = dchid_test_ring(test, 0, 16);
+
+	memcpy(data, &hdr, sizeof(hdr));
+	KUNIT_EXPECT_EQ(test, dchid_drain_ring(iface->dchid), -EPROTO);
+	KUNIT_EXPECT_EQ(test, iface->dchid->ring_read, 0U);
+}
+
 static struct kunit_case dchid_parser_cases[] = {
 	KUNIT_CASE(dchid_unaligned_checksum_test),
 	KUNIT_CASE(dchid_short_ack_test),
@@ -206,6 +266,8 @@ static struct kunit_case dchid_parser_cases[] = {
 	KUNIT_CASE(dchid_short_input_test),
 	KUNIT_CASE(dchid_init_descriptor_test),
 	KUNIT_CASE(dchid_packet_checksum_test),
+	KUNIT_CASE(dchid_ring_wrap_test),
+	KUNIT_CASE(dchid_ring_bad_header_test),
 	{}
 };
 
