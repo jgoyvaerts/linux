@@ -50,6 +50,7 @@ pub(crate) const CONFIG: Config = Config {
     perf: &PERF,
     opps: OPPS,
     uat_quirks: crate::mmu::UatQuirks::DEFAULT,
+    region_c: &crate::g17::fw::initdata::REGION_C_26A428,
     variant: &crate::g17::fw::variant::V26A428,
 };
 
