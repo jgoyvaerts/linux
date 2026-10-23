@@ -1526,7 +1526,9 @@ static int dchid_bind_afe_smc(struct dockchannel_hid *dchid)
 	node = of_parse_phandle(dev->of_node, "apple,afe-smc", 0);
 	if (!node)
 		return -EINVAL;
-	if (!of_device_is_compatible(node, "apple,smc")) {
+	/* What macsmc binds to: its driver data is read as an apple_smc below */
+	if (!of_device_is_compatible(node, "apple,t8103-smc") &&
+	    !of_device_is_compatible(node, "apple,smc")) {
 		of_node_put(node);
 		return -EINVAL;
 	}
