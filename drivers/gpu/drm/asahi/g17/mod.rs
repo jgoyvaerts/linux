@@ -220,6 +220,9 @@ const RECEIVER_RETRY_MS: i64 = 20;
 /// counters are sampled initially and after at most [`OPENING_RETIRE_POLLS`] waits.
 const OPENING_RETIRE_POLL_MS: i64 = 1;
 const OPENING_RETIRE_POLLS: usize = 100;
+/// One-millisecond polls for a firmware that acknowledges its initialization only in status A
+/// ([`fw::variant::InitAck::Status`]).
+const INIT_ACCEPT_POLLS: usize = 3000;
 
 /// Address bits of a buffer the coprocessor places itself; the coprocessor sets higher bits in
 /// its buffer requests.
@@ -429,8 +432,9 @@ impl Coprocessor {
         Pin::new(&mut self.rtkit).boot()
     }
 
-    /// Starts the firmware endpoints and hands the firmware its initialization root.
-    fn init(&mut self, root_va: u64) -> Result {
+    /// Starts the firmware endpoints and hands the firmware its initialization root. An
+    /// acknowledgment message is awaited here; one in status A is the caller's to poll.
+    fn init(&mut self, root_va: u64, ack: fw::variant::InitAck) -> Result {
         let mut rtkit = Pin::new(&mut self.rtkit);
         rtkit.as_mut().start_endpoint(EP_FIRMWARE)?;
         rtkit.as_mut().start_endpoint(EP_DOORBELL)?;
@@ -438,7 +442,10 @@ impl Coprocessor {
             EP_FIRMWARE,
             MSG_INITDATA | (root_va & MSG_INITDATA_ADDR_MASK),
         )?;
-        self.state.wait_for_ack()
+        match ack {
+            fw::variant::InitAck::Message => self.state.wait_for_ack(),
+            fw::variant::InitAck::Status => Ok(()),
+        }
     }
 
     /// Sends a host notification to the firmware.
@@ -1061,19 +1068,51 @@ impl Gpu {
         session.uat.confirm_firmware_root_entries(root_entries)?;
         session.uat.mirror_secondary_root()?;
         session.bridge.regs.enable_g17_gating()?;
-        session.primary.init(session.init.root_va(Role::Primary)?)?;
-        if let Some(secondary) = session.secondary.as_mut() {
-            secondary.init(session.init.root_va(Role::Secondary)?)?;
+        let ack = cfg.variant.init_ack;
+        session.primary.init(session.init.root_va(Role::Primary)?, ack)?;
+        if ack == fw::variant::InitAck::Status {
+            Self::wait_for_init_accepted(dev, &session.init, &session.primary)?;
         }
-        session.primary.notify(MSG_POWER_ON_DONE)?;
         if let Some(secondary) = session.secondary.as_mut() {
-            secondary.notify(MSG_POWER_ON_DONE)?;
+            secondary.init(session.init.root_va(Role::Secondary)?, ack)?;
+        }
+        if cfg.variant.power_on_done {
+            session.primary.notify(MSG_POWER_ON_DONE)?;
+            if let Some(secondary) = session.secondary.as_mut() {
+                secondary.notify(MSG_POWER_ON_DONE)?;
+            }
         }
         Self::wait_for_opening(dev, &session.init, &session.primary, session.secondary.as_ref())?;
         session
             .uat
             .activate_render_context(&session._render_global)?;
         Ok(firmware)
+    }
+
+    /// Waits for a firmware that sends no acknowledgment message to accept its
+    /// initialization in status A.
+    fn wait_for_init_accepted(
+        dev: &AsahiDrmDevice,
+        init: &initdata::InitData,
+        primary: &Coprocessor,
+    ) -> Result {
+        for poll in 0..=INIT_ACCEPT_POLLS {
+            if primary.state.crashed.load(Ordering::Acquire) {
+                return Err(EIO);
+            }
+            if init.init_accepted()? {
+                return Ok(());
+            }
+            if poll < INIT_ACCEPT_POLLS {
+                fsleep(Delta::from_millis(1));
+            }
+        }
+        dev_err!(
+            dev.as_ref(),
+            "Firmware did not accept its initialization: status A {:#x?}\n",
+            init.status_read_words::<4>(Role::Primary, 0x10)?
+        );
+        Err(ETIMEDOUT)
     }
 
     /// Waits for both coprocessors to retire their opening device-control records.
