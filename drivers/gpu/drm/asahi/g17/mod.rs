@@ -151,10 +151,18 @@ pub(crate) struct Config {
     /// Offset of the secondary coprocessor's kernel root in the `pagetables` region; `None` for
     /// a single-instance firmware.
     pub(crate) secondary_root_offset: Option<u64>,
-    /// Crash log buffer of each [`Role`].
-    pub(crate) crash_buffers: [FixedBuffer; 2],
+    /// Where the coprocessors' crash log buffers live.
+    pub(crate) crash_buffers: CrashBuffers,
     /// Parameter buffer page metrics shared with the firmware.
     pub(crate) pm_metrics: FixedBuffer,
+    /// Register windows the firmware maps through the hardware data.
+    pub(crate) windows: &'static [fw::initdata::RegisterWindow],
+    /// Register-map slots that are reserved but have no window.
+    pub(crate) reserved_slots: &'static [usize],
+    /// Per-SoC parts of the performance tables.
+    pub(crate) perf: &'static fw::initdata::PerfConfig,
+    /// Number of operating points the device tree lists.
+    pub(crate) opps: usize,
     /// Physical address of the firmware's per-slot recovery keys, read while the firmware is
     /// halted to attribute a fault; `None` where it is unknown (recovery then relies on the
     /// firmware's own blame).
@@ -163,6 +171,13 @@ pub(crate) struct Config {
     pub(crate) gpu_generation: hw::GpuGen,
     /// The firmware build this SoC runs.
     pub(crate) variant: &'static fw::Variant,
+}
+
+/// Where a G17 target's crash log buffers live.
+pub(crate) enum CrashBuffers {
+    /// One buffer per [`Role`] that the firmware requests at a fixed address of the kernel
+    /// lower root, mapped by the driver before the coprocessors start.
+    Fixed([FixedBuffer; 2]),
 }
 
 /// A firmware coprocessor instance.
@@ -346,7 +361,9 @@ impl Coprocessor {
         role: Role,
     ) -> Result<Coprocessor> {
         let index = role as usize;
-        let buffer = &cfg.crash_buffers[index];
+        let buffer = match &cfg.crash_buffers {
+            CrashBuffers::Fixed(buffers) => &buffers[index],
+        };
         let mut crash_buffer = KernelObject::new(
             dev,
             uat.kernel_lower_vm(),

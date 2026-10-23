@@ -716,7 +716,7 @@ impl InitData {
             base: range.start,
             dynamic: range.start + t8140::dynamic::KERNEL_OFFSET..range.end,
         };
-        self.map_register_windows(&env)?;
+        self.map_register_windows(&env, cfg.windows)?;
         let tables = self.build_descriptor_tables(&env)?;
         self.build_render_free_lists(&env)?;
         let first_block = self.build_render_pool(&env)?;
@@ -725,8 +725,12 @@ impl InitData {
         self.initialize_firmware_objects(&env, cfg, &tables, &bundle)
     }
 
-    fn map_register_windows(&mut self, env: &BuildEnv<'_>) -> Result {
-        for window in &t8140::REGISTER_WINDOWS {
+    fn map_register_windows(
+        &mut self,
+        env: &BuildEnv<'_>,
+        windows: &[abi::RegisterWindow],
+    ) -> Result {
+        for window in windows {
             let (phys, va, size) = window.mapping().ok_or(EINVAL)?;
             self.aliases.push(
                 env.vm.map_io(
@@ -1000,13 +1004,13 @@ impl InitData {
         bundle: &BundleObjects,
     ) -> Result {
         let base = env.base;
-        let opps = Self::opps(env.dev)?;
+        let opps = Self::opps(env.dev, cfg.opps)?;
         let hw_args = abi::HwDataArgs {
             chip_id: cfg.chip_id,
-            windows: &t8140::REGISTER_WINDOWS,
-            reserved_slots: &t8140::RESERVED_REGISTER_SLOTS,
+            windows: cfg.windows,
+            reserved_slots: cfg.reserved_slots,
             opps: &opps,
-            perf: &t8140::PERF,
+            perf: cfg.perf,
             completion_rings: bundle.completion_rings,
             qos_va: self.object(bundle.qos)?.gpu_va(),
         };
@@ -1192,7 +1196,7 @@ impl InitData {
             .load(Ordering::Relaxed))
     }
 
-    fn opps(dev: &AsahiDrmDevice) -> Result<KVec<abi::Opp>> {
+    fn opps(dev: &AsahiDrmDevice, count: usize) -> Result<KVec<abi::Opp>> {
         let node = dev.as_ref().as_ref().of_node().ok_or(EIO)?;
         let table = node
             .parse_phandle(c_str!("operating-points-v2"), 0)
@@ -1207,7 +1211,7 @@ impl InitData {
                 GFP_KERNEL,
             )?;
         }
-        if opps.len() != t8140::OPPS {
+        if opps.len() != count {
             return Err(EINVAL);
         }
         Ok(opps)
