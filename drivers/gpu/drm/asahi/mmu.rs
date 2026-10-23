@@ -168,6 +168,25 @@ pub(crate) enum UatFirmware {
     },
 }
 
+/// UAT policy of a SoC where it differs from the A18 Pro's.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub(crate) struct UatQuirks {
+    /// The firmware builds its root and kernel-window tables in the no-map `pagetables` and
+    /// `l2-pagetables` regions: reach tables there through a write-back mapping instead of
+    /// `struct page`.
+    ///
+    /// Temporary: once the boot loader adds these regions to `/memory`, as m1n1 does, the
+    /// regions lose `no-map` and this path goes away.
+    pub(crate) reserved_tables: bool,
+}
+
+impl UatQuirks {
+    /// The A18 Pro and earlier policy.
+    pub(crate) const DEFAULT: UatQuirks = UatQuirks {
+        reserved_tables: false,
+    };
+}
+
 const TTBR_VALID: u64 = 0x1; // BIT(0)
 const TTBR_ASID_SHIFT: usize = 48;
 
@@ -1639,6 +1658,8 @@ struct UatInner {
     /// caches. Set only by [`Uat::new_adopted`].
     #[cfg(CONFIG_DRM_ASAHI_G16)]
     clean_poc: bool,
+    /// No-map reserved regions holding firmware tables (`UatQuirks::reserved_tables`).
+    reserved: Option<Arc<pgtable::ReservedTables>>,
     #[pin]
     shared: Mutex<UatShared>,
     #[pin]
@@ -1949,6 +1970,7 @@ impl Vm {
                 geometry.ias,
                 geometry.oas,
                 uat_inner.firmware != UatFirmware::Handoff,
+                uat_inner.reserved.clone(),
             )?
         } else {
             UatPageTable::new(geometry.ias, geometry.oas)?
@@ -2865,6 +2887,7 @@ impl Uat {
                 failed: AtomicBool::new(false),
                 // The G15 UAT walker does not snoop the CPU caches.
                 clean_poc: true,
+                reserved: None,
                 handoff_flush <- pin_init::pin_init_array_from_fn(|i| {
                     new_mutex!(HandoffFlush(&handoff.flush[i]), "handoff_flush")
                 }),
@@ -3224,7 +3247,7 @@ impl Uat {
         // SAFETY: The kernel root is the bootloader-reserved `pagetables` region, which outlives
         // this `Uat`.
         unsafe {
-            pgtable::with_root_entries(self.kernel_vm.ttb(), UAT_PGSZ / size_of::<u64>(), |ptes| {
+            pgtable::with_root_entries(self.inner.reserved.as_deref(), self.kernel_vm.ttb(), UAT_PGSZ / size_of::<u64>(), |ptes| {
                 for (value, pte) in snapshot.iter_mut().zip(ptes) {
                     *value = pte.load(Ordering::Relaxed);
                 }
@@ -3244,7 +3267,7 @@ impl Uat {
     pub(crate) fn confirm_firmware_root_entries(&self, snapshot: [u64; 3]) -> Result {
         // SAFETY: The root is a bootloader-reserved page retained for this UAT's lifetime.
         let matches = unsafe {
-            pgtable::with_root_entries(self.kernel_vm.ttb(), snapshot.len(), |ptes| {
+            pgtable::with_root_entries(self.inner.reserved.as_deref(), self.kernel_vm.ttb(), snapshot.len(), |ptes| {
                 ptes.iter()
                     .zip(snapshot)
                     .all(|(pte, expected)| pte.load(Ordering::Relaxed) == expected)
@@ -3267,11 +3290,12 @@ impl Uat {
         let count = UAT_PGSZ / size_of::<u64>();
         let first = IOVA_KERN_TOP_LEVEL_INDEX as usize;
 
+        let reserved = self.inner.reserved.as_deref();
         // SAFETY: Both roots are in the bootloader-reserved `pagetables` region, which outlives
         // this `Uat`.
         unsafe {
-            pgtable::with_root_entries(self.kernel_vm.ttb(), count, |primary| {
-                pgtable::with_root_entries(secondary, count, |secondary| {
+            pgtable::with_root_entries(reserved, self.kernel_vm.ttb(), count, |primary| {
+                pgtable::with_root_entries(reserved, secondary, count, |secondary| {
                     for (src, dst) in primary.iter().zip(secondary).skip(first) {
                         let pte = src.load(Ordering::Relaxed);
                         if pte != 0 && dst.load(Ordering::Relaxed) != pte {
@@ -3286,6 +3310,14 @@ impl Uat {
         mem::tlbi_all();
         mem::sync();
         Ok(())
+    }
+
+    /// Discards the CPU's cached lines of the no-map table regions after the firmware built its
+    /// root there during boot, before the first host edit (`UatQuirks::reserved_tables`).
+    pub(crate) fn invalidate_reserved_tables(&self) {
+        if let Some(reserved) = self.inner.reserved.as_ref() {
+            reserved.invalidate();
+        }
     }
 
     /// Activates the device-global render root in context 1 after the boot records retire.
@@ -3315,7 +3347,11 @@ impl Uat {
 
     /// Creates the reference-counted inner data for a new `Uat` instance.
     #[inline(never)]
-    fn make_inner(dev: driver::AsahiDevice, firmware: UatFirmware) -> Result<Arc<UatInner>> {
+    fn make_inner(
+        dev: driver::AsahiDevice,
+        firmware: UatFirmware,
+        reserved: Option<Arc<pgtable::ReservedTables>>,
+    ) -> Result<Arc<UatInner>> {
         let handoff_rgn = Self::map_region(dev.as_ref().as_ref(), c"handoff", HANDOFF_SIZE, true)?;
         let ttbs_rgn = Self::map_region(dev.as_ref().as_ref(), c"ttbs", SLOTS_SIZE, true)?;
 
@@ -3332,6 +3368,7 @@ impl Uat {
                 failed: AtomicBool::new(false),
                 #[cfg(CONFIG_DRM_ASAHI_G16)]
                 clean_poc: false,
+                reserved,
                 handoff_flush <- pin_init::pin_init_array_from_fn(|i| {
                     new_mutex!(HandoffFlush(&handoff.flush[i]), "handoff_flush")
                 }),
@@ -3362,12 +3399,26 @@ impl Uat {
         geometry: UatGeometry,
         map_kernel_to_user: bool,
         firmware: UatFirmware,
+        quirks: UatQuirks,
     ) -> Result<Self> {
         dev_info!(dev.as_ref(), "MMU: Initializing...\n");
 
-        let inner = Self::make_inner(dev.clone(), firmware)?;
-
         let of_node = dev.as_ref().as_ref().of_node().ok_or(EINVAL)?;
+        let reserved = if quirks.reserved_tables {
+            let mut tables = pgtable::ReservedTables::new();
+            for name in [c"pagetables", c"l2-pagetables"] {
+                let res = of_node.reserved_mem_region_to_resource_byname(name)?;
+                // SAFETY: The boot loader reserved these regions (no-map) for the firmware's
+                // page tables; they stay reserved until reboot.
+                unsafe { tables.add(res)? };
+            }
+            Some(Arc::new(tables, GFP_KERNEL)?)
+        } else {
+            None
+        };
+
+        let inner = Self::make_inner(dev.clone(), firmware, reserved)?;
+
         let res = of_node.reserved_mem_region_to_resource_byname(c_str!("pagetables"))?;
         let ttb1 = res.start();
         let ttb1size: usize = res.size().try_into()?;
