@@ -378,6 +378,22 @@ impl Prot {
         (!need_read || readable) && (!need_write || writable)
     }
 
+    /// The native form of a GPU-only permission: AP 0 with the access in PXN (read) and UXN
+    /// (write), as [`Self::allows_gpu`] reads AP 0. The logical selectors RO, WO, RW, NA map to
+    /// the native RO, WO, RW, NA. Firmware permissions are returned unchanged.
+    const fn native_gpu(self) -> Self {
+        if self.ap != AP_GPU {
+            return self;
+        }
+        let selector = (self.high_bits >> 1) & 3;
+        Self {
+            ap: AP_FW_GPU,
+            high_bits: (self.high_bits & !(HIGH_BITS_PXN | HIGH_BITS_UXN))
+                | (((selector + 1) & 3) << 1),
+            ..self
+        }
+    }
+
     pub(crate) const fn is_cached_noncoherent(&self) -> bool {
         self.ap != AP_GPU && self.memattr == MEMATTR_CACHED
     }
@@ -400,6 +416,8 @@ pub(crate) struct UatPageTable {
     retained: bool,
     /// Reserved regions holding tables this page table may reach.
     reserved: Option<Arc<ReservedTables>>,
+    /// Store GPU-only permissions in the native AP 0 form ([`Prot::native_gpu`]).
+    native_gpu: bool,
     /// Tables below a root the driver did not allocate may belong to the bootloader or the
     /// firmware, so only the tables recorded here are ever freed. `None` if the driver owns the
     /// tables below the root, as with the handoff firmware interface.
@@ -409,7 +427,6 @@ pub(crate) struct UatPageTable {
     oas_mask: u64,
     /// Clean new tables and changed entries to the point of coherency, for a UAT walker that does
     /// not snoop the CPU caches ([`Self::enable_clean_poc`]).
-    #[cfg(CONFIG_DRM_ASAHI_G16)]
     clean_poc: bool,
 }
 
@@ -423,45 +440,47 @@ impl UatPageTable {
             ttb_owned: true,
             retained: false,
             reserved: None,
+            native_gpu: false,
             driver_tables: None,
             va_range: 0..(1u64 << ias),
             ias_mask: (1u64 << ias) - 1,
             oas_mask: (1u64 << oas) - 1,
-            #[cfg(CONFIG_DRM_ASAHI_G16)]
             clean_poc: false,
         })
     }
 
     /// Makes every later change of this page table visible to a UAT walker that does not snoop the
-    /// CPU caches (G16), and cleans the root, which was zeroed through the cacheable linear map.
+    /// CPU caches (G16, and `UatQuirks::clean_tables`), and cleans the root, which may have been
+    /// zeroed through the cacheable linear map.
     ///
     /// From now on, a new table page is cleaned before its parent descriptor names it, a changed
     /// table or leaf descriptor is cleaned after the store, and every mutating walk ends with a
     /// `dsb sy`. Call it before anything is mapped and before any context names the root.
-    #[cfg(CONFIG_DRM_ASAHI_G16)]
     pub(crate) fn enable_clean_poc(&mut self) -> Result {
         self.clean_poc = true;
-        // SAFETY: The root is a RAM page owned or borrowed by this page table for its lifetime.
-        let root = unsafe { Page::borrow_phys(&self.ttb) }.ok_or(EIO)?;
-        root.with_pointer_into_page(0, UAT_PGSZ, |p| {
-            clean_poc(p, UAT_PGSZ);
-            Ok(())
-        })?;
+        // SAFETY: The root is owned or borrowed by this page table for its lifetime, in RAM or in
+        // a reserved region.
+        unsafe {
+            with_table(self.reserved.as_deref(), self.ttb, 0, UAT_PGSZ, |p| {
+                clean_poc(p, UAT_PGSZ);
+                Ok(())
+            })
+        }?;
         poc_barrier();
         Ok(())
     }
 
-    /// Whether changes are cleaned to the point of coherency (always false without G16 support).
+    /// Whether changes are cleaned to the point of coherency.
     #[inline(always)]
     fn cleans_poc(&self) -> bool {
-        #[cfg(CONFIG_DRM_ASAHI_G16)]
-        {
-            self.clean_poc
-        }
-        #[cfg(not(CONFIG_DRM_ASAHI_G16))]
-        {
-            false
-        }
+        self.clean_poc
+    }
+
+    /// Stores GPU-only permissions of this (client or kernel-lower) table in the native AP 0 form
+    /// (`UatQuirks::native_gpu_permissions`). Firmware roots never hold GPU-only mappings.
+    pub(crate) fn with_native_gpu(mut self, native_gpu: bool) -> Self {
+        self.native_gpu = native_gpu;
+        self
     }
 
     /// Borrow a root; track individual child ownership only when other agents
@@ -503,11 +522,11 @@ impl UatPageTable {
             ttb_owned: false,
             retained: false,
             reserved,
+            native_gpu: false,
             driver_tables: shared_tables.then(KVec::new),
             va_range,
             ias_mask: (1u64 << ias) - 1,
             oas_mask: (1u64 << oas) - 1,
-            #[cfg(CONFIG_DRM_ASAHI_G16)]
             clean_poc: false,
         })
     }
@@ -897,6 +916,15 @@ impl UatPageTable {
         }
     }
 
+    /// The permission bits as this table stores them.
+    fn stored(&self, prot: Prot) -> Prot {
+        if self.native_gpu {
+            prot.native_gpu()
+        } else {
+            prot
+        }
+    }
+
     pub(crate) fn map_pages(
         &mut self,
         iova_range: Range<u64>,
@@ -916,6 +944,7 @@ impl UatPageTable {
         }
 
         let pte_bits = self.pte_bits();
+        let prot = self.stored(prot);
 
         self.walk(iova_range, true, false, true, |iova, ptes| {
             for (idx, pte) in ptes.iter().enumerate() {
@@ -942,6 +971,7 @@ impl UatPageTable {
             iova_range,
             prot
         );
+        let prot = self.stored(prot);
         self.walk(iova_range, true, false, true, |iova, ptes| {
             for (idx, pte) in ptes.iter().enumerate() {
                 let ptev = pte.load(Ordering::Relaxed);
