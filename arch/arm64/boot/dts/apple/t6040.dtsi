@@ -608,6 +608,40 @@
 		power-domains = <&ps_avd_sys>;
 	};
 
+	/* Named after its sgx range: the coprocessor range is the mailbox node's too. */
+	gpu: gpu@288000000 {
+		compatible = "apple,agx-t6040";
+		reg = <0x2 0x8a600000 0x0 0x88000>,
+		      <0x2 0x88000000 0x0 0x3758000>;
+		reg-names = "asc", "sgx";
+		mboxes = <&gfx_mbox>;
+		power-domains = <&ps_gfx>;
+		status = "disabled";
+	};
+
+	pmgr_gfx: power-management@288e80000 {
+		compatible = "apple,t6041-pmgr", "apple,t8103-pmgr", "syscon", "simple-mfd";
+		#address-cells = <1>;
+		#size-cells = <1>;
+		reg = <0x2 0x88e80000 0x0 0x4000>;
+		/* child nodes are added in t6040-pmgr.dtsi */
+	};
+
+	gfx_mbox: mailbox@28a600000 {
+		compatible = "apple,t6040-ascwrap-v6";
+		reg = <0x2 0x8a600000 0x0 0x88000>,
+		      <0x2 0x8a050000 0x0 0x8>;
+		reg-names = "wrapper", "iop-vbar";
+		interrupt-parent = <&aic>;
+		interrupts = <AIC_IRQ 1501 IRQ_TYPE_LEVEL_HIGH>,
+			     <AIC_IRQ 1504 IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-names = "send-empty", "recv-not-empty";
+		apple,firmware-role = "GFX";
+		power-domains = <&ps_gfx>;
+		#mbox-cells = <0>;
+		status = "disabled";
+	};
+
 	disp0_dart: iommu@402300000 {
 		compatible = "apple,t6041-dart", "apple,t8110-dart";
 		reg = <0x4 0x02300000 0x0 0xc000>;
@@ -874,6 +908,7 @@
 			reg = <0xd>;
 			label = "pmp-gfx";
 			#power-domain-cells = <0>;
+			power-domains = <&ps_gfx>;
 			apple,always-on;
 		};
 	};
