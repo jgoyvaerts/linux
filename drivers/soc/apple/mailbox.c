@@ -60,6 +60,8 @@
 #define APPLE_T8140_GFX_IOP_VBAR_BASE 0x482050000ULL
 #define APPLE_T8140_GFX1_WRAPPER_BASE 0x482e00000ULL
 #define APPLE_T8140_GFX1_IOP_VBAR_BASE 0x482850000ULL
+#define APPLE_T6040_GFX_WRAPPER_BASE 0x28a600000ULL
+#define APPLE_T6040_GFX_IOP_VBAR_BASE 0x28a050000ULL
 
 static_assert(APPLE_ASCWRAP_V6_MBOX_OFFSET + APPLE_ASC_MBOX_A2I_CONTROL ==
 	      0x8110);
@@ -116,9 +118,19 @@ static_assert(APPLE_ASCWRAP_V6_MBOX_OFFSET + APPLE_ASC_MBOX_I2A_RECV0 ==
 #define APPLE_G17_MBOX_RX_BUDGET 64
 #define APPLE_G17_MBOX_ATOMIC_TX_US 1000
 
+/* One firmware role of an ASCWrap v6 provider, at its fixed CPU-physical windows. */
+struct apple_mbox_ascwrap_v6_role_desc {
+	const char *name;
+	enum apple_mbox_ascwrap_v6_role role;
+	resource_size_t wrapper_base;
+	resource_size_t iop_vbar_base;
+};
+
 struct apple_mbox_hw {
 	unsigned int reg_offset;
 	bool is_ascwrap_v6;
+	const struct apple_mbox_ascwrap_v6_role_desc *ascwrap_v6_roles;
+	unsigned int num_ascwrap_v6_roles;
 	bool ap_initializes_mailboxes;
 
 	unsigned int control_full;
@@ -675,6 +687,8 @@ static int apple_mbox_probe(struct platform_device *pdev)
 	int ret;
 	char *irqname;
 	const char *firmware_role;
+	const struct apple_mbox_ascwrap_v6_role_desc *role;
+	unsigned int i;
 	struct apple_mbox *mbox;
 	struct device *dev = &pdev->dev;
 	struct resource *res, *iop_vbar_res;
@@ -691,7 +705,7 @@ static int apple_mbox_probe(struct platform_device *pdev)
 	if (mbox->hw->is_ascwrap_v6) {
 		/*
 		 * Validate the entire provider identity before mapping either
-		 * resource.  These are fixed T8140 CPU-physical windows and role
+		 * resource.  These are fixed per-SoC CPU-physical windows and role
 		 * assignments, not generic consumer-provided aliases.
 		 */
 		res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "wrapper");
@@ -709,28 +723,26 @@ static int apple_mbox_probe(struct platform_device *pdev)
 			return dev_err_probe(dev, ret,
 					     "missing ASCWrap v6 firmware role\n");
 
-		if (!strcmp(firmware_role, "GFX")) {
-			mbox->ascwrap_v6.role = APPLE_MBOX_ASCWRAP_V6_ROLE_GFX;
-			if (res->start != APPLE_T8140_GFX_WRAPPER_BASE ||
-			    iop_vbar_res->start != APPLE_T8140_GFX_IOP_VBAR_BASE)
-				return dev_err_probe(dev, -EINVAL,
-						     "GFX ASCWrap v6 resources do not match T8140\n");
-		} else if (!strcmp(firmware_role, "GFX1")) {
-			mbox->ascwrap_v6.role = APPLE_MBOX_ASCWRAP_V6_ROLE_GFX1;
-			if (res->start != APPLE_T8140_GFX1_WRAPPER_BASE ||
-			    iop_vbar_res->start != APPLE_T8140_GFX1_IOP_VBAR_BASE)
-				return dev_err_probe(dev, -EINVAL,
-						     "GFX1 ASCWrap v6 resources do not match T8140\n");
-		} else {
+		for (i = 0; i < mbox->hw->num_ascwrap_v6_roles; i++) {
+			role = &mbox->hw->ascwrap_v6_roles[i];
+			if (!strcmp(firmware_role, role->name))
+				break;
+		}
+		if (i == mbox->hw->num_ascwrap_v6_roles)
 			return dev_err_probe(dev, -EINVAL,
 					     "invalid ASCWrap v6 firmware role\n");
-		}
+		if (res->start != role->wrapper_base ||
+		    iop_vbar_res->start != role->iop_vbar_base)
+			return dev_err_probe(dev, -EINVAL,
+					     "%s ASCWrap v6 resources do not match the SoC\n",
+					     role->name);
+		mbox->ascwrap_v6.role = role->role;
 
 		mbox->ascwrap_v6.wrapper_start = res->start;
 		mbox->ascwrap_v6.wrapper_size = resource_size(res);
 		mbox->ascwrap_v6.iop_vbar_start = iop_vbar_res->start;
 		mbox->ascwrap_v6.iop_vbar_size = resource_size(iop_vbar_res);
-		/* T8140 implements both the CPU start and the CPU stop. */
+		/* T8140 and T6040 implement both the CPU start and the CPU stop. */
 		mbox->ascwrap_v6.missing = 0;
 
 		mbox->wrapper_regs =
@@ -874,9 +886,44 @@ static const struct apple_mbox_hw apple_mbox_t8140_asc_hw = {
 	.has_irq_controls = false,
 };
 
-static const struct apple_mbox_hw apple_mbox_ascwrap_v6_hw = {
+static const struct apple_mbox_ascwrap_v6_role_desc apple_mbox_t8140_ascwrap_v6_roles[] = {
+	{ "GFX", APPLE_MBOX_ASCWRAP_V6_ROLE_GFX,
+	  APPLE_T8140_GFX_WRAPPER_BASE, APPLE_T8140_GFX_IOP_VBAR_BASE },
+	{ "GFX1", APPLE_MBOX_ASCWRAP_V6_ROLE_GFX1,
+	  APPLE_T8140_GFX1_WRAPPER_BASE, APPLE_T8140_GFX1_IOP_VBAR_BASE },
+};
+
+/* The T6040 runs a single GPU firmware instance. */
+static const struct apple_mbox_ascwrap_v6_role_desc apple_mbox_t6040_ascwrap_v6_roles[] = {
+	{ "GFX", APPLE_MBOX_ASCWRAP_V6_ROLE_GFX,
+	  APPLE_T6040_GFX_WRAPPER_BASE, APPLE_T6040_GFX_IOP_VBAR_BASE },
+};
+
+static const struct apple_mbox_hw apple_mbox_t8140_ascwrap_v6_hw = {
 	.reg_offset = APPLE_ASCWRAP_V6_MBOX_OFFSET,
 	.is_ascwrap_v6 = true,
+	.ascwrap_v6_roles = apple_mbox_t8140_ascwrap_v6_roles,
+	.num_ascwrap_v6_roles = ARRAY_SIZE(apple_mbox_t8140_ascwrap_v6_roles),
+
+	.control_full = APPLE_ASC_MBOX_CONTROL_FULL,
+	.control_empty = APPLE_ASC_MBOX_CONTROL_EMPTY,
+
+	.a2i_control = APPLE_ASC_MBOX_A2I_CONTROL,
+	.a2i_send0 = APPLE_ASC_MBOX_A2I_SEND0,
+	.a2i_send1 = APPLE_ASC_MBOX_A2I_SEND1,
+
+	.i2a_control = APPLE_ASC_MBOX_I2A_CONTROL,
+	.i2a_recv0 = APPLE_ASC_MBOX_I2A_RECV0,
+	.i2a_recv1 = APPLE_ASC_MBOX_I2A_RECV1,
+
+	.has_irq_controls = false,
+};
+
+static const struct apple_mbox_hw apple_mbox_t6040_ascwrap_v6_hw = {
+	.reg_offset = APPLE_ASCWRAP_V6_MBOX_OFFSET,
+	.is_ascwrap_v6 = true,
+	.ascwrap_v6_roles = apple_mbox_t6040_ascwrap_v6_roles,
+	.num_ascwrap_v6_roles = ARRAY_SIZE(apple_mbox_t6040_ascwrap_v6_roles),
 
 	.control_full = APPLE_ASC_MBOX_CONTROL_FULL,
 	.control_empty = APPLE_ASC_MBOX_CONTROL_EMPTY,
@@ -929,7 +976,8 @@ static const struct apple_mbox_hw apple_mbox_m3_hw = {
 static const struct of_device_id apple_mbox_of_match[] = {
 	{ .compatible = "apple,t6031-agx-asc-mailbox", .data = &apple_mbox_asc_hw },
 	{ .compatible = "apple,t8122-agx-asc-mailbox", .data = &apple_mbox_asc_hw },
-	{ .compatible = "apple,t8140-ascwrap-v6", .data = &apple_mbox_ascwrap_v6_hw },
+	{ .compatible = "apple,t6040-ascwrap-v6", .data = &apple_mbox_t6040_ascwrap_v6_hw },
+	{ .compatible = "apple,t8140-ascwrap-v6", .data = &apple_mbox_t8140_ascwrap_v6_hw },
 	{ .compatible = "apple,t8140-asc-mailbox", .data = &apple_mbox_t8140_asc_hw },
 	{ .compatible = "apple,t8140-aop-setup-mailbox", .data = &apple_mbox_t8140_aop_setup_hw },
 	/*
