@@ -49,6 +49,7 @@ pub(crate) const CONFIG: Config = Config {
     reserved_slots: &RESERVED_REGISTER_SLOTS,
     perf: &PERF,
     opps: OPPS,
+    uat_quirks: crate::mmu::UatQuirks::DEFAULT,
     variant: &crate::g17::fw::variant::V26A428,
 };
 

@@ -167,6 +167,25 @@ pub(crate) enum UatFirmware {
     },
 }
 
+/// UAT policy of a SoC where it differs from the A18 Pro's.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub(crate) struct UatQuirks {
+    /// The firmware builds its root and kernel-window tables in the no-map `pagetables` and
+    /// `l2-pagetables` regions: reach tables there through a write-back mapping instead of
+    /// `struct page`.
+    ///
+    /// Temporary: once the boot loader adds these regions to `/memory`, as m1n1 does, the
+    /// regions lose `no-map` and this path goes away.
+    pub(crate) reserved_tables: bool,
+}
+
+impl UatQuirks {
+    /// The A18 Pro and earlier policy.
+    pub(crate) const DEFAULT: UatQuirks = UatQuirks {
+        reserved_tables: false,
+    };
+}
+
 const TTBR_VALID: u64 = 0x1; // BIT(0)
 const TTBR_ASID_SHIFT: usize = 48;
 
@@ -1482,6 +1501,8 @@ unsafe impl Send for UatShared {}
 #[pin_data]
 struct UatInner {
     firmware: UatFirmware,
+    /// No-map reserved regions holding firmware tables (`UatQuirks::reserved_tables`).
+    reserved: Option<Arc<pgtable::ReservedTables>>,
     #[pin]
     shared: Mutex<UatShared>,
     #[pin]
@@ -1683,6 +1704,7 @@ impl Vm {
                 geometry.ias,
                 geometry.oas,
                 uat_inner.firmware != UatFirmware::Handoff,
+                uat_inner.reserved.clone(),
             )?
         } else {
             UatPageTable::new(geometry.ias, geometry.oas)?
@@ -2682,6 +2704,14 @@ impl Uat {
         Ok(())
     }
 
+    /// Discards the CPU's cached lines of the no-map table regions after the firmware built its
+    /// root there during boot, before the first host edit (`UatQuirks::reserved_tables`).
+    pub(crate) fn invalidate_reserved_tables(&self) {
+        if let Some(reserved) = self.inner.reserved.as_ref() {
+            reserved.invalidate();
+        }
+    }
+
     /// Activates the device-global render root in context 1 after the boot records retire.
     /// Both contexts must still contain their original kernel roots.
     pub(crate) fn activate_render_context(&self, vm: &Vm) -> Result {
@@ -2709,7 +2739,11 @@ impl Uat {
 
     /// Creates the reference-counted inner data for a new `Uat` instance.
     #[inline(never)]
-    fn make_inner(dev: driver::AsahiDevice, firmware: UatFirmware) -> Result<Arc<UatInner>> {
+    fn make_inner(
+        dev: driver::AsahiDevice,
+        firmware: UatFirmware,
+        reserved: Option<Arc<pgtable::ReservedTables>>,
+    ) -> Result<Arc<UatInner>> {
         let handoff_rgn = Self::map_region(dev.as_ref().as_ref(), c"handoff", HANDOFF_SIZE, true)?;
         let ttbs_rgn = Self::map_region(dev.as_ref().as_ref(), c"ttbs", SLOTS_SIZE, true)?;
 
@@ -2722,6 +2756,7 @@ impl Uat {
         Arc::pin_init(
             try_pin_init!(UatInner {
                 firmware,
+                reserved,
                 handoff_flush <- pin_init::pin_init_array_from_fn(|i| {
                     new_mutex!(HandoffFlush(&handoff.flush[i]), "handoff_flush")
                 }),
@@ -2749,12 +2784,26 @@ impl Uat {
         geometry: UatGeometry,
         map_kernel_to_user: bool,
         firmware: UatFirmware,
+        quirks: UatQuirks,
     ) -> Result<Self> {
         dev_info!(dev.as_ref(), "MMU: Initializing...\n");
 
-        let inner = Self::make_inner(dev.clone(), firmware)?;
-
         let of_node = dev.as_ref().as_ref().of_node().ok_or(EINVAL)?;
+        let reserved = if quirks.reserved_tables {
+            let mut tables = pgtable::ReservedTables::new();
+            for name in [c"pagetables", c"l2-pagetables"] {
+                let res = of_node.reserved_mem_region_to_resource_byname(name)?;
+                // SAFETY: The boot loader reserved these regions (no-map) for the firmware's
+                // page tables; they stay reserved until reboot.
+                unsafe { tables.add(res)? };
+            }
+            Some(Arc::new(tables, GFP_KERNEL)?)
+        } else {
+            None
+        };
+
+        let inner = Self::make_inner(dev.clone(), firmware, reserved)?;
+
         let res = of_node.reserved_mem_region_to_resource_byname(c_str!("pagetables"))?;
         let ttb1 = res.start();
         let ttb1size: usize = res.size().try_into()?;
