@@ -57,6 +57,9 @@ pub(crate) struct Variant {
     pub(crate) few_primitives: bool,
     /// The firmware runs ray-traversal work (ray queries and intersection programs).
     pub(crate) ray_traversal: bool,
+    /// Render item rings carry lead commands: InitBufferManager before the first tiling pass
+    /// of a buffer manager, and FragmentBarrier before every fragment descriptor.
+    pub(crate) lead_commands: bool,
 }
 
 /// The A18 Pro firmware (26A428).
@@ -73,4 +76,5 @@ pub(crate) const V26A428: Variant = Variant {
     mcache: true,
     few_primitives: true,
     ray_traversal: true,
+    lead_commands: false,
 };
