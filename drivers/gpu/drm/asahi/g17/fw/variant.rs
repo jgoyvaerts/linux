@@ -27,8 +27,19 @@ pub(crate) enum InitAck {
     Status,
 }
 
+/// The initialization graph of a firmware build.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum InitGraph {
+    /// Two instances, as the A18 Pro firmware (26A428) runs.
+    G17P,
+    /// One instance carrying both roles, with the 25G83 layouts ([`super::initdata::v25g83`]).
+    V25G83,
+}
+
 /// The layouts and rules of one G17 firmware build.
 pub(crate) struct Variant {
+    /// The initialization graph.
+    pub(crate) graph: InitGraph,
     /// How the firmware acknowledges its initialization.
     pub(crate) init_ack: InitAck,
     /// The host ends the power-on transition with `POWER_ON_DONE` once every coprocessor
@@ -50,6 +61,7 @@ pub(crate) struct Variant {
 
 /// The A18 Pro firmware (26A428).
 pub(crate) const V26A428: Variant = Variant {
+    graph: InitGraph::G17P,
     init_ack: InitAck::Message,
     power_on_done: true,
     qid_floor: 0,
