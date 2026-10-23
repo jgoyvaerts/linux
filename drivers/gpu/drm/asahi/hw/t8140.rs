@@ -44,6 +44,7 @@ pub(crate) const CONFIG: Config = Config {
     },
     recovery_slot_keys: Some(recovery::SLOT_KEYS),
     gpu_generation: GpuGen::G17,
+    variant: &crate::g17::fw::variant::V26A428,
 };
 
 use crate::g17::fw::initdata::{PerfConfig, RegisterWindow, PERF_STATES};

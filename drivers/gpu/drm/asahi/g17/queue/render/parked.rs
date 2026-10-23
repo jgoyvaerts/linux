@@ -26,6 +26,7 @@ pub(crate) struct ParkedPair {
     ordinal: u64,
     clusters: u32,
     descriptor_flags: [u32; 2],
+    variant: &'static crate::g17::fw::Variant,
     installed: [bool; 2],
     recovery_generation: u64,
     registered: Option<u8>,
@@ -91,6 +92,7 @@ impl Pair {
             ordinal: self.ordinal,
             clusters: self.clusters,
             descriptor_flags: self.descriptor_flags,
+            variant: self.variant,
             installed: self.installed,
             recovery_generation: self.recovery_generation,
             registered: self.registered,
@@ -167,6 +169,7 @@ impl ParkedPair {
             pm_generation,
             self.ordinal,
             word,
+            self.variant,
         )?;
         Ok(Prepared {
             memory: Some(memory),
@@ -230,6 +233,7 @@ impl ParkedPair {
             initial_packet: next.initial_packet,
             clusters: self.clusters,
             descriptor_flags: self.descriptor_flags,
+            variant: self.variant,
             installed: self.installed,
             configs: [None; 2],
             cursors: [0; 2],

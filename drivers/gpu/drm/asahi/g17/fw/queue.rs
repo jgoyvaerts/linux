@@ -20,6 +20,8 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 use kernel::prelude::*;
 
+use super::variant::PointerLayout;
+
 use super::kick::{KickTimestamp, QID_MAX};
 
 /// Firmware scheduling profile of a queue.
@@ -115,26 +117,29 @@ pub(crate) enum DataMaster {
 ///
 /// - creation: the whole block, [`PointerBlock::new`], before the queue is
 ///   first published;
-/// - publication: `producer`, with one aligned 32-bit store per publication
+/// - publication: the producer, with one aligned 32-bit store per publication
 ///   step, after a barrier that orders the work pointers and commands before
 ///   it;
 /// - reuse of a render queue for a new owner: [`PointerBlock::rebase`].
+///
+/// Where the producer and the recovery target live depends on the firmware
+/// build ([`PointerLayout`]).
 #[repr(C)]
 #[derive(Debug)]
 pub(crate) struct PointerBlock {
     /// Item-ring position up to which the firmware has finished commands.
-    /// Free ring space is measured from it, so it bounds `producer`.
+    /// Free ring space is measured from it, so it bounds the producer.
     pub(crate) done: AtomicU32,
     pub(crate) unk_04: [u32; 11],
     /// Written by the firmware. The host treats the queue as idle only when
-    /// this cursor, `done` and `producer` are equal.
+    /// this cursor, `done` and the producer are equal.
     pub(crate) unk_30: AtomicU32,
     pub(crate) unk_34: [u32; 3],
-    /// Item-ring position after the last work pointer the host published.
-    pub(crate) producer: AtomicU32,
+    /// 26A428: item-ring position after the last work pointer the host published.
+    word_40: AtomicU32,
     pub(crate) unk_44: [u32; 3],
-    /// On recovery, the host copies producer here before acknowledging resume.
-    pub(crate) recovery_target: u32,
+    /// 26A428: on recovery, the host copies the producer here before acknowledging resume.
+    word_50: AtomicU32,
     pub(crate) unk_54: [u32; 3],
     /// Number of entries in the item ring.
     pub(crate) entries: u32,
@@ -143,29 +148,40 @@ pub(crate) struct PointerBlock {
 
 static_assert!(size_of::<PointerBlock>() == 0x80);
 static_assert!(core::mem::offset_of!(PointerBlock, unk_30) == 0x30);
-static_assert!(core::mem::offset_of!(PointerBlock, producer) == 0x40);
+static_assert!(core::mem::offset_of!(PointerBlock, word_40) == 0x40);
+static_assert!(core::mem::offset_of!(PointerBlock, word_50) == 0x50);
 static_assert!(core::mem::offset_of!(PointerBlock, entries) == 0x60);
 
 // SAFETY: PointerBlock contains only integers and integer atomics.
 unsafe impl Zeroable for PointerBlock {}
 
 impl PointerBlock {
-    pub(crate) const PRODUCER: usize = core::mem::offset_of!(Self, producer);
-    pub(crate) const RECOVERY_TARGET: usize = core::mem::offset_of!(Self, recovery_target);
-
     /// Returns the cursors of an empty item ring.
-    pub(crate) const fn new() -> Self {
-        Self {
+    pub(crate) fn new(layout: &PointerLayout) -> Self {
+        let block = Self {
             done: AtomicU32::new(0),
             unk_04: [0; 11],
             unk_30: AtomicU32::new(0),
             unk_34: [0; 3],
-            producer: AtomicU32::new(0),
+            word_40: AtomicU32::new(0),
             unk_44: [0; 3],
-            recovery_target: u32::MAX,
+            word_50: AtomicU32::new(0),
             unk_54: [0; 3],
             entries: ITEM_RING_ENTRIES,
             unk_64: [0; 7],
+        };
+        if let Some(target) = layout.recovery_target {
+            block.word(target).store(u32::MAX, Ordering::Relaxed);
+        }
+        block
+    }
+
+    /// The host word at `offset`, one of the two [`PointerLayout`] names.
+    fn word(&self, offset: usize) -> &AtomicU32 {
+        if offset == core::mem::offset_of!(Self, word_50) {
+            &self.word_50
+        } else {
+            &self.word_40
         }
     }
 
@@ -174,12 +190,12 @@ impl PointerBlock {
     /// Used when a render queue pair that was kicked before is handed to a new
     /// owner, with `base` the position the host tracks for the new owner's
     /// queues. Only valid while the firmware does not run the queue, with all
-    /// three cursors zero. Writes `done`, `unk_30` and `producer`, in this
+    /// three cursors zero. Writes `done`, `unk_30` and the producer, in this
     /// order, with single stores; the caller issues a full barrier afterwards.
-    pub(crate) fn rebase(&self, base: u32) {
+    pub(crate) fn rebase(&self, layout: &PointerLayout, base: u32) {
         self.done.store(base, Ordering::Relaxed);
         self.unk_30.store(base, Ordering::Relaxed);
-        self.producer.store(base, Ordering::Relaxed);
+        self.word(layout.producer).store(base, Ordering::Relaxed);
     }
 }
 

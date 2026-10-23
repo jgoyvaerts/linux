@@ -275,6 +275,7 @@ impl super::super::Backend {
                 first,
                 resources.config.clusters,
                 resources.config.descriptor_flags,
+                self.shared.variant,
             )
         })();
         let (mut built, error) = match built {
