@@ -75,6 +75,8 @@ const fn window(
         size,
         unk_18,
         unk_20,
+        instances: 1,
+        phys_stride: 0,
     }
 }
 
