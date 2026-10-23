@@ -288,6 +288,9 @@
 };
 
 &mtp_hid {
+	/* SMC key gp1c powers the trackpad analog front end. */
+	apple,afe-smc = <&smc>;
+
 	multi-touch {
 		firmware-name = "apple/tpmtfw-j616s.bin";
 	};
