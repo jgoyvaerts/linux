@@ -165,6 +165,8 @@ pub(crate) struct Config {
     pub(crate) opps: usize,
     /// UAT policy where it differs from the A18 Pro's.
     pub(crate) uat_quirks: mmu::UatQuirks,
+    /// The SoC's values of region C.
+    pub(crate) region_c: &'static fw::initdata::RegionCConfig,
     /// Physical address of the firmware's per-slot recovery keys, read while the firmware is
     /// halted to attribute a fault; `None` where it is unknown (recovery then relies on the
     /// firmware's own blame).
@@ -1069,6 +1071,7 @@ impl Gpu {
             &session.uat,
             &session._render_global,
             &session._pm_metrics,
+            shared.active_cores,
         )?;
         session.uat.confirm_firmware_root_entries(root_entries)?;
         session.uat.mirror_secondary_root()?;
