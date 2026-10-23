@@ -715,6 +715,7 @@ impl InitData {
         render: &mmu::Vm,
         metrics: &KernelObject,
         active_cores: u32,
+        variant: &super::fw::Variant,
     ) -> Result {
         self.pm_metrics_va = cfg.pm_metrics.va;
         self.recovery_slot_keys = cfg.recovery_slot_keys;
@@ -727,7 +728,7 @@ impl InitData {
             base: range.start,
             dynamic: range.start + t8140::dynamic::KERNEL_OFFSET..range.end,
         };
-        if cfg.variant.graph == super::fw::variant::InitGraph::V25G83 {
+        if variant.graph == super::fw::variant::InitGraph::V25G83 {
             return self.build_25g83(&env, cfg, metrics, active_cores);
         }
         self.map_register_windows(&env, cfg.windows)?;
