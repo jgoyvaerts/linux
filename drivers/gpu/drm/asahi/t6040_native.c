@@ -16,6 +16,7 @@
 #include <linux/delay.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
+#include <linux/ktime.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 
@@ -33,6 +34,7 @@
 #define T6040_ASC_COLD_STATUS	0x6a
 
 struct asahi_t6040_native {
+	struct device *dev;
 	void __iomem *pmgr;
 	void __iomem *asc;
 	unsigned int powered;	/* domains transitioned by us, in order */
@@ -51,6 +53,7 @@ struct asahi_t6040_native *asahi_t6040_native_new(struct device *dev, phys_addr_
 	n = kzalloc(sizeof(*n), GFP_KERNEL);
 	if (!n)
 		return ERR_PTR(-ENOMEM);
+	n->dev = dev;
 	n->pmgr = ioremap(pmgr, T6040_PMGR_SIZE);
 	n->asc = ioremap(asc->start, resource_size(asc));
 	if (!n->pmgr || !n->asc) {
@@ -97,12 +100,16 @@ static void t6040_power_restore(struct asahi_t6040_native *n)
 int asahi_t6040_power_on(struct asahi_t6040_native *n);
 int asahi_t6040_power_on(struct asahi_t6040_native *n)
 {
+	/* Temporary diagnostics for the Neo port: words before/after and write-to-target time. */
+	u32 before[T6040_PMGR_DOMAINS], after[T6040_PMGR_DOMAINS];
+	s64 us[T6040_PMGR_DOMAINS];
 	unsigned int i;
 	int ret;
 
 	for (i = 0; i < T6040_PMGR_DOMAINS; i++) {
 		u32 v = readl(n->pmgr + T6040_PMGR_DOMAIN(i));
 
+		before[i] = v;
 		/* Only the observed cold, non-automatic state is transitioned. */
 		if (v & T6040_PMGR_COLD_MASK) {
 			pr_err("asahi: T6040 GPU power domain %u not cold: %08x\n", i, v);
@@ -110,15 +117,30 @@ int asahi_t6040_power_on(struct asahi_t6040_native *n)
 		}
 	}
 	for (i = 0; i < T6040_PMGR_DOMAINS; i++) {
+		ktime_t start = ktime_get();
+
 		ret = t6040_power_mode(n, i, T6040_PMGR_ON);
+		us[i] = ktime_us_delta(ktime_get(), start);
 		if (ret) {
 			pr_err("asahi: T6040 GPU power domain %u failed to turn on: %d\n", i, ret);
 			t6040_power_restore(n);
 			return ret;
 		}
+		after[i] = readl(n->pmgr + T6040_PMGR_DOMAIN(i));
 		n->powered = i + 1;
 	}
+	dev_info(n->dev,
+		 "t6040-diag: pmgr gpx %08x afr %08x->%08x %lld us gfx %08x->%08x %lld us (10 us poll step)\n",
+		 readl(n->pmgr), before[0], after[0], us[0], before[1], after[1], us[1]);
 	return 0;
+}
+
+void asahi_t6040_diag_running(struct asahi_t6040_native *n);
+void asahi_t6040_diag_running(struct asahi_t6040_native *n)
+{
+	dev_info(n->dev, "t6040-diag: pmgr while running gpx %08x afr %08x gfx %08x\n",
+		 readl(n->pmgr), readl(n->pmgr + T6040_PMGR_DOMAIN(0)),
+		 readl(n->pmgr + T6040_PMGR_DOMAIN(1)));
 }
 
 int asahi_t6040_cpu_cold(struct asahi_t6040_native *n);

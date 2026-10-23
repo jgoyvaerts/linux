@@ -2702,6 +2702,49 @@ impl Uat {
         Ok(snapshot)
     }
 
+    /// Temporary diagnostics for the Neo port: logs the kernel root's firmware-owned entries and
+    /// every non-zero entry above the kernel window (up to eight), read-only.
+    pub(crate) fn log_root_entries(&self) {
+        let first = IOVA_KERN_TOP_LEVEL_INDEX as usize + 1;
+        let dev = self.dev.as_ref();
+        // SAFETY: The kernel root is the bootloader-reserved `pagetables` region, which outlives
+        // this `Uat`.
+        let result = unsafe {
+            pgtable::with_reserved_root_entries(
+                self.inner.reserved.as_deref(),
+                self.kernel_vm.ttb(),
+                UAT_PGSZ / size_of::<u64>(),
+                |ptes| {
+                    let above = ptes[first..]
+                        .iter()
+                        .filter(|pte| pte.load(Ordering::Relaxed) != 0)
+                        .count();
+                    dev_info!(
+                        dev,
+                        "t6040-diag: kernel root 0-2 {:#x} {:#x} {:#x}, {} non-zero above 2\n",
+                        ptes[0].load(Ordering::Relaxed),
+                        ptes[1].load(Ordering::Relaxed),
+                        ptes[2].load(Ordering::Relaxed),
+                        above
+                    );
+                    for (index, pte) in ptes
+                        .iter()
+                        .enumerate()
+                        .skip(first)
+                        .map(|(i, pte)| (i, pte.load(Ordering::Relaxed)))
+                        .filter(|&(_, pte)| pte != 0)
+                        .take(8)
+                    {
+                        dev_info!(dev, "t6040-diag: kernel root[{}] = {:#x}\n", index, pte);
+                    }
+                },
+            )
+        };
+        if let Err(error) = result {
+            dev_info!(dev, "t6040-diag: kernel root unreadable: {:?}\n", error);
+        }
+    }
+
     /// Checks that allocation under the shared subtree did not replace a firmware-owned entry.
     pub(crate) fn confirm_firmware_root_entries(&self, snapshot: [u64; 3]) -> Result {
         // SAFETY: The root is a bootloader-reserved page retained for this UAT's lifetime.

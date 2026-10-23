@@ -683,6 +683,33 @@ impl G17Resources {
         })
     }
 
+    /// Temporary diagnostics for the Neo port (M4 Pro): logs the ID, core-mask, perf and gating
+    /// registers that Neo reads and programs, read-only. The GPU must be powered and its
+    /// coprocessor not yet started (the state in which Neo reads and programs them).
+    pub(crate) fn log_t6040_diag(&self) {
+        let Some(sgx) = self.sgx.try_access() else {
+            return;
+        };
+        let sgx = (&*sgx).as_view();
+        let read = |offset: usize| sgx.try_read32(offset).unwrap_or(!0);
+        dev_info!(
+            self.dev.as_ref(),
+            "t6040-diag: id {:#x} {:#x} counts {:#x} {:#x} unk18 {:#x} clusters {:#x} core masks {:#x} {:#x} {:#x} perf control {:#x} map {:#x} gating {:#x}\n",
+            read(ID_VERSION),
+            read(ID_UNK08),
+            read(ID_COUNTS_1),
+            read(ID_COUNTS_2),
+            read(ID_UNK18),
+            read(ID_CLUSTERS),
+            read(CORE_MASKS_G14X),
+            read(CORE_MASKS_G14X + 4),
+            read(CORE_MASKS_G14X + 8),
+            read(G17_PERF_CONTROL),
+            read(G17_PERF_MAP),
+            read(G17_GATING_CONTROL)
+        );
+    }
+
     /// Enable the G17 GPU-to-fabric bridge and check that it took effect.
     ///
     /// The GPU power domain must be on. The coprocessors cannot reach memory until this is done.

@@ -1083,7 +1083,11 @@ impl Gpu {
         fw::set_25g83(cfg.init == InitLayout::T6040);
         // A natively started GPU is powered here, before its ID registers are read.
         let native = match &cfg.start {
-            Start::Native(start) => Some(native::Native::power_on(pdev.as_ref(), start)?),
+            Start::Native(start) => {
+                let native = native::Native::power_on(pdev.as_ref(), start)?;
+                regs.log_t6040_diag();
+                Some(native)
+            }
             Start::AscWrapV6 { .. } => None,
         };
         let id = match cfg.cores {
@@ -1270,6 +1274,9 @@ impl Gpu {
         }
         // The firmware built its root and kernel-window tables while booting.
         session.uat.invalidate_reserved_tables();
+        if let Start::Native(_) = cfg.start {
+            session.uat.log_root_entries();
+        }
         let root_entries = if cfg.adopt_root_entries {
             Some(session.uat.adopt_firmware_root_entries()?)
         } else {
@@ -1292,6 +1299,9 @@ impl Gpu {
         session.primary.init(session.init.root_va(Role::Primary)?)?;
         if let Start::Native(_) = cfg.start {
             Self::wait_for_init_accepted(dev, &session.init, &session.primary)?;
+            if let Cpu::Native(native) = &session.primary.cpu {
+                native.log_running_power();
+            }
         }
         if let Some(secondary) = session.secondary.as_mut() {
             secondary.init(session.init.root_va(Role::Secondary)?)?;

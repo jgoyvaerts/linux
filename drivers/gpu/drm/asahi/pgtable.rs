@@ -200,6 +200,33 @@ pub(crate) unsafe fn with_root_entries<R>(
     })
 }
 
+/// Temporary diagnostics for the Neo port: [`with_root_entries`] that also reaches a root in a
+/// reserved region.
+///
+/// # Safety
+///
+/// As [`with_root_entries`], or `ttb` lies in `reserved`.
+pub(crate) unsafe fn with_reserved_root_entries<R>(
+    reserved: Option<&ReservedTables>,
+    ttb: PhysicalAddr,
+    count: usize,
+    f: impl FnOnce(&[AtomicU64]) -> R,
+) -> Result<R> {
+    if count > UAT_NPTE {
+        return Err(EINVAL);
+    }
+    if !reserved.is_some_and(|r| r.contains(ttb)) {
+        // SAFETY: Forwarded from the caller.
+        return unsafe { with_root_entries(ttb, count, f) };
+    }
+    // SAFETY: `ttb` is a page of a reserved region; entries are naturally aligned.
+    unsafe {
+        with_table(reserved, ttb, 0, count * PTE_SIZE, |p| {
+            Ok(f(core::slice::from_raw_parts(p as *const AtomicU64, count)))
+        })
+    }
+}
+
 const PTE_TYPE_BITS: u64 = 3;
 const PTE_TYPE_LEAF_TABLE: u64 = 3;
 

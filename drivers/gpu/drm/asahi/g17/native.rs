@@ -31,6 +31,7 @@ unsafe extern "C" {
     fn asahi_t6040_cpu_cold(native: *mut c_void) -> i32;
     fn asahi_t6040_cpu_start(native: *mut c_void);
     fn asahi_t6040_cpu_stop(native: *mut c_void) -> i32;
+    fn asahi_t6040_diag_running(native: *mut c_void);
 }
 
 /// Physical address of the PMGR block holding the GPU power domains, which the device tree does
@@ -79,6 +80,12 @@ impl Native {
         unsafe { asahi_t6040_cpu_start(self.raw.as_ptr()) };
     }
 
+    /// Temporary diagnostics for the Neo port: logs the PMGR GPU words while the firmware runs.
+    pub(crate) fn log_running_power(&self) {
+        // SAFETY: `raw` is live by the type invariant; this only reads PMGR registers.
+        unsafe { asahi_t6040_diag_running(self.raw.as_ptr()) };
+    }
+
     /// Stops the coprocessor CPU.
     pub(crate) fn stop(&mut self) -> Result {
         // SAFETY: `raw` is live by the type invariant.
@@ -124,6 +131,14 @@ impl rtkit::Operations for NativeOps {
         ep: u8,
         msg: u64,
     ) -> bool {
+        // Temporary diagnostics for the Neo port: does 25G83 send the initialization ACK?
+        if ep == super::EP_FIRMWARE && msg >> super::MSG_TYPE_SHIFT == super::MSG_INITDATA_ACK {
+            dev_info!(
+                data.shared.dev.as_ref(),
+                "t6040-diag: firmware sent INITDATA_ACK (0x09): {:#018x}\n",
+                msg
+            );
+        }
         if !super::is_events_message(ep, msg) {
             return false;
         }
