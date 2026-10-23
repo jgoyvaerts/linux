@@ -663,6 +663,8 @@ struct Shared {
     clusters: u32,
     active_cores: u32,
     variant: &'static fw::Variant,
+    /// Layout of compute queues' operand-state buffers for this GPU's cores.
+    operand_state: &'static fw::compute::OperandState,
     descriptor_flags: [u32; 2],
     crashed: AtomicBool,
     feed: Arc<feed::Feed>,
@@ -922,6 +924,7 @@ impl Gpu {
         let reclaim = runtime::teardown::ReclaimBatch::new()?;
         let feed = feed::Feed::new()?;
         let active_cores = id.core_masks.iter().map(|mask| mask.count_ones()).sum();
+        let operand_state = fw::compute::OperandState::new(id.num_clusters, active_cores)?;
         let shared = Arc::pin_init(
             pin_init!(Shared {
                 drm <- new_mutex!(Some(dev.into()), "g17::Shared::drm"),
@@ -929,6 +932,7 @@ impl Gpu {
                 clusters: id.num_clusters,
                 active_cores,
                 variant: cfg.variant,
+                operand_state,
                 descriptor_flags: [id.perf_control, id.perf_map[0]],
                 crashed: AtomicBool::new(false),
                 feed,
