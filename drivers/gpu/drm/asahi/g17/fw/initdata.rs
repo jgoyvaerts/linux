@@ -676,14 +676,19 @@ pub(crate) const PERF_STATES: usize = 11;
 /// Voltage lanes of a performance table.
 const PERF_LANES: usize = 16;
 
+/// Most voltage cells of an operating point: one per GPU cluster, at most one per lane.
+pub(crate) const OPP_CELLS: usize = PERF_LANES;
+
 /// One GPU operating point, from the device tree, in performance-state
 /// order.
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct Opp {
     /// Frequency in Hz.
     pub(crate) freq_hz: u64,
-    /// GPU core voltage in µV.
-    pub(crate) volt_uv: u32,
+    /// GPU core voltage in µV: one cell for the whole GPU, or one per cluster.
+    pub(crate) volt_uv: [u32; OPP_CELLS],
+    /// Number of valid cells in [`Self::volt_uv`].
+    pub(crate) cells: usize,
 }
 
 /// Per-SoC parts of the performance tables that the operating points do not
@@ -728,20 +733,23 @@ static_assert!(size_of::<PerfGroup>() == 0x704);
 #[derive(Copy, Clone)]
 struct PerfState {
     freq_mhz: u32,
-    core_mv: u32,
-    sram_mv: u32,
+    core_mv: [u32; OPP_CELLS],
+    sram_mv: [u32; OPP_CELLS],
+    cells: usize,
 }
 
 impl PerfGroup {
-    /// Fills the table. `lanes` is the number of voltage lanes holding each
-    /// state's voltages; the remaining lanes stay zero.
+    /// Fills the table. With one voltage cell, `lanes` is the number of voltage lanes
+    /// holding each state's voltages; with one cell per cluster, lane `n` holds cluster
+    /// `n`'s. The remaining lanes stay zero.
     fn fill(&mut self, states: &[PerfState; PERF_STATES], lanes: usize) {
         self.unk_0 = 10;
         for (index, state) in states.iter().enumerate() {
             self.freq_mhz[index] = state.freq_mhz;
-            for lane in 0..lanes {
-                self.core_mv[index][lane] = state.core_mv;
-                self.sram_mv[index][lane] = state.sram_mv;
+            for lane in 0..if state.cells == 1 { lanes } else { state.cells } {
+                let cell = if state.cells == 1 { 0 } else { lane };
+                self.core_mv[index][lane] = state.core_mv[cell];
+                self.sram_mv[index][lane] = state.sram_mv[cell];
             }
         }
     }
@@ -755,16 +763,18 @@ fn perf_states(
 ) -> Result<[PerfState; PERF_STATES]> {
     let mut states = [PerfState {
         freq_mhz: 0,
-        core_mv: 0,
-        sram_mv: 0,
+        core_mv: [0; OPP_CELLS],
+        sram_mv: [0; OPP_CELLS],
+        cells: 0,
     }; PERF_STATES];
     for (state, &index) in states.iter_mut().zip(map) {
         let opp = opps.get(index as usize).ok_or(EINVAL)?;
-        let core_mv = opp.volt_uv / 1000;
+        let core_mv = opp.volt_uv.map(|uv| uv / 1000);
         *state = PerfState {
             freq_mhz: u32::try_from(opp.freq_hz / 1_000_000)?,
             core_mv,
-            sram_mv: core_mv.max(sram_min_mv),
+            sram_mv: core_mv.map(|mv| mv.max(sram_min_mv)),
+            cells: opp.cells,
         };
     }
     Ok(states)
