@@ -747,6 +747,7 @@ impl GpuManager::ver {
                 },
                 map_kernel_to_user,
                 mmu::UatFirmware::Handoff,
+                mmu::UatQuirks::DEFAULT,
             )?,
             GFP_KERNEL,
         )?)

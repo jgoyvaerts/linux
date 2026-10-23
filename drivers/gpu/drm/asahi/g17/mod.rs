@@ -163,6 +163,8 @@ pub(crate) struct Config {
     pub(crate) perf: &'static fw::initdata::PerfConfig,
     /// Number of operating points the device tree lists.
     pub(crate) opps: usize,
+    /// UAT policy where it differs from the A18 Pro's.
+    pub(crate) uat_quirks: mmu::UatQuirks,
     /// Physical address of the firmware's per-slot recovery keys, read while the firmware is
     /// halted to attribute a fault; `None` where it is unknown (recovery then relies on the
     /// firmware's own blame).
@@ -997,6 +999,7 @@ impl Gpu {
                 mmu::UatFirmware::PublishedRoots {
                     secondary_root_offset: cfg.secondary_root_offset,
                 },
+                cfg.uat_quirks,
             )?,
             GFP_KERNEL,
         )?;
@@ -1057,6 +1060,8 @@ impl Gpu {
         if let Some(secondary) = session.secondary.as_mut() {
             secondary.boot()?;
         }
+        // The firmware built its root and kernel-window tables while booting.
+        session.uat.invalidate_reserved_tables();
         let root_entries = session.uat.adopt_firmware_root_entries()?;
         session.init.build(
             dev,
