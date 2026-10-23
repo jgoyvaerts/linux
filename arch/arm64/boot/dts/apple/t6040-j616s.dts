@@ -71,6 +71,40 @@
 		isp_heap: isp-heap {
 			iommu-addresses = <&isp 0x100 0x0 0x0 0x2000000>;
 		};
+
+		/*
+		 * Data segment of the loaded GPU firmware (ADT sgx gfx-data-*); it
+		 * places its crash log here.
+		 */
+		gpu_fw_data: gpu-fw-data@10001d44000 {
+			reg = <0x100 0x01d44000 0x0 0x138000>;
+			no-map;
+		};
+
+		/*
+		 * The UAT ranges (ADT sgx gpu-region-*, gfx-shared-region-*,
+		 * gfx-shared-l2-region-*, gfx-handoff-*). They stay no-map until
+		 * the boot loader adds them to /memory.
+		 */
+		uat_ttbs: uat-ttbs@10bfffb8000 {
+			reg = <0x10b 0xfffb8000 0x0 0x4000>;
+			no-map;
+		};
+
+		uat_pagetables: uat-pagetables@10bfff78000 {
+			reg = <0x10b 0xfff78000 0x0 0x40000>;
+			no-map;
+		};
+
+		uat_l2_pagetables: uat-l2-pagetables@10bfff74000 {
+			reg = <0x10b 0xfff74000 0x0 0x4000>;
+			no-map;
+		};
+
+		uat_handoff: uat-handoff@10bfff70000 {
+			reg = <0x10b 0xfff70000 0x0 0x4000>;
+			no-map;
+		};
 	};
 
 	memory@0 {
@@ -87,6 +121,158 @@
 			function = LED_FUNCTION_KBD_BACKLIGHT;
 			color = <LED_COLOR_ID_WHITE>;
 			max-brightness = <255>;
+		};
+	};
+
+	/*
+	 * GPU performance states, one opp-microvolt cell per cluster (ADT
+	 * /arm-io/sgx perf-states and perf-states1). The operating points are
+	 * binned per device: these are this unit's values until the boot
+	 * loader fills them in. Entries keep the order of the GPU performance
+	 * states, which is not sorted by frequency.
+	 */
+	gpu_opp: opp-table-gpu {
+		compatible = "operating-points-v2";
+
+		opp00 {
+			opp-hz = /bits/ 64 <0>;
+			opp-microvolt = <125000 125000>;
+		};
+		opp01 {
+			opp-hz = /bits/ 64 <338000000>;
+			opp-microvolt = <605000 585000>;
+		};
+		opp02 {
+			opp-hz = /bits/ 64 <618000000>;
+			opp-microvolt = <655000 640000>;
+		};
+		opp03 {
+			opp-hz = /bits/ 64 <796000000>;
+			opp-microvolt = <690000 690000>;
+		};
+		opp04 {
+			opp-hz = /bits/ 64 <924000000>;
+			opp-microvolt = <715000 725000>;
+		};
+		opp05 {
+			opp-hz = /bits/ 64 <952000000>;
+			opp-microvolt = <755000 770000>;
+		};
+		opp06 {
+			opp-hz = /bits/ 64 <1056000000>;
+			opp-microvolt = <755000 770000>;
+		};
+		opp07 {
+			opp-hz = /bits/ 64 <1062000000>;
+			opp-microvolt = <795000 810000>;
+		};
+		opp08 {
+			opp-hz = /bits/ 64 <1182000000>;
+			opp-microvolt = <795000 810000>;
+		};
+		opp09 {
+			opp-hz = /bits/ 64 <1182000000>;
+			opp-microvolt = <845000 860000>;
+		};
+		opp10 {
+			opp-hz = /bits/ 64 <1312000000>;
+			opp-microvolt = <845000 860000>;
+		};
+		opp11 {
+			opp-hz = /bits/ 64 <1242000000>;
+			opp-microvolt = <900000 915000>;
+		};
+		opp12 {
+			opp-hz = /bits/ 64 <1380000000>;
+			opp-microvolt = <900000 915000>;
+		};
+		opp13 {
+			opp-hz = /bits/ 64 <1326000000>;
+			opp-microvolt = <945000 960000>;
+		};
+		opp14 {
+			opp-hz = /bits/ 64 <1470000000>;
+			opp-microvolt = <945000 960000>;
+		};
+		opp15 {
+			opp-hz = /bits/ 64 <1578000000>;
+			opp-microvolt = <1030000 1045000>;
+		};
+	};
+
+	/* The GPU's CS clock domain (ADT cs-perf-states) */
+	gpu_cs_opp: opp-table-gpucs {
+		compatible = "operating-points-v2";
+
+		opp00 {
+			opp-hz = /bits/ 64 <24000000>;
+			opp-microvolt = <555000>;
+		};
+		opp01 {
+			opp-hz = /bits/ 64 <338000000>;
+			opp-microvolt = <555000>;
+		};
+		opp02 {
+			opp-hz = /bits/ 64 <618000000>;
+			opp-microvolt = <620000>;
+		};
+		opp03 {
+			opp-hz = /bits/ 64 <796000000>;
+			opp-microvolt = <660000>;
+		};
+		opp04 {
+			opp-hz = /bits/ 64 <992000000>;
+			opp-microvolt = <715000>;
+		};
+		opp05 {
+			opp-hz = /bits/ 64 <1188000000>;
+			opp-microvolt = <780000>;
+		};
+		opp06 {
+			opp-hz = /bits/ 64 <1380000000>;
+			opp-microvolt = <870000>;
+		};
+		opp07 {
+			opp-hz = /bits/ 64 <1470000000>;
+			opp-microvolt = <910000>;
+		};
+	};
+
+	/* The GPU's AFR clock domain (ADT afr-perf-states) */
+	gpu_afr_opp: opp-table-gpuafr {
+		compatible = "operating-points-v2";
+
+		opp00 {
+			opp-hz = /bits/ 64 <24000000>;
+			opp-microvolt = <555000>;
+		};
+		opp01 {
+			opp-hz = /bits/ 64 <338000000>;
+			opp-microvolt = <555000>;
+		};
+		opp02 {
+			opp-hz = /bits/ 64 <618000000>;
+			opp-microvolt = <620000>;
+		};
+		opp03 {
+			opp-hz = /bits/ 64 <796000000>;
+			opp-microvolt = <660000>;
+		};
+		opp04 {
+			opp-hz = /bits/ 64 <992000000>;
+			opp-microvolt = <715000>;
+		};
+		opp05 {
+			opp-hz = /bits/ 64 <1188000000>;
+			opp-microvolt = <780000>;
+		};
+		opp06 {
+			opp-hz = /bits/ 64 <1380000000>;
+			opp-microvolt = <870000>;
+		};
+		opp07 {
+			opp-hz = /bits/ 64 <1470000000>;
+			opp-microvolt = <910000>;
 		};
 	};
 
@@ -617,4 +803,24 @@
 
 &isp_dart2 {
 	status = "okay";
+};
+
+&gfx_mbox {
+	status = "okay";
+};
+
+&gpu {
+	memory-region = <&uat_ttbs>, <&uat_pagetables>, <&uat_handoff>,
+			<&gpu_fw_data>, <&uat_l2_pagetables>;
+	memory-region-names = "ttbs", "pagetables", "handoff", "fw-data",
+			      "l2-pagetables";
+	operating-points-v2 = <&gpu_opp>;
+	apple,cs-opp = <&gpu_cs_opp>;
+	apple,afr-opp = <&gpu_afr_opp>;
+	status = "okay";
+};
+
+/* The GPU firmware runs from boot on (ps_gfx is always on): the PMP must see the GPU on. */
+&pmp_gfx {
+	apple,always-on;
 };
