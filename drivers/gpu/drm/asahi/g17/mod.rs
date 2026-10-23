@@ -59,6 +59,7 @@ use kernel::{
     device::{self, Core},
     drm::gem::shmem,
     io::{
+        self,
         IoBase,
         IoSysMap,
         Region, //
@@ -165,6 +166,13 @@ pub(crate) struct Config {
     pub(crate) opps: usize,
     /// UAT policy where it differs from the A18 Pro's.
     pub(crate) uat_quirks: mmu::UatQuirks,
+    /// Snapshot the firmware root's own top-level entries after the firmware booted, clear the
+    /// others and confirm the snapshot after building (A18 Pro). Otherwise the root is used as
+    /// the firmware left it, which is the only way the M4 Pro has run.
+    pub(crate) adopt_root_entries: bool,
+    /// Enable the GPU-to-fabric bridge and dynamic core power gating before the firmware
+    /// starts (A18 Pro). The M4 Pro has only run with neither written.
+    pub(crate) fabric_bridge: bool,
     /// The SoC's values of region C.
     pub(crate) region_c: &'static fw::initdata::RegionCConfig,
     /// Physical address of the firmware's per-slot recovery keys, read while the firmware is
@@ -173,8 +181,8 @@ pub(crate) struct Config {
     pub(crate) recovery_slot_keys: Option<u64>,
     /// GPU generation reported to userspace.
     pub(crate) gpu_generation: hw::GpuGen,
-    /// The firmware build this SoC runs.
-    pub(crate) variant: &'static fw::Variant,
+    /// The firmware builds this SoC runs.
+    pub(crate) firmware: fw::variant::Firmware,
 }
 
 /// Where a G17 target's crash log buffers live.
@@ -182,6 +190,9 @@ pub(crate) enum CrashBuffers {
     /// One buffer per [`Role`] that the firmware requests at a fixed address of the kernel
     /// lower root, mapped by the driver before the coprocessors start.
     Fixed([FixedBuffer; 2]),
+    /// The firmware places its crash log in its own data segment, the `fw-data` reserved
+    /// region, and asks for it there by physical address.
+    FirmwareData,
 }
 
 /// A firmware coprocessor instance.
@@ -237,7 +248,19 @@ const CRASH_BUFFER_FILL: [u8; 2] = [0xa5, 0x5a];
 /// A crash log buffer handed to RTKit.
 pub(crate) struct CrashLog {
     iova: usize,
-    map: shmem::VMapOwned<AsahiObject>,
+    map: CrashLogMap,
+}
+
+/// The CPU mapping of a crash log buffer.
+enum CrashLogMap {
+    /// The driver's buffer ([`CrashBuffers::Fixed`]).
+    Object(shmem::VMapOwned<AsahiObject>),
+    /// `size` bytes at `offset` of the firmware's data segment ([`CrashBuffers::FirmwareData`]).
+    FirmwareData {
+        mem: io::mem::Mem,
+        offset: usize,
+        size: usize,
+    },
 }
 
 impl rtkit::Buffer for CrashLog {
@@ -246,7 +269,16 @@ impl rtkit::Buffer for CrashLog {
     }
 
     fn buf(&mut self) -> Result<IoSysMap<'_, Region>> {
-        Ok(IoSysMap::from((&self.map).as_view()))
+        match &mut self.map {
+            CrashLogMap::Object(map) => Ok(IoSysMap::from((&*map).as_view())),
+            CrashLogMap::FirmwareData { mem, offset, size } => {
+                // SAFETY: shmem_map() checked that the range lies inside the mapping.
+                let base = unsafe { mem.ptr().add(*offset) };
+                let ptr = Region::<0>::ptr_try_from_raw_parts_mut(base, *size)?;
+                // SAFETY: The range is mapped RAM for as long as this borrow of the mapping.
+                Ok(IoSysMap::Sys(unsafe { io::SysMem::new(ptr) }))
+            }
+        }
     }
 }
 
@@ -255,8 +287,8 @@ impl rtkit::Buffer for CrashLog {
 struct RoleState {
     role: Role,
     shared: Arc<Shared>,
-    crash_log: FixedBuffer,
-    crash_map: shmem::VMapOwned<AsahiObject>,
+    /// The fixed crash log buffer and its mapping; `None` where the firmware places its own.
+    crash_log: Option<(FixedBuffer, shmem::VMapOwned<AsahiObject>)>,
     crashed: AtomicBool,
     #[pin]
     ack: Opaque<kernel::bindings::completion>,
@@ -335,13 +367,28 @@ impl rtkit::Operations for RoleOps {
         iova: usize,
         size: usize,
     ) -> Result<CrashLog> {
-        if (iova as u64) & RTKIT_BUFFER_ADDR_MASK != data.crash_log.va || size > data.crash_log.size
-        {
+        if let Some((buffer, map)) = data.crash_log.as_ref() {
+            if (iova as u64) & RTKIT_BUFFER_ADDR_MASK != buffer.va || size > buffer.size {
+                return Err(EINVAL);
+            }
+            return Ok(CrashLog {
+                iova,
+                map: CrashLogMap::Object(map.owner().owned_vmap()?),
+            });
+        }
+        // The firmware places its buffers in its data segment, at their physical address.
+        let node = data.shared.dev.of_node().ok_or(EINVAL)?;
+        let res = node.reserved_mem_region_to_resource_byname(c_str!("fw-data"))?;
+        let offset = iova.checked_sub(res.start().try_into()?).ok_or(EINVAL)?;
+        if offset.checked_add(size).ok_or(EINVAL)? > res.size().try_into()? {
             return Err(EINVAL);
         }
+        // SAFETY: The boot loader reserved this RAM for the loaded GPU firmware, which keeps
+        // it until reboot; only the requested subrange is exposed.
+        let mem = unsafe { io::mem::Mem::try_new(res, io::mem::MemFlag::WB.into())? };
         Ok(CrashLog {
             iova,
-            map: data.crash_map.owner().owned_vmap()?,
+            map: CrashLogMap::FirmwareData { mem, offset, size },
         })
     }
 }
@@ -354,7 +401,7 @@ struct Coprocessor {
     running: bool,
     rtkit: rtkit::RtKit<RoleOps>,
     state: Arc<RoleState>,
-    _crash_buffer: KernelObject,
+    _crash_buffer: Option<KernelObject>,
 }
 
 impl Coprocessor {
@@ -368,29 +415,32 @@ impl Coprocessor {
         role: Role,
     ) -> Result<Coprocessor> {
         let index = role as usize;
-        let buffer = match &cfg.crash_buffers {
-            CrashBuffers::Fixed(buffers) => &buffers[index],
+        let (crash_buffer, crash_log) = match &cfg.crash_buffers {
+            CrashBuffers::Fixed(buffers) => {
+                let buffer = &buffers[index];
+                let mut crash_buffer = KernelObject::new(
+                    dev,
+                    uat.kernel_lower_vm(),
+                    Placement::At(buffer.va),
+                    buffer.size,
+                    mmu::PROT_FW_SHARED_RW,
+                    CpuMap::WriteCombined,
+                )?;
+                crash_buffer.bytes_mut().fill(CRASH_BUFFER_FILL[index]);
+                let crash_map = crash_buffer.kernel_map()?;
+                let fixed = FixedBuffer {
+                    va: buffer.va,
+                    size: buffer.size,
+                };
+                (Some(crash_buffer), Some((fixed, crash_map)))
+            }
+            CrashBuffers::FirmwareData => (None, None),
         };
-        let mut crash_buffer = KernelObject::new(
-            dev,
-            uat.kernel_lower_vm(),
-            Placement::At(buffer.va),
-            buffer.size,
-            mmu::PROT_FW_SHARED_RW,
-            CpuMap::WriteCombined,
-        )?;
-        crash_buffer.bytes_mut().fill(CRASH_BUFFER_FILL[index]);
-
-        let crash_map = crash_buffer.kernel_map()?;
         let state = Arc::pin_init(
             pin_init!(RoleState {
                 role,
                 shared: shared.clone(),
-                crash_log: FixedBuffer {
-                    va: buffer.va,
-                    size: buffer.size,
-                },
-                crash_map,
+                crash_log,
                 crashed: AtomicBool::new(false),
                 ack <- Opaque::ffi_init(|ptr| {
                     // SAFETY: ptr is valid uninitialized completion storage that is pinned
@@ -486,6 +536,14 @@ impl Bridge {
         };
         bridge.regs.enable_g17_bridge()?;
         Ok(bridge)
+    }
+
+    /// Keeps the register block for a target that runs without the bridge.
+    fn unused(regs: regs::G17Resources) -> Bridge {
+        Bridge {
+            regs,
+            enabled: false,
+        }
     }
 
     fn disable(&mut self) {
@@ -900,6 +958,7 @@ impl Gpu {
         cfg: &'static Config,
         regs: regs::G17Resources,
     ) -> Result<Arc<Gpu>> {
+        let variant = Self::firmware_variant(dev, &cfg.firmware)?;
         let id = regs.get_g17_id()?;
         if id.family != cfg.identity.family
             || id.variant != cfg.identity.variant
@@ -931,7 +990,7 @@ impl Gpu {
                 dev: dev.as_ref().as_ref().into(),
                 clusters: id.num_clusters,
                 active_cores,
-                variant: cfg.variant,
+                variant,
                 operand_state,
                 descriptor_flags: [id.perf_control, id.perf_map[0]],
                 crashed: AtomicBool::new(false),
@@ -972,6 +1031,42 @@ impl Gpu {
         *gpu.shared.state.lock() = Some(firmware);
         gpu.shared.queue_events();
         Ok(gpu)
+    }
+
+    /// Returns the variant of the loaded firmware build. An identified SoC refuses a build it
+    /// does not know, before anything is written to the GPU.
+    fn firmware_variant(
+        dev: &AsahiDrmDevice,
+        firmware: &fw::variant::Firmware,
+    ) -> Result<&'static fw::Variant> {
+        let builds = match firmware {
+            fw::variant::Firmware::Fixed(variant) => return Ok(variant),
+            fw::variant::Firmware::Identified(builds) => builds,
+        };
+        let version = Self::os_firmware_version(dev);
+        if let Some(build) = builds.iter().find(|build| Some(build.os_version) == version) {
+            dev_info!(dev.as_ref(), "GPU firmware: {}\n", build.name);
+            return Ok(build.variant);
+        }
+        dev_err!(
+            dev.as_ref(),
+            "Unsupported GPU firmware: macOS version {:?} (apple,firmware-version)\n",
+            version
+        );
+        for build in builds.iter() {
+            dev_err!(dev.as_ref(), "Supported GPU firmware: {}\n", build.name);
+        }
+        Err(ENODEV)
+    }
+
+    /// The macOS version the boot loader reports for the boot firmware that loaded the GPU
+    /// firmware: `apple,firmware-version` of the GPU node, which m1n1 writes from the ADT.
+    fn os_firmware_version(dev: &AsahiDrmDevice) -> Option<[u32; 3]> {
+        let node = dev.as_ref().as_ref().of_node()?;
+        let cells = node
+            .get_property::<KVec<u32>>(c_str!("apple,firmware-version"))
+            .ok()?;
+        cells.as_slice().try_into().ok()
     }
 
     /// Returns the highest advertised operating-point frequency without changing table order.
@@ -1032,7 +1127,10 @@ impl Gpu {
         };
         let render_global = uat.new_vm(0, geometry.user_range())?;
 
-        let bridge = Bridge::enable(regs)?;
+        let bridge = match cfg.fabric_bridge {
+            true => Bridge::enable(regs)?,
+            false => Bridge::unused(regs),
+        };
 
         // Install all session ownership before either CPU starts. Error unwinding then runs
         // Firmware::drop, stopping both CPUs before releasing shared objects or translations.
@@ -1045,7 +1143,7 @@ impl Gpu {
                 recovery: recovery::State::new(),
                 effort: power::Effort::new(),
                 registration_power_release_pending: false,
-                variant: cfg.variant,
+                variant: shared.variant,
                 queues <- runtime::Registry::new(
                     shared.clusters,
                     shared.descriptor_flags,
@@ -1068,7 +1166,10 @@ impl Gpu {
         }
         // The firmware built its root and kernel-window tables while booting.
         session.uat.invalidate_reserved_tables();
-        let root_entries = session.uat.adopt_firmware_root_entries()?;
+        let root_entries = match cfg.adopt_root_entries {
+            true => Some(session.uat.adopt_firmware_root_entries()?),
+            false => None,
+        };
         session.init.build(
             dev,
             cfg,
@@ -1076,11 +1177,16 @@ impl Gpu {
             &session._render_global,
             &session._pm_metrics,
             shared.active_cores,
+            shared.variant,
         )?;
-        session.uat.confirm_firmware_root_entries(root_entries)?;
+        if let Some(root_entries) = root_entries {
+            session.uat.confirm_firmware_root_entries(root_entries)?;
+        }
         session.uat.mirror_secondary_root()?;
-        session.bridge.regs.enable_g17_gating()?;
-        let ack = cfg.variant.init_ack;
+        if cfg.fabric_bridge {
+            session.bridge.regs.enable_g17_gating()?;
+        }
+        let ack = shared.variant.init_ack;
         session.primary.init(session.init.root_va(Role::Primary)?, ack)?;
         if ack == fw::variant::InitAck::Status {
             Self::wait_for_init_accepted(dev, &session.init, &session.primary)?;
@@ -1088,7 +1194,7 @@ impl Gpu {
         if let Some(secondary) = session.secondary.as_mut() {
             secondary.init(session.init.root_va(Role::Secondary)?, ack)?;
         }
-        if cfg.variant.power_on_done {
+        if shared.variant.power_on_done {
             session.primary.notify(MSG_POWER_ON_DONE)?;
             if let Some(secondary) = session.secondary.as_mut() {
                 secondary.notify(MSG_POWER_ON_DONE)?;
@@ -1212,7 +1318,7 @@ impl gpu::Gpu for Gpu {
                 | u64::from(uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_EXACT_PRIOR_BARRIERS)
                 | u64::from(uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_FRAGMENT_BARRIERS)
                 | u64::from(uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_BOUNDED_AS_BUILD);
-        let variant = self.cfg.variant;
+        let variant = self.shared.variant;
         if variant.few_primitives {
             params.features |=
                 u64::from(uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_FEW_PRIMITIVES);
@@ -1304,7 +1410,7 @@ impl gpu::Gpu for Gpu {
             priority,
             usc_exec_base,
             self.geometry.user_usable_range(),
-            self.cfg.variant,
+            self.shared.variant,
         )?;
         let policy = scheduling_policy(priority)?;
         let admission_started = now_ns();

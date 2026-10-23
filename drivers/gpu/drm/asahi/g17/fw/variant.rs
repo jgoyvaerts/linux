@@ -64,6 +64,26 @@ pub(crate) struct Variant {
     pub(crate) programs: super::render::RegisterPrograms,
 }
 
+/// A firmware build a SoC supports, identified by the macOS release it ships with.
+pub(crate) struct Build {
+    /// macOS version (major, minor, patch).
+    pub(crate) os_version: [u32; 3],
+    /// Name, for the log.
+    pub(crate) name: &'static str,
+    /// Layouts and rules of the build.
+    pub(crate) variant: &'static Variant,
+}
+
+/// How a SoC's firmware build is determined.
+pub(crate) enum Firmware {
+    /// The SoC runs a single build, which is not identified (A18 Pro).
+    Fixed(&'static Variant),
+    /// One of these builds, selected by the macOS version that the boot loader reports in
+    /// `apple,firmware-version`: the release whose boot firmware loaded the GPU firmware, and
+    /// with it this firmware build. Any other version is refused.
+    Identified(&'static [Build]),
+}
+
 /// The A18 Pro firmware (26A428).
 pub(crate) const V26A428: Variant = Variant {
     graph: InitGraph::G17P,
@@ -80,4 +100,29 @@ pub(crate) const V26A428: Variant = Variant {
     ray_traversal: true,
     lead_commands: false,
     programs: super::render::RegisterPrograms::G17P,
+};
+
+/// The M4 Pro firmware (25G83, `mBoot-18000.161.10`).
+pub(crate) const V25G83: Variant = Variant {
+    graph: InitGraph::V25G83,
+    init_ack: InitAck::Status,
+    // Never sent on the M4 Pro: the firmware has retired its opening record when it accepts
+    // its initialization.
+    power_on_done: false,
+    // QIDs below 32 belong to the firmware's bootstrap protocol.
+    qid_floor: 32,
+    pointers: PointerLayout {
+        producer: 0x50,
+        recovery_target: None,
+    },
+    // Whether this build tolerates the MMIO registration is unknown; the M4 Pro has only run
+    // without it.
+    mmio_pair_registration: false,
+    mcache: false,
+    // A fragment stage with the few-primitives flag hangs.
+    few_primitives: false,
+    // A stalled ray traversal wedges the GPU without a firmware recovery.
+    ray_traversal: false,
+    lead_commands: true,
+    programs: super::render::RegisterPrograms::V25G83,
 };
