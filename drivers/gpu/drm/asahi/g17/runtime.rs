@@ -72,16 +72,17 @@ impl Registry {
     pub(super) fn new(
         clusters: u32,
         descriptor_flags: [u32; 2],
+        variant: &'static crate::g17::fw::Variant,
     ) -> impl Init<Self, Error> {
         kernel::try_init!(Self {
-            qids <- kick::QueueIds::new().chain(|qids| {
+            qids <- kick::QueueIds::new(variant.qid_floor).chain(|qids| {
                 qids.reserve_initial_render()
             }),
             buffers <- BufferIds::new(),
             accounting: qos::Accounting::new(),
             metrics: Arc::new(MetricsIds::new(), GFP_KERNEL)?,
             qos_ids: QosIds::new()?,
-            admission: admission::Pool::new()?,
+            admission: admission::Pool::new(kick::queue_limit(variant.qid_floor))?,
             render: render::RenderState::new(clusters, descriptor_flags)?,
             identities: queue::Identities::new(),
             compute: {
@@ -410,9 +411,10 @@ pub(super) enum Rebind {
 #[kunit_tests(asahi_g17_uninstalled_cleanup)]
 mod uninstalled_cleanup_tests {
     use super::*;
+    use crate::g17::fw::variant::V26A428;
     #[test]
     fn empty_reservation_prevents_reuse_until_explicit_cancellation() {
-        let mut registry = KBox::init(Registry::new(1, [0; 2]), GFP_KERNEL).unwrap();
+        let mut registry = KBox::init(Registry::new(1, [0; 2], &V26A428), GFP_KERNEL).unwrap();
         let first = registry.reserve_compute(1).unwrap();
         assert!(registry.reserved(first).is_ok());
         assert!(registry.reserve_compute(1).is_err());
@@ -871,7 +873,13 @@ impl Backend {
                 // The global scheduler is created after pool/kick backing and
                 // retained even if this queue's later descriptor graph fails.
                 self.compute_scheduler(&alloc, &lease, admission)?;
-                let queue = compute::Queue::new(&alloc, backing, self.owner, self.context.clone())?;
+                let queue = compute::Queue::new(
+                    &alloc,
+                    backing,
+                    self.owner,
+                    self.context.clone(),
+                    self.shared.variant.pointers,
+                )?;
                 Ok(KBox::new(queue, GFP_KERNEL)?)
             })();
             let (mut built, build_error) = match built {
@@ -1643,10 +1651,11 @@ impl Backend {
 #[kunit_tests(asahi_g17_shared_capacity)]
 mod shared_capacity_tests {
     use super::*;
+    use crate::g17::fw::variant::V26A428;
 
     #[test]
     fn all_logical_render_owners_fit_beside_shared_compute() {
-        let mut registry = KBox::init(Registry::new(1, [0; 2]), GFP_KERNEL).unwrap();
+        let mut registry = KBox::init(Registry::new(1, [0; 2], &V26A428), GFP_KERNEL).unwrap();
         let mut leases = KVec::with_capacity(crate::mmu::MAX_EXECUTION_CONTEXTS as usize, GFP_KERNEL).unwrap();
         // Physical compute channels are device-owned and bounded independently
         // of how many logical clients have queued unsignalled work.
@@ -1666,7 +1675,7 @@ mod shared_capacity_tests {
 
     #[test]
     fn four_clients_have_capacity_before_any_owner_closes() {
-        let mut registry = KBox::init(Registry::new(1, [0; 2]), GFP_KERNEL).unwrap();
+        let mut registry = KBox::init(Registry::new(1, [0; 2], &V26A428), GFP_KERNEL).unwrap();
         let mut leases = KVec::with_capacity(36, GFP_KERNEL).unwrap();
         for client in 0..4u64 {
             for queue in 0..9u64 {

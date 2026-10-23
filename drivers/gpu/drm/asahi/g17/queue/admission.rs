@@ -360,14 +360,20 @@ pub(crate) struct Pool {
     #[pin]
     released: CondVar,
     queues: AtomicU32,
+    /// Logical queues admitted at most: each must be able to hold a render pair.
+    max_queues: u32,
 }
 impl Pool {
-    pub(crate) fn new() -> Result<Arc<Self>> {
+    pub(crate) fn new(max_queues: u32) -> Result<Arc<Self>> {
+        if max_queues > MAX_EXECUTION_CONTEXTS {
+            return Err(EINVAL);
+        }
         Arc::pin_init(
             pin_init!(Self {
                 state <- new_mutex!(State::new(), "G17 render admission"),
                 released <- new_condvar!("G17 render pair release"),
                 queues: AtomicU32::new(0),
+                max_queues,
             }),
             GFP_KERNEL,
         )
@@ -379,7 +385,7 @@ impl Pool {
     pub(crate) fn reserve_queue(self: &Arc<Self>) -> Result<QueueSlot> {
         let mut count = self.queues.load(Ordering::Acquire);
         loop {
-            if count >= MAX_EXECUTION_CONTEXTS {
+            if count >= self.max_queues {
                 return Err(crate::g17::capacity::refused(crate::g17::capacity::Site::LogicalQueues));
             }
             match self.queues.compare_exchange(
@@ -615,7 +621,7 @@ mod accounting_tests {
 
     #[test]
     fn logical_queue_count_returns_on_drop() {
-        let pool = Pool::new().unwrap();
+        let pool = Pool::new(MAX_EXECUTION_CONTEXTS).unwrap();
         let mut leases = KVec::with_capacity(MAX_EXECUTION_CONTEXTS as usize, GFP_KERNEL).unwrap();
         for _ in 0..MAX_EXECUTION_CONTEXTS {
             leases.push(pool.reserve_queue().unwrap(), GFP_KERNEL).unwrap();
@@ -732,7 +738,7 @@ impl Pool {
 
 impl Pool {
     pub(crate) fn write_capacity(&self, f: &mut kernel::fmt::Formatter<'_>) -> kernel::fmt::Result {
-        writeln!(f, "logical_queues used={} total={}", self.queues.load(Ordering::Acquire), MAX_EXECUTION_CONTEXTS)?;
+        writeln!(f, "logical_queues used={} total={}", self.queues.load(Ordering::Acquire), self.max_queues)?;
         let state = self.state.lock();
         let retained = state.owners.iter().enumerate().fold(0u64, |bits, (slot, owner)| {
             bits | if *owner != 0 { 1u64 << slot } else { 0 }
@@ -751,7 +757,7 @@ mod fault_capacity_tests {
 
     #[test]
     fn closed_faulting_clients_return_leases_after_drain() {
-        let pool = Pool::new().unwrap();
+        let pool = Pool::new(MAX_EXECUTION_CONTEXTS).unwrap();
         for owner in 1..=512 {
             let queue = pool.reserve_queue().unwrap();
             let lease = pool.acquire_render(owner, None, u64::MAX, || Ok(())).unwrap();
@@ -774,7 +780,7 @@ mod fault_capacity_tests {
 
     #[test]
     fn published_exit_kill_holds_survive_close_and_drain() {
-        let pool = Pool::new().unwrap();
+        let pool = Pool::new(MAX_EXECUTION_CONTEXTS).unwrap();
         let lease = pool.acquire_render(1, None, u64::MAX, || Ok(())).unwrap();
         let bit = 1u64 << lease.slot();
         pool.release_owner(1);
@@ -816,7 +822,7 @@ mod deadline_tests {
 
     #[test]
     fn all_pairs_busy_no_progress_expires_without_release() {
-        let pool = Pool::new().unwrap();
+        let pool = Pool::new(MAX_EXECUTION_CONTEXTS).unwrap();
         {
             let mut state = pool.state.lock();
             // No pair has room, including the requesting owner's retained pair.
@@ -835,7 +841,7 @@ mod deadline_tests {
 
     #[test]
     fn busy_pair_observes_cancellation_without_a_release_event() {
-        let pool = Pool::new().unwrap();
+        let pool = Pool::new(MAX_EXECUTION_CONTEXTS).unwrap();
         {
             let mut state = pool.state.lock();
             for slot in 1..cfg::RENDER_SLOTS {
@@ -855,7 +861,7 @@ mod deadline_tests {
 
     #[test]
     fn cancellation_precedes_available_capacity() {
-        let pool = Pool::new().unwrap();
+        let pool = Pool::new(MAX_EXECUTION_CONTEXTS).unwrap();
         assert!(matches!(pool.acquire_render(1, None, u64::MAX, || Err(ECANCELED)),
                          Err(error) if error == ECANCELED));
         assert_eq!(pool.state.lock().active, 0);

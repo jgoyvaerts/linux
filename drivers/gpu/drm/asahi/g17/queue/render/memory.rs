@@ -94,6 +94,8 @@ pub(super) struct Graph {
     pub(super) config: PooledObject,
     pub(super) support: KernelObject,
     pub(super) owners: [Option<u64>; RECORDS],
+    /// Host words of the pointer blocks in this firmware build.
+    pub(super) pointers: fw::variant::PointerLayout,
 }
 impl Graph {
     pub(super) fn new(
@@ -101,6 +103,7 @@ impl Graph {
         pool: &Arc<Pool>,
         context: &Context,
         qids: [u8; 2],
+        pointers: fw::variant::PointerLayout,
     ) -> Result<Self> {
         let prot = mmu::PROT_GPU_FW_SHARED_RW;
         let descriptors = pool.allocate(
@@ -154,7 +157,7 @@ impl Graph {
                 }),
             )?;
             queues.initialize::<queue::PointerBlock>(POINTERS[stage], |view| {
-                *view = queue::PointerBlock::new();
+                *view = queue::PointerBlock::new(&pointers);
                 Ok(())
             })?;
         }
@@ -166,6 +169,7 @@ impl Graph {
             config,
             support,
             owners: [None; RECORDS],
+            pointers,
         })
     }
     pub(super) fn offset(stage: usize, ordinal: u64) -> usize {
@@ -188,11 +192,13 @@ impl Graph {
         self.aliases[stage].client.iova() + (ordinal as usize % RECORDS * stride) as u64
     }
     pub(super) fn publish_recovery_targets(&self) -> Result {
+        let Some(target) = self.pointers.recovery_target else {
+            return Ok(());
+        };
         for at in POINTERS {
-            let producer = self.queues.word(at + queue::PointerBlock::PRODUCER)?
+            let producer = self.queues.word(at + self.pointers.producer)?
                 .load(Ordering::Relaxed);
-            self.queues.word(at + queue::PointerBlock::RECOVERY_TARGET)?
-                .store(producer, Ordering::Relaxed);
+            self.queues.word(at + target)?.store(producer, Ordering::Relaxed);
         }
         Ok(())
     }
@@ -208,7 +214,7 @@ impl Graph {
             values[stage] = Cursors {
                 done: self.queues.word(at)?.load(Ordering::Relaxed),
                 read: self.queues.word(at + 0x30)?.load(Ordering::Relaxed),
-                write: self.queues.word(at + 0x40)?.load(Ordering::Relaxed),
+                write: self.queues.word(at + self.pointers.producer)?.load(Ordering::Relaxed),
             };
         }
         Ok(values)
@@ -380,10 +386,11 @@ impl Memory {
         pm_generation: u64,
         ordinal: u64,
         word: u32,
+        variant: &'static fw::Variant,
     ) -> Result<(KBox<Self>, KVec<mmu::KernelMapping>)> {
         let storage = KBox::<Self>::new_uninit(GFP_KERNEL)?;
         let vm = context.vm();
-        let mut graph = Graph::new(alloc, pool, &context, qids)?;
+        let mut graph = Graph::new(alloc, pool, &context, qids, variant.pointers)?;
         let mut target = target::Target::new(alloc.dev, vm, layout)?;
         target.prepare(ordinal, layout)?;
         let state = Generation::allocate_state(alloc, vm)?;
