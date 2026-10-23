@@ -307,10 +307,21 @@ static bool has_impdef_pmuv3(const struct arm64_cpu_capabilities *entry, int sco
 	return is_midr_in_range_list(apple_cpus);
 }
 
+/*
+ * Apple cores with the same vGIC as M1/M2 that aren't in apple_cpus yet:
+ * that list also turns on the IMPDEF PMUv3 traps, unverified here.
+ */
+static const struct midr_range apple_broken_seis_cpus[] = {
+	MIDR_ALL_VERSIONS(MIDR_APPLE_T6040_E),
+	MIDR_ALL_VERSIONS(MIDR_APPLE_T6040_P),
+	{},
+};
+
 static bool has_broken_gic_v3_seis(const struct arm64_cpu_capabilities *entry, int scope)
 {
 	return (is_kernel_in_hyp_mode() &&
-		is_midr_in_range_list(apple_cpus) &&
+		(is_midr_in_range_list(apple_cpus) ||
+		 is_midr_in_range_list(apple_broken_seis_cpus)) &&
 		(read_sysreg_s(SYS_ICH_VTR_EL2) & ICH_VTR_EL2_SEIS));
 }
 
