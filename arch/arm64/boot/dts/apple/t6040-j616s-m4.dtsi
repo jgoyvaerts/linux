@@ -1,0 +1,151 @@
+// SPDX-License-Identifier: GPL-2.0+ OR MIT
+/*
+ * Not for upstream: what the daily J616s tree adds on top of the public
+ * t6040.dtsi, t6040-pmgr.dtsi and t6040-j616s.dts. Included last from
+ * t6040-j616s.dts in the daily tree only; the public files are not edited.
+ *
+ * 1. The NVMe write guard. The first compatible is the partition-guarded
+ *    driver binding; lab,write-lba-range limits writes to the Linux
+ *    partitions (slot 6, slot 3 and the ESP).
+ * 2. The AOP and ISP DART address filters (apple,dapf-ranges).
+ * 3. Properties the booted tree has that the public tree leaves out: the
+ *    AIC, AOP and DCP cell counts, the firmware versions, the GPU and its
+ *    companions, the disp0_piodma alias.
+ */
+
+/* 1. The NVMe write guard */
+
+&nvme {
+	/* Linux binds the guarded first entry; U-Boot (which has no guard) the second. */
+	compatible = "lab,j616-nvme-partition-25g83", "apple,t6041-nvme-ans2";
+	/* slot 6 (this root), slot 3 (HP), slot 4 (ESP) */
+	lab,write-lba-range = <0 0xd9bd800 0 0xe7b5c00>,
+			      <0 0xc020f8c 0 0xce11402>,
+			      <0 0xce11402 0 0xce19402>;
+};
+
+/* 2. The DART address filters */
+
+/*
+ * The AOP and ISP DARTs' address filters (DAPF), from the J616s ADT's filter
+ * data, all entries r0 0x31, r4 0, r20 1 (the driver's values). The DART
+ * writes them at probe if the loader did not, and back after a power-off.
+ * apple,dapf-entries <start end r0 r4 r20> carries the same filter for older
+ * kernels, which boot with this tree as fallbacks.
+ * t6040.dtsi has the ISP DART's filter window and ten of its eleven ranges;
+ * the J616s ADT adds 0x5003c0000-0x5003e4000, so the whole list is given.
+ */
+&aop_dart {
+	reg = <0x5 0x10f00000 0x0 0xc000>, <0x5 0x10f10000 0x0 0x4000>;
+	reg-names = "dart", "dapf";
+	apple,dapf-ranges = /bits/ 64 <0x5081e4020 0x5081e4043
+				     0x5081e4880 0x5081e4c50
+				     0x508240004 0x508240373
+				     0x508304000 0x50830416b
+				     0x508320280 0x50832048b
+				     0x508370000 0x5083709a3
+				     0x508900014 0x508900017
+				     0x50c618110 0x50c61881f
+				     0x50c634000 0x50c634003
+				     0x50de00000 0x50defffff
+				     0x508018000 0x50801bfff
+				     0x50801c000 0x50801ffff>;
+	/* Read only by the kernels before the integration/aurora rebase: the fallbacks. */
+	apple,dapf-entries = /bits/ 64 <
+		0x5081e4020 0x5081e4043 0x31 0x0 0x1
+		0x5081e4880 0x5081e4c50 0x31 0x0 0x1
+		0x508240004 0x508240373 0x31 0x0 0x1
+		0x508304000 0x50830416b 0x31 0x0 0x1
+		0x508320280 0x50832048b 0x31 0x0 0x1
+		0x508370000 0x5083709a3 0x31 0x0 0x1
+		0x508900014 0x508900017 0x31 0x0 0x1
+		0x50c618110 0x50c61881f 0x31 0x0 0x1
+		0x50c634000 0x50c634003 0x31 0x0 0x1
+		0x50de00000 0x50defffff 0x31 0x0 0x1
+		0x508018000 0x50801bfff 0x31 0x0 0x1
+		0x50801c000 0x50801ffff 0x31 0x0 0x1
+	>;
+};
+
+&isp_dart0 {
+	apple,dapf-ranges = /bits/ 64 <0x502284000 0x50228402b
+				     0x502880000 0x502887fff
+				     0x500e3c000 0x500e3c003
+				     0x51062c000 0x510648003
+				     0x485660000 0x485660003
+				     0x220004000 0x2201d62fc
+				     0x222004000 0x2221d62fc
+				     0x224004000 0x2241d62fc
+				     0x226004000 0x2261d62fc
+				     0x504824000 0x504824004
+				     0x5003c0000 0x5003e4000>;
+	/* Read only by the kernels before the integration/aurora rebase: the fallbacks. */
+	apple,dapf-entries = /bits/ 64 <
+		0x502284000 0x50228402b 0x31 0x0 0x1
+		0x502880000 0x502887fff 0x31 0x0 0x1
+		0x500e3c000 0x500e3c003 0x31 0x0 0x1
+		0x51062c000 0x510648003 0x31 0x0 0x1
+		0x485660000 0x485660003 0x31 0x0 0x1
+		0x220004000 0x2201d62fc 0x31 0x0 0x1
+		0x222004000 0x2221d62fc 0x31 0x0 0x1
+		0x224004000 0x2241d62fc 0x31 0x0 0x1
+		0x226004000 0x2261d62fc 0x31 0x0 0x1
+		0x504824000 0x504824004 0x31 0x0 0x1
+		0x5003c0000 0x5003e4000 0x31 0x0 0x1
+	>;
+};
+
+/* 3. Kept as the booted tree has them */
+
+&aic {
+	#address-cells = <0>;
+};
+
+&aop {
+	#address-cells = <2>;
+	#size-cells = <2>;
+};
+
+&dcp {
+	#address-cells = <2>;
+	#size-cells = <2>;
+	/* The 26.6.2 boot firmware; the display handoff checks the ADT's build first. */
+	apple,firmware-version = <0x1a 6 2>;
+	apple,firmware-compat = <0x1a 6 2>;
+};
+
+/*
+ * The GPU driver identifies its firmware build by this, on its own node. 26.6.2 for now.
+ */
+&gpu {
+	apple,firmware-version = <0x1a 6 2>;
+	status = "okay";
+};
+
+/* The daily tree runs the GPU: its companions, as t6040-j616s.dts describes. */
+&agx_mbox {
+	status = "okay";
+};
+
+/* The public tree enables the boot NOR but leaves its power state off, so it never probes. */
+&ps_qspi {
+	status = "okay";
+};
+
+&pmp_gfx {
+	apple,always-on;
+};
+
+&ps_afr {
+	apple,always-on;
+};
+
+&ps_gfx {
+	apple,always-on;
+};
+
+/ {
+	aliases {
+		disp0_piodma = &disp0_piodma;
+	};
+};
