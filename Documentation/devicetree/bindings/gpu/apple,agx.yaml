@@ -17,6 +17,7 @@ properties:
           - apple,agx-g13s
           - apple,agx-g14g
           - apple,agx-g14s
+          - apple,agx-t6040
           - apple,agx-t8132
           - apple,agx-t8140
       - items:
@@ -51,8 +52,12 @@ properties:
       - description:
           Region containing a shared handoff structure for VM
           management coordination
-      - description: Power calibration blob or firmware shared-L2 page
-      - description: GPU calibration blob or preserved firmware text
+      - description:
+          Power calibration blob, firmware shared-L2 page or firmware data
+          segment
+      - description:
+          GPU calibration blob, preserved firmware text or firmware
+          kernel-window page tables
       - description: Shared global variables or preserved firmware data
 
   memory-region-names:
@@ -61,8 +66,8 @@ properties:
       - const: ttbs
       - const: pagetables
       - const: handoff
-      - enum: [hw-cal-a, shared-l2]
-      - enum: [hw-cal-b, fw-text]
+      - enum: [hw-cal-a, shared-l2, fw-data]
+      - enum: [hw-cal-b, fw-text, l2-pagetables]
       - enum: [globals, fw-data]
 
   apple,pmp:
@@ -70,6 +75,26 @@ properties:
     description: PMP firmware provider owning the GPU power vote and telemetry
 
   operating-points-v2: true
+
+  apple,firmware-version:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    maxItems: 3
+    description:
+      macOS version (major, minor, patch) whose boot firmware loaded the GPU
+      firmware, which identifies the firmware build. Filled in by the boot
+      loader.
+
+  apple,cs-opp:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      Operating-point table of the GPU's CS clock domain, one voltage cell per
+      state.
+
+  apple,afr-opp:
+    $ref: /schemas/types.yaml#/definitions/phandle
+    description:
+      Operating-point table of the GPU's AFR clock domain, one voltage cell
+      per state.
 
   apple,firmware-abi:
     $ref: /schemas/types.yaml#/definitions/uint32-array
@@ -121,15 +146,6 @@ allOf:
     else:
       properties:
         apple,pmp: false
-        memory-region-names:
-          minItems: 3
-          items:
-            - const: ttbs
-            - const: pagetables
-            - const: handoff
-            - const: hw-cal-a
-            - const: hw-cal-b
-            - const: globals
   - if:
       properties:
         compatible:
@@ -150,37 +166,96 @@ allOf:
             - description: GFX coprocessor mailbox
             - description: GFX1 coprocessor mailbox
         memory-region:
-          maxItems: 3
+          items:
+            - description: Region containing GPU MMU TTBs
+            - description: Region containing GPU MMU page tables
+            - description:
+                Region containing a shared handoff structure for VM
+                management coordination
         memory-region-names:
-          maxItems: 3
+          items:
+            - const: ttbs
+            - const: pagetables
+            - const: handoff
       required:
         - power-domains
         - operating-points-v2
-    else:
-      if:
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: apple,agx-t6040
+    then:
+      properties:
+        reg:
+          items:
+            - description: GFX coprocessor control registers
+            - description: GPU block MMIO registers
+        reg-names:
+          items:
+            - const: asc
+            - const: sgx
+        mboxes:
+          items:
+            - description: GFX coprocessor mailbox
+        memory-region:
+          items:
+            - description: Region containing GPU MMU TTBs
+            - description: Region containing GPU MMU page tables
+            - description:
+                Region containing a shared handoff structure for VM
+                management coordination
+            - description:
+                Data segment of the loaded GPU firmware, where the firmware
+                places its crash log
+            - description:
+                Region in which the GPU firmware builds the page tables of
+                its kernel window
+        memory-region-names:
+          items:
+            - const: ttbs
+            - const: pagetables
+            - const: handoff
+            - const: fw-data
+            - const: l2-pagetables
+      required:
+        - power-domains
+        - operating-points-v2
+        - apple,cs-opp
+        - apple,afr-opp
+  - if:
+      not:
         properties:
           compatible:
-            not:
-              contains:
-                const: apple,agx-t8132
-      then:
-        properties:
-          reg:
-            items:
-              - description: GPU coprocessor control registers
-              - description: GPU block MMIO registers
-          reg-names:
-            items:
-              - const: asc
-              - const: sgx
-          mboxes:
-            maxItems: 1
-          memory-region:
-            minItems: 6
-          memory-region-names:
-            minItems: 6
-        required:
-          - apple,firmware-abi
+            contains:
+              enum:
+                - apple,agx-t6040
+                - apple,agx-t8132
+                - apple,agx-t8140
+    then:
+      properties:
+        reg:
+          items:
+            - description: GPU coprocessor control registers
+            - description: GPU block MMIO registers
+        reg-names:
+          items:
+            - const: asc
+            - const: sgx
+        mboxes:
+          maxItems: 1
+        memory-region:
+          minItems: 6
+        memory-region-names:
+          items:
+            - const: ttbs
+            - const: pagetables
+            - const: handoff
+            - const: hw-cal-a
+            - const: hw-cal-b
+            - const: globals
+      required:
+        - apple,firmware-abi
 
 additionalProperties: false
 
