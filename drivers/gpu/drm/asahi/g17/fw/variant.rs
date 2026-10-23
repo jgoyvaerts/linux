@@ -60,6 +60,8 @@ pub(crate) struct Variant {
     /// Render item rings carry lead commands: InitBufferManager before the first tiling pass
     /// of a buffer manager, and FragmentBarrier before every fragment descriptor.
     pub(crate) lead_commands: bool,
+    /// Register programs of the render descriptors.
+    pub(crate) programs: super::render::RegisterPrograms,
 }
 
 /// The A18 Pro firmware (26A428).
@@ -77,4 +79,5 @@ pub(crate) const V26A428: Variant = Variant {
     few_primitives: true,
     ray_traversal: true,
     lead_commands: false,
+    programs: super::render::RegisterPrograms::G17P,
 };

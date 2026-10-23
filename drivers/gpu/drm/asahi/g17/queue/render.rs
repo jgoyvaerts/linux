@@ -226,7 +226,7 @@ impl Pair {
         if word == u32::MAX {
             return Err(EINVAL);
         }
-        let layout = target::Layout::new(pass, clusters)?;
+        let layout = target::Layout::new(pass, clusters, variant.programs)?;
         let storage = KBox::<Self>::new_uninit(GFP_KERNEL)?;
         let (tiling, ta_alias) = kick::Queue::render(alloc, ids[0], context.vm(), rings)?;
         let (fragment, fragment_alias) =
@@ -360,14 +360,17 @@ impl Pair {
         let work = packet.completion.work_state()?;
         let node = work.node_va()?;
         let word = work.word();
-        let layout = target::Layout::new(pass, self.clusters)?;
+        let layout = target::Layout::new(pass, self.clusters, self.variant.programs)?;
+        let deflake_layout = abi::Deflake::new(self.clusters)?;
         let owners = self.memory.owners();
         self.memory
             .target
             .ensure_capacity(alloc.dev, packet.context.vm(), &layout, &owners)?;
         let target = self.memory.target.prepare(ordinal, &layout)?;
         let scene = self.memory.manager.prepare_scene(ordinal)?;
-        self.memory.generation(ordinal)?.prepare(ordinal, pass)?;
+        self.memory
+            .generation(ordinal)?
+            .prepare(ordinal, pass, deflake_layout.viewport)?;
         let [deflake, ta_status, fragment_status, fragment_fw, auxiliary] =
             self.memory.generation(ordinal)?.addresses();
         let lifecycle = if ordinal != 0 || packet.id != self.initial_packet {
@@ -397,6 +400,7 @@ impl Pair {
             heapmeta_va: target.heap,
             tpc_va: self.memory.target.tpc_va(),
             tpc_size: layout.tpc_size as u64,
+            gtp_va: self.memory.target.gtp_va(&layout)?,
             deflake_va: deflake,
             ta_status_va: ta_status,
             fragment_status_va: fragment_status,
@@ -428,6 +432,8 @@ impl Pair {
                 stamp_va: addresses.stamps[1][0],
                 aux_stamp_va: addresses.stamps[1][1],
             },
+            programs: self.variant.programs,
+            deflake: deflake_layout,
         };
         self.memory.graph.claim(ordinal)?;
         // Without an MCache table kick-entry bit 58 stays clear.
@@ -665,6 +671,7 @@ impl Pair {
             abi::TaDescriptor::register_bindings(
                 self.memory.graph.descriptor_client(0, ordinal),
                 ray_query[0].scratch.enabled(),
+                self.variant.programs,
             )?,
             None,
         );
@@ -674,6 +681,7 @@ impl Pair {
             abi::FragmentDescriptor::register_bindings(
                 self.memory.graph.descriptor_client(1, ordinal),
                 ray_query[1].scratch.enabled(),
+                self.variant.programs,
             )?,
             mcache,
         );
@@ -1010,7 +1018,7 @@ impl Pair {
         let Validated::Render { pass, .. } = &packet.command else {
             return Err(EINVAL);
         };
-        let required = target::Layout::new(pass, self.clusters)?.tvb_blocks;
+        let required = target::Layout::new(pass, self.clusters, self.variant.programs)?.tvb_blocks;
         self.memory.manager.note_required(required, crate::g17::now_ns());
         if self.in_flight() {
             return Ok(None);
@@ -1726,7 +1734,7 @@ impl Pair {
             let Validated::Render { pass, .. } = &first.command else {
                 return Err(EINVAL);
             };
-            let layout = target::Layout::new(pass, self.clusters)?;
+            let layout = target::Layout::new(pass, self.clusters, self.variant.programs)?;
             let aliases = [
                 self.kicks[0].prepare_client_alias(context.vm())?,
                 self.kicks[1].prepare_client_alias(context.vm())?,

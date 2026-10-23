@@ -879,6 +879,7 @@ impl Backend {
                     self.owner,
                     self.context.clone(),
                     self.shared.variant.pointers,
+                    self.shared.operand_state,
                 )?;
                 Ok(KBox::new(queue, GFP_KERNEL)?)
             })();
