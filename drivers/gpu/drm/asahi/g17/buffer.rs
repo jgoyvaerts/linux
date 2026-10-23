@@ -556,6 +556,8 @@ pub(crate) struct Manager {
     buffer_id: u8,
     generation: u64,
     shrink: Shrink,
+    /// A tiling pass initialized this buffer manager (25G83 InitBM published).
+    initialized: bool,
 }
 
 /// Native tiler-heap shrink policy, matching the heap behaviour seen
@@ -657,7 +659,17 @@ impl Manager {
             buffer_id: args.buffer_id,
             generation: args.generation,
             shrink: Shrink::default(),
+            initialized: false,
         })
+    }
+
+    /// Whether a published tiling pass initialized this manager (25G83 InitBM).
+    pub(crate) fn initialized(&self) -> bool {
+        self.initialized
+    }
+
+    pub(crate) fn mark_initialized(&mut self) {
+        self.initialized = true;
     }
     pub(crate) fn buffer_id(&self) -> u8 {
         self.buffer_id
