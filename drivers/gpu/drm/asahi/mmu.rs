@@ -178,12 +178,32 @@ pub(crate) struct UatQuirks {
     /// Temporary: once the boot loader adds these regions to `/memory`, as m1n1 does, the
     /// regions lose `no-map` and this path goes away.
     pub(crate) reserved_tables: bool,
+    // The following settings keep a SoC on the only policy it was tested with. Each one is
+    // a candidate for the A18 Pro's value once a test on that SoC shows it is not needed.
+    /// Write back every page-table and context-table change: the GPU table walker is not
+    /// assumed to snoop the CPU caches.
+    pub(crate) clean_tables: bool,
+    /// Invalidate ranges one page at a time, never with range TLBI operations.
+    pub(crate) page_tlbi: bool,
+    /// Take the handoff lock around context-table edits. Where the firmware leaves its half of
+    /// the handoff page alone, its lock bytes are not initialized and are never taken.
+    pub(crate) handoff_lock: bool,
+    /// Handoff "current slot" written at initialization.
+    pub(crate) handoff_slot: u32,
+    /// Store GPU-only mappings of client and kernel-lower tables as AP 0 with the access in
+    /// PXN (read) and UXN (write), the form the firmware itself uses, instead of AP 2.
+    pub(crate) native_gpu_permissions: bool,
 }
 
 impl UatQuirks {
     /// The A18 Pro and earlier policy.
     pub(crate) const DEFAULT: UatQuirks = UatQuirks {
         reserved_tables: false,
+        clean_tables: false,
+        page_tlbi: false,
+        handoff_lock: true,
+        handoff_slot: 0,
+        native_gpu_permissions: false,
     };
 }
 
@@ -1041,7 +1061,7 @@ impl ExecutionRoot {
         let id = usize::from(self.id);
         let release = {
             let inner = self.inner.lock();
-            inner.handoff().lock();
+            inner.handoff_lock();
             let roots = &inner.ttbs()[id];
             let low = roots.ttb0.load(Ordering::Acquire);
             let high = roots.ttb1.load(Ordering::Acquire);
@@ -1049,8 +1069,9 @@ impl ExecutionRoot {
             if owned {
                 roots.ttb0.store(0, Ordering::Release);
                 roots.ttb1.store(0, Ordering::Release);
+                inner.publish_slot(id);
             }
-            inner.handoff().unlock();
+            inner.handoff_unlock();
             owned || (low == 0 && high == 0)
         };
         if release {
@@ -1390,10 +1411,10 @@ impl KernelMapping {
             let ttb = owner.ttb() | TTBR_VALID | (slot as u64) << TTBR_ASID_SHIFT;
 
             let uat_inner = self.0.uat_inner.lock();
-            uat_inner.handoff().lock();
+            uat_inner.handoff_lock();
             let cur_slot = uat_inner.handoff().current_slot();
             let ttb_cur = uat_inner.ttbs()[slot as usize].ttb0.load(Ordering::Relaxed);
-            uat_inner.handoff().unlock();
+            uat_inner.handoff_unlock();
             if cur_slot == Some(slot) && ttb_cur == ttb {
                 slot
             } else {
@@ -1609,9 +1630,33 @@ struct UatShared {
     map_kernel_to_user: bool,
     handoff_rgn: UatRegion,
     ttbs_rgn: UatRegion,
+    quirks: UatQuirks,
 }
 
 impl UatShared {
+    /// Takes the handoff lock, where this SoC uses it.
+    fn handoff_lock(&self) {
+        if self.quirks.handoff_lock {
+            self.handoff().lock();
+        }
+    }
+
+    /// Releases the handoff lock taken by [`Self::handoff_lock`].
+    fn handoff_unlock(&self) {
+        if self.quirks.handoff_lock {
+            self.handoff().unlock();
+        }
+    }
+
+    /// Writes back context-table slot `idx` after it changed, where this SoC needs it.
+    fn publish_slot(&self, idx: usize) {
+        if self.quirks.clean_tables {
+            let slot = &self.ttbs()[idx] as *const SlotTTBS as *const u8;
+            pgtable::clean_poc(slot, size_of::<SlotTTBS>());
+            pgtable::poc_barrier();
+        }
+    }
+
     /// Returns the handoff region area
     fn handoff(&self) -> &Handoff {
         // SAFETY: pointer is non-null per the type invariant
@@ -1655,9 +1700,10 @@ struct UatInner {
     /// An uncertain mapping/root is retained; future M4 allocation and publication fail.
     failed: AtomicBool,
     /// Clean page tables to the point of coherency for a walker that does not snoop the CPU
-    /// caches. Set only by [`Uat::new_adopted`].
-    #[cfg(CONFIG_DRM_ASAHI_G16)]
+    /// caches: [`Uat::new_adopted`], and [`UatQuirks::clean_tables`] otherwise.
     clean_poc: bool,
+    /// This SoC's UAT policy.
+    quirks: UatQuirks,
     /// No-map reserved regions holding firmware tables (`UatQuirks::reserved_tables`).
     reserved: Option<Arc<pgtable::ReservedTables>>,
     #[pin]
@@ -1724,7 +1770,7 @@ impl HandoffGuard<'_> {
 impl Drop for HandoffGuard<'_> {
     fn drop(&mut self) {
         if let Self::Legacy(shared) = self {
-            shared.handoff().unlock();
+            shared.handoff_unlock();
         }
     }
 }
@@ -1758,7 +1804,7 @@ impl UatInner {
         let shared = self.lock();
         self.check_m4()?;
         if !self.m4_adopted {
-            shared.handoff().lock();
+            shared.handoff_lock();
             return Ok(HandoffGuard::Legacy(shared));
         }
         let transport = M4Transport {
@@ -1833,9 +1879,9 @@ impl Handoff {
     }
 
     /// Initialize the handoff region
-    fn init(&self, firmware: UatFirmware) -> Result {
+    fn init(&self, firmware: UatFirmware, slot: u32) -> Result {
         self.magic_ap.store(PPL_MAGIC, Ordering::Relaxed);
-        self.cur_slot.store(0, Ordering::Relaxed);
+        self.cur_slot.store(slot, Ordering::Relaxed);
         self.unk3.store(0, Ordering::Relaxed);
         fence(Ordering::SeqCst);
 
@@ -1974,8 +2020,8 @@ impl Vm {
             )?
         } else {
             UatPageTable::new(geometry.ias, geometry.oas)?
+                .with_native_gpu(uat_inner.quirks.native_gpu_permissions)
         };
-        #[cfg(CONFIG_DRM_ASAHI_G16)]
         let page_table = {
             let mut page_table = page_table;
             if uat_inner.clean_poc {
@@ -2771,6 +2817,7 @@ impl Drop for VmInner {
                 uat_inner.ttbs()[idx].ttb0.store(0, Ordering::SeqCst);
                 uat_inner.ttbs()[idx].ttb1.store(0, Ordering::SeqCst);
                 uat_inner.owned_user_roots[idx] = 0;
+                uat_inner.publish_slot(idx);
             }
             drop(transaction);
 
@@ -2888,6 +2935,7 @@ impl Uat {
                 // The G15 UAT walker does not snoop the CPU caches.
                 clean_poc: true,
                 reserved: None,
+                quirks: UatQuirks::DEFAULT,
                 handoff_flush <- pin_init::pin_init_array_from_fn(|i| {
                     new_mutex!(HandoffFlush(&handoff.flush[i]), "handoff_flush")
                 }),
@@ -2903,6 +2951,7 @@ impl Uat {
                         map_kernel_to_user,
                         handoff_rgn,
                         ttbs_rgn,
+                        quirks: UatQuirks::DEFAULT,
                     },
                     "uat_shared"
                 ),
@@ -3107,6 +3156,7 @@ impl Uat {
                 uat_inner.binding_published[idx] = false;
                 uat_inner.owned_user_roots[idx] = ttb;
                 binding.generation = binding_wire_generation(incarnation);
+                uat_inner.publish_slot(idx);
                 drop(transaction);
 
                 // Make sure all TLB entries from the previous owner of this ASID are gone
@@ -3206,6 +3256,7 @@ impl Uat {
             }
             roots.ttb0.store(low, Ordering::Release);
             roots.ttb1.store(high, Ordering::Release);
+            inner.publish_slot(id);
         }
         mem::sync();
         mem::tlbi_asid(id as u8);
@@ -3324,20 +3375,21 @@ impl Uat {
     /// Both contexts must still contain their original kernel roots.
     pub(crate) fn activate_render_context(&self, vm: &Vm) -> Result {
         let inner = self.inner.lock();
-        inner.handoff().lock();
+        inner.handoff_lock();
         let ttbs = inner.ttbs();
         let ready = [0, KERNEL_ALIAS_CTX].into_iter().all(|ctx| {
             ttbs[ctx].ttb0.load(Ordering::Acquire) == tagged_root(self.kernel_lower_vm.ttb(), ctx)
                 && ttbs[ctx].ttb1.load(Ordering::Acquire) == tagged_root(self.kernel_vm.ttb(), ctx)
         });
         if !ready {
-            inner.handoff().unlock();
+            inner.handoff_unlock();
             return Err(EIO);
         }
         ttbs[KERNEL_ALIAS_CTX]
             .ttb0
             .store(tagged_root(vm.ttb(), KERNEL_ALIAS_CTX), Ordering::Release);
-        inner.handoff().unlock();
+        inner.publish_slot(KERNEL_ALIAS_CTX);
+        inner.handoff_unlock();
         core::mem::drop(inner);
         mem::sync();
         mem::tlbi_asid(KERNEL_ALIAS_CTX as u8);
@@ -3350,6 +3402,7 @@ impl Uat {
     fn make_inner(
         dev: driver::AsahiDevice,
         firmware: UatFirmware,
+        quirks: UatQuirks,
         reserved: Option<Arc<pgtable::ReservedTables>>,
     ) -> Result<Arc<UatInner>> {
         let handoff_rgn = Self::map_region(dev.as_ref().as_ref(), c"handoff", HANDOFF_SIZE, true)?;
@@ -3360,14 +3413,15 @@ impl Uat {
         let handoff = unsafe { &(handoff_rgn.map.ptr() as *mut Handoff).as_ref().unwrap() };
 
         dev_info!(dev.as_ref(), "MMU: Initializing kernel page table\n");
+        let shared_quirks = quirks;
 
         Arc::pin_init(
             try_pin_init!(UatInner {
                 firmware,
                 m4_adopted: false,
                 failed: AtomicBool::new(false),
-                #[cfg(CONFIG_DRM_ASAHI_G16)]
-                clean_poc: false,
+                clean_poc: quirks.clean_tables,
+                quirks,
                 reserved,
                 handoff_flush <- pin_init::pin_init_array_from_fn(|i| {
                     new_mutex!(HandoffFlush(&handoff.flush[i]), "handoff_flush")
@@ -3384,6 +3438,7 @@ impl Uat {
                         map_kernel_to_user: false,
                         handoff_rgn,
                         ttbs_rgn,
+                        quirks: shared_quirks,
                     },
                     "uat_shared"
                 ),
@@ -3403,6 +3458,7 @@ impl Uat {
     ) -> Result<Self> {
         dev_info!(dev.as_ref(), "MMU: Initializing...\n");
 
+        mem::set_page_tlbi(quirks.page_tlbi);
         let of_node = dev.as_ref().as_ref().of_node().ok_or(EINVAL)?;
         let reserved = if quirks.reserved_tables {
             let mut tables = pgtable::ReservedTables::new();
@@ -3417,7 +3473,7 @@ impl Uat {
             None
         };
 
-        let inner = Self::make_inner(dev.clone(), firmware, reserved)?;
+        let inner = Self::make_inner(dev.clone(), firmware, quirks, reserved)?;
 
         let res = of_node.reserved_mem_region_to_resource_byname(c_str!("pagetables"))?;
         let ttb1 = res.start();
@@ -3481,11 +3537,15 @@ impl Uat {
         inner.kernel_ttb1 = ttb1;
         inner.secondary_ttb1 = secondary_ttb1;
 
-        inner.handoff().init(firmware)?;
+        inner.handoff().init(firmware, quirks.handoff_slot)?;
+        if quirks.clean_tables {
+            pgtable::clean_poc(inner.handoff() as *const Handoff as *const u8, HANDOFF_SIZE);
+            pgtable::poc_barrier();
+        }
 
         dev_info!(dev.as_ref(), "MMU: Initializing TTBs\n");
 
-        inner.handoff().lock();
+        inner.handoff_lock();
 
         let ttbs = inner.ttbs();
 
@@ -3506,8 +3566,12 @@ impl Uat {
                 .ttb1
                 .store(tagged_root(ttb1, KERNEL_ALIAS_CTX), Ordering::SeqCst);
         }
+        if quirks.clean_tables {
+            pgtable::clean_poc(ttbs.as_ptr() as *const u8, SLOTS_SIZE);
+            pgtable::poc_barrier();
+        }
 
-        inner.handoff().unlock();
+        inner.handoff_unlock();
 
         core::mem::drop(inner);
 
