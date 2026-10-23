@@ -1675,6 +1675,27 @@ mod shared_capacity_tests {
     }
 
     #[test]
+    fn a_qid_floor_admits_only_the_render_pairs_it_leaves() {
+        use crate::g17::fw::variant::V25G83;
+        let limit = super::super::kick::queue_limit(V25G83.qid_floor);
+        assert_eq!(limit, 42);
+        let mut registry = KBox::init(Registry::new(2, [0; 2], &V25G83), GFP_KERNEL).unwrap();
+        for owner in 1..=super::super::kick::COMPUTE_CHANNELS as u64 {
+            registry.reserve_compute(owner).unwrap();
+        }
+        let mut slots = KVec::with_capacity(limit as usize, GFP_KERNEL).unwrap();
+        let mut leases = KVec::with_capacity(limit as usize, GFP_KERNEL).unwrap();
+        for owner in 1..=u64::from(limit) {
+            slots.push(registry.admission.reserve_queue().unwrap(), GFP_KERNEL).unwrap();
+            let lease = registry.admission.acquire_render(owner, None, u64::MAX, || Ok(())).unwrap();
+            registry.ensure_render_ids(lease.slot(), owner).unwrap();
+            leases.push(lease, GFP_KERNEL).unwrap();
+        }
+        // The next logical queue is refused when it is created, not left waiting for a pair.
+        assert!(matches!(registry.admission.reserve_queue(), Err(ENOSPC)));
+    }
+
+    #[test]
     fn four_clients_have_capacity_before_any_owner_closes() {
         let mut registry = KBox::init(Registry::new(1, [0; 2], &V26A428), GFP_KERNEL).unwrap();
         let mut leases = KVec::with_capacity(36, GFP_KERNEL).unwrap();

@@ -51,7 +51,9 @@ pub(crate) const CONFIG: Config = Config {
     opps: OPPS,
     uat_quirks: crate::mmu::UatQuirks::DEFAULT,
     region_c: &crate::g17::fw::initdata::REGION_C_26A428,
-    variant: &crate::g17::fw::variant::V26A428,
+    adopt_root_entries: true,
+    fabric_bridge: true,
+    firmware: crate::g17::fw::variant::Firmware::Fixed(&crate::g17::fw::variant::V26A428),
 };
 
 use crate::g17::fw::initdata::{PerfConfig, RegisterWindow, PERF_STATES};
