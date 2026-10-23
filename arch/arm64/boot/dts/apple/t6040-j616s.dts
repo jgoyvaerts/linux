@@ -26,6 +26,8 @@
 		/* used by the loader to hand over the display */
 		dcp = &dcp;
 		disp0 = &display;
+		/* the boot loader finds the GPU node through this alias */
+		gpu = &gpu;
 	};
 
 	chosen {
