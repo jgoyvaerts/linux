@@ -591,31 +591,42 @@ pub(crate) struct RegisterWindow {
     pub(crate) phys: u64,
     /// GPU address of the window in the firmware MMIO aperture.
     pub(crate) va: u64,
-    /// Size in bytes; need not be a multiple of the page size.
+    /// Size in bytes of one instance; need not be a multiple of the page size.
     pub(crate) size: u32,
     /// Value of [`RegisterMapEntry::unk_18`].
     pub(crate) unk_18: u64,
     /// Value of [`RegisterMapEntry::unk_20`].
     pub(crate) unk_20: u32,
+    /// Number of instances of the block. The firmware finds instance `n` at
+    /// `va + n * size`; it lives at `phys + n * phys_stride`.
+    pub(crate) instances: u32,
+    /// Distance between the physical addresses of consecutive instances.
+    pub(crate) phys_stride: u64,
 }
 
 impl RegisterWindow {
-    /// Returns the page-aligned physical address, GPU address and length the
-    /// window must be mapped with, or `None` if its physical and GPU
-    /// addresses differ within a page or the mapped span overflows.
-    pub(crate) fn mapping(&self) -> Option<(u64, u64, u64)> {
+    /// Returns the page-aligned physical address, GPU address and length that
+    /// instance `instance` of the window must be mapped with, or `None` if its
+    /// physical and GPU addresses differ within a page or the mapped span
+    /// overflows.
+    pub(crate) fn mapping(&self, instance: u32) -> Option<(u64, u64, u64)> {
         let mask = PAGE_SIZE as u64 - 1;
-        if self.phys & mask != self.va & mask {
+        let phys = self
+            .phys
+            .checked_add(self.phys_stride.checked_mul(u64::from(instance))?)?;
+        let va = self
+            .va
+            .checked_add(u64::from(self.size).checked_mul(u64::from(instance))?)?;
+        if phys & mask != va & mask {
             return None;
         }
-        let start = self.va & !mask;
-        let span = self
-            .va
+        let start = va & !mask;
+        let span = va
             .checked_add(u64::from(self.size))?
             .checked_sub(start)?
             .checked_add(mask)?
             & !mask;
-        Some((self.phys & !mask, start, span))
+        Some((phys & !mask, start, span))
     }
 }
 
@@ -629,9 +640,9 @@ pub(crate) struct RegisterMapEntry {
     pub(crate) phys: u64,
     /// GPU address of the window.
     pub(crate) va: u64,
-    /// Window size in bytes.
+    /// Size in bytes of all instances of the window.
     pub(crate) total_size: u32,
-    /// Window size in bytes, again.
+    /// Size in bytes of one instance.
     pub(crate) element_size: u32,
     /// Per-window value, see [`RegisterWindow::unk_18`].
     pub(crate) unk_18: u64,
@@ -650,7 +661,7 @@ impl RegisterMapEntry {
         Self {
             phys: window.phys,
             va: window.va,
-            total_size: window.size,
+            total_size: window.size * window.instances,
             element_size: window.size,
             unk_18: window.unk_18,
             unk_20: window.unk_20,
