@@ -1203,15 +1203,23 @@ impl InitData {
             .ok_or(EIO)?;
         let mut opps = KVec::new();
         for opp in table.children() {
+            // One cell for the whole GPU, or one per cluster.
+            let cells: KVec<u32> = opp.get_property(c_str!("opp-microvolt"))?;
+            if cells.is_empty() || cells.len() > abi::OPP_CELLS {
+                return Err(EINVAL);
+            }
+            let mut volt_uv = [0; abi::OPP_CELLS];
+            volt_uv[..cells.len()].copy_from_slice(&cells);
             opps.push(
                 abi::Opp {
                     freq_hz: opp.get_property(c_str!("opp-hz"))?,
-                    volt_uv: opp.get_property(c_str!("opp-microvolt"))?,
+                    volt_uv,
+                    cells: cells.len(),
                 },
                 GFP_KERNEL,
             )?;
         }
-        if opps.len() != count {
+        if opps.len() != count || opps.iter().any(|opp| opp.cells != opps[0].cells) {
             return Err(EINVAL);
         }
         Ok(opps)
