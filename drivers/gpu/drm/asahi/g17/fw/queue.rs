@@ -96,6 +96,10 @@ pub(crate) enum CommandTag {
     QueueConfig = 0x0f,
     /// [`KickPredecessor`].
     KickPredecessor = 0x10,
+    /// [`FragmentBarrier`] (25G83 firmware).
+    FragmentBarrier = 4,
+    /// [`InitBufferManager`] (25G83 firmware).
+    InitBufferManager = 5,
 }
 
 /// The engine that executes a queue's work.
@@ -538,6 +542,95 @@ impl QueueConfig {
             fragment_qid,
             unk_86: [0; 0x3a],
         })
+    }
+}
+
+/// The 25G83 firmware's barrier before every fragment descriptor (tag 4): the fragment work
+/// waits for the paired tiling stamp. The G16 driver writes it as the 25G83 Metal driver does
+/// ("emitBarrierCommands"), in addition to the kick-entry dependency.
+#[repr(C, packed)]
+#[derive(Copy, Clone, Debug)]
+pub(crate) struct FragmentBarrier {
+    /// [`CommandTag::FragmentBarrier`].
+    pub(crate) tag: u32,
+    /// GPU address of the tiling queue's completion stamp word.
+    pub(crate) stamp_va: u64,
+    /// Timestamp of the tiling kick.
+    pub(crate) tiling_kick: u64,
+    /// QID of the tiling queue.
+    pub(crate) tiling_qid: u32,
+    /// Tiling stamp value waited for.
+    pub(crate) wait: u32,
+    pub(crate) unk_1c: [u8; 8],
+    /// Event of the wait: the tiling QID.
+    pub(crate) event: u32,
+    /// Fragment stamp value.
+    pub(crate) stamp_self: u32,
+    /// Current object ID of the fragment stage.
+    pub(crate) fragment_id: u64,
+    pub(crate) unk_34: u32,
+    pub(crate) unk_38: [u8; 0x10],
+}
+
+static_assert!(size_of::<FragmentBarrier>() == 0x48);
+static_assert!(core::mem::offset_of!(FragmentBarrier, wait) == 0x18);
+static_assert!(core::mem::offset_of!(FragmentBarrier, event) == 0x24);
+static_assert!(core::mem::offset_of!(FragmentBarrier, fragment_id) == 0x2c);
+
+impl FragmentBarrier {
+    /// The barrier of a pass whose tiling stage, kicked at `tiling_kick` on `tiling_qid`,
+    /// signals `stamp_value` at `stamp_va`.
+    pub(crate) fn new(
+        stamp_va: u64,
+        tiling_kick: KickTimestamp,
+        tiling_qid: u32,
+        stamp_value: u32,
+        fragment_id: u32,
+    ) -> Self {
+        Self {
+            tag: CommandTag::FragmentBarrier as u32,
+            stamp_va,
+            tiling_kick: tiling_kick.get(),
+            tiling_qid,
+            wait: stamp_value,
+            unk_1c: [0; 8],
+            event: tiling_qid,
+            stamp_self: stamp_value,
+            fragment_id: fragment_id.into(),
+            unk_34: 1,
+            unk_38: [0; 0x10],
+        }
+    }
+}
+
+/// The 25G83 firmware's buffer-manager initialization (tag 5), before the first tiling
+/// descriptor that uses a parameter buffer. The block count is read from the manager.
+#[repr(C, packed)]
+#[derive(Copy, Clone, Debug)]
+pub(crate) struct InitBufferManager {
+    /// [`CommandTag::InitBufferManager`].
+    pub(crate) tag: u32,
+    /// UAT context of the pass.
+    pub(crate) context_id: u32,
+    /// Buffer slot of the parameter buffer.
+    pub(crate) pb_slot: u32,
+    /// GPU address of the parameter-buffer state object.
+    pub(crate) pb_va: u64,
+    /// Tiling stamp value of the pass.
+    pub(crate) stamp_value: u32,
+}
+
+static_assert!(size_of::<InitBufferManager>() == 0x18);
+
+impl InitBufferManager {
+    pub(crate) fn new(context_id: u32, pb_slot: u32, pb_va: u64, stamp_value: u32) -> Self {
+        Self {
+            tag: CommandTag::InitBufferManager as u32,
+            context_id,
+            pb_slot,
+            pb_va,
+            stamp_value,
+        }
     }
 }
 
