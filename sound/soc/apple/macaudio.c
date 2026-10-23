@@ -148,6 +148,8 @@ struct ma_codec_idle {
 struct macaudio_snd_data {
 	struct snd_soc_card card;
 	struct snd_soc_jack jack;
+	/* The jack links these into its pin list, so each card needs its own */
+	struct snd_soc_jack_pin jack_pins[2];
 	int jack_plugin_state;
 
 	const struct macaudio_platform_cfg *cfg;
@@ -1391,7 +1393,7 @@ static int macaudio_fe_init(struct snd_soc_pcm_runtime *rtd)
 					(1 << nslots) - 1, nslots, MACAUDIO_SLOTWIDTH);
 }
 
-static struct snd_soc_jack_pin macaudio_jack_pins[] = {
+static const struct snd_soc_jack_pin macaudio_jack_pins[] = {
 	{
 		.pin = "Headphone",
 		.mask = SND_JACK_HEADPHONE,
@@ -1409,12 +1411,15 @@ static int macaudio_probe(struct snd_soc_card *card)
 
 	dev_dbg(card->dev, "%s!\n", __func__);
 
+	BUILD_BUG_ON(sizeof(ma->jack_pins) != sizeof(macaudio_jack_pins));
+	memcpy(ma->jack_pins, macaudio_jack_pins, sizeof(ma->jack_pins));
+
 	ret = snd_soc_card_jack_new_pins(card, "Headphone Jack",
 			SND_JACK_HEADSET | SND_JACK_HEADPHONE |
 			SND_JACK_BTN_0 | SND_JACK_BTN_1 |
 			SND_JACK_BTN_2 | SND_JACK_BTN_3,
-			&ma->jack, macaudio_jack_pins,
-			ARRAY_SIZE(macaudio_jack_pins));
+			&ma->jack, ma->jack_pins,
+			ARRAY_SIZE(ma->jack_pins));
 	if (ret < 0) {
 		dev_err(card->dev, "jack creation failed: %d\n", ret);
 		return ret;
