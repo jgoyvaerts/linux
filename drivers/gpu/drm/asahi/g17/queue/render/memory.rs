@@ -319,24 +319,36 @@ impl Generation {
         )
         .map_err(Into::into)
     }
-    pub(super) fn prepare(&mut self, ordinal: u64, pass: &abi::RenderPass) -> Result {
+    /// With `viewport` false the deflake buffer has no room for the viewport words
+    /// ([`abi::Deflake::viewport`]).
+    pub(super) fn prepare(
+        &mut self,
+        ordinal: u64,
+        pass: &abi::RenderPass,
+        viewport: bool,
+    ) -> Result {
         if self.ordinal.is_some_and(|old| old != ordinal) {
             return Err(EBUSY);
         }
-        let viewport = storage::Viewport::new(pass.width, pass.height)?;
+        let viewport = match viewport {
+            true => Some(storage::Viewport::new(pass.width, pass.height)?),
+            false => None,
+        };
         self.state.bytes_mut()[storage::AUXILIARY..storage::AUXILIARY + storage::AUXILIARY_SIZE]
             .fill(0);
-        let destination = self
-            .state
-            .pointer(storage::DEFLAKE + 0x900, size_of::<storage::Viewport>())?
-            .cast::<storage::Viewport>();
-        if destination.align_offset(align_of::<storage::Viewport>()) != 0 {
-            return Err(EINVAL);
+        if let Some(viewport) = viewport {
+            let destination = self
+                .state
+                .pointer(storage::DEFLAKE + 0x900, size_of::<storage::Viewport>())?
+                .cast::<storage::Viewport>();
+            if destination.align_offset(align_of::<storage::Viewport>()) != 0 {
+                return Err(EINVAL);
+            }
+            // SAFETY: The complete typed integer view is in the retained CPU mapping
+            // and naturally aligned. This command generation is exclusively owned
+            // and unpublished; no prior command can access it until reassigned.
+            unsafe { viewport.apply(&mut *destination) };
         }
-        // SAFETY: The complete typed integer view is in the retained CPU mapping
-        // and naturally aligned. This command generation is exclusively owned
-        // and unpublished; no prior command can access it until reassigned.
-        unsafe { viewport.apply(&mut *destination) };
         self.fragment.bytes_mut().fill(0);
         self.ordinal = Some(ordinal);
         Ok(())

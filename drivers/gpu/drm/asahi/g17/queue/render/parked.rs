@@ -153,7 +153,7 @@ impl ParkedPair {
             return Err(EINVAL);
         }
         alloc.uat.vm_context_mask(context.vm())?;
-        let layout = target::Layout::new(pass, self.clusters)?;
+        let layout = target::Layout::new(pass, self.clusters, self.variant.programs)?;
         let aliases = [
             kicks[0].prepare_client_alias(context.vm())?,
             kicks[1].prepare_client_alias(context.vm())?,
