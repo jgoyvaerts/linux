@@ -527,6 +527,11 @@ impl crate::g17::queue::render::Host for Host<'_> {
     /// check let the firmware gate the cores between the host's configuration
     /// writes while several clients installed their first pairs at once.
     fn install_pair(&mut self, registration: &crate::g17::fw::kick::RenderRegistration) -> Result {
+        // Firmware builds without MMIO registration install the pair from its queue
+        // configuration alone.
+        if !self.firmware.variant.mmio_pair_registration {
+            return Ok(());
+        }
         if !self.registration_powered {
             self.firmware.acquire_registration_power()?;
             self.registration_powered = true;

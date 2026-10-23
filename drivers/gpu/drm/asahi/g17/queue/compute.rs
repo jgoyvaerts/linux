@@ -9,7 +9,9 @@ pub(crate) mod retirement;
 use crate::g17::{
     channel::Rings,
     context::Context,
-    fw::{channels::ControlRecord, compute::COMPUTE_DESCRIPTOR_SIZE, queue::*},
+    fw::{
+        channels::ControlRecord, compute::COMPUTE_DESCRIPTOR_SIZE, queue::*, variant::PointerLayout,
+    },
     object::{Allocator, CpuMap, KernelObject},
 };
 use crate::{hw::t8140::dynamic, mmu};
@@ -113,10 +115,12 @@ struct Graph {
     records: KernelObject,
     record_ends: [Option<u32>; RECORD_SLOTS],
     reclaimed: u32,
+    /// Host words of the pointer block in this firmware build.
+    pointers: PointerLayout,
 }
 
 impl Graph {
-    fn new(alloc: &Allocator<'_>, context: &Context) -> Result<Self> {
+    fn new(alloc: &Allocator<'_>, context: &Context, pointers: PointerLayout) -> Result<Self> {
         let page = mmu::UAT_PGSZ as u64;
         let prot = mmu::PROT_GPU_FW_SHARED_RW;
         let cpu = CpuMap::WriteCombined;
@@ -141,7 +145,7 @@ impl Graph {
                 owner_pid: context.owner_pid(),
                 policy: context.policy(),
             });
-            view.pointers = PointerBlock::new();
+            view.pointers = PointerBlock::new(&pointers);
             view.jobs = JobListHead::new(graph_va + 0x200);
             Ok(())
         })?;
@@ -160,6 +164,7 @@ impl Graph {
             records,
             record_ends: [None; RECORD_SLOTS],
             reclaimed: 0,
+            pointers,
         })
     }
 
@@ -221,7 +226,7 @@ impl Graph {
 
     fn cursors(&self) -> Result<Cursors> {
         Ok(Cursors {
-            producer: self.graph.word(POINTERS + 0x40)?.load(Ordering::Relaxed),
+            producer: self.graph.word(POINTERS + self.pointers.producer)?.load(Ordering::Relaxed),
             consumer: self.graph.word(POINTERS)?.load(Ordering::Relaxed),
             count: self.graph.word(POINTERS + 0x60)?.load(Ordering::Relaxed),
         })
@@ -276,7 +281,9 @@ impl Graph {
             self.graph.dword(ITEMS + index * 8)?.store(0, Ordering::Relaxed);
         }
         fence(Ordering::SeqCst);
-        self.graph.word(POINTERS + 0x40)?.store(cursors.consumer, Ordering::Relaxed);
+        self.graph
+            .word(POINTERS + self.pointers.producer)?
+            .store(cursors.consumer, Ordering::Relaxed);
         self.reclaimed = cursors.consumer;
         fence(Ordering::SeqCst);
         Ok(())
@@ -530,9 +537,10 @@ impl Queue {
         backing: Backing,
         owner: u64,
         context: Arc<Context>,
+        pointers: PointerLayout,
     ) -> Result<Self> {
         let Backing { mut pool, mut kick } = backing;
-        let mut graph = Graph::new(alloc, &context)?;
+        let mut graph = Graph::new(alloc, &context, pointers)?;
         let kick_alias = kick.map_client(context.vm())?;
         let pool_alias = pool.map_client(context.vm())?;
         let binding = graph.bind(context.clone(), kick_alias, pool_alias)?;
@@ -1607,14 +1615,17 @@ impl Queue {
     }
     /// Firmware is halted and publication is closed while its target is copied.
     pub(crate) fn publish_recovery_target(&self) -> Result {
+        let Some(target) = self.graph.pointers.recovery_target else {
+            return Ok(());
+        };
         let producer = self
             .graph
             .graph
-            .word(POINTERS + PointerBlock::PRODUCER)?
+            .word(POINTERS + self.graph.pointers.producer)?
             .load(Ordering::Relaxed);
         self.graph
             .graph
-            .word(POINTERS + PointerBlock::RECOVERY_TARGET)?
+            .word(POINTERS + target)?
             .store(producer, Ordering::Relaxed);
         Ok(())
     }
@@ -1706,7 +1717,7 @@ impl Graph {
             return Err(EBUSY);
         }
         let slot = self.graph.dword(ITEMS + expected as usize * 8)?;
-        let producer = self.graph.word(POINTERS + 0x40)?;
+        let producer = self.graph.word(POINTERS + self.pointers.producer)?;
         if slot.load(Ordering::Relaxed) != 0 {
             return Err(EBUSY);
         }
@@ -2130,7 +2141,7 @@ impl Graph {
         let first = self.graph.dword(ITEMS)?;
         let second = self.graph.dword(ITEMS + 8)?;
         let third = self.graph.dword(ITEMS + 16)?;
-        let producer = self.graph.word(POINTERS + 0x40)?;
+        let producer = self.graph.word(POINTERS + self.pointers.producer)?;
         first.store(address, Ordering::Relaxed);
         second.store(0, Ordering::Relaxed);
         third.store(0, Ordering::Relaxed);

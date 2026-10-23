@@ -23,6 +23,9 @@ pub(crate) mod queue;
 pub(crate) mod render;
 pub(crate) mod render_rt;
 pub(crate) mod qos;
+pub(crate) mod variant;
+
+pub(crate) use variant::Variant;
 
 /// Clears a firmware structure in place.
 ///
