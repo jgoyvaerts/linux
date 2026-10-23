@@ -731,17 +731,19 @@ impl InitData {
         windows: &[abi::RegisterWindow],
     ) -> Result {
         for window in windows {
-            let (phys, va, size) = window.mapping().ok_or(EINVAL)?;
-            self.aliases.push(
-                env.vm.map_io(
-                    env.dev.as_ref().as_ref(),
-                    va,
-                    phys.try_into()?,
-                    size.try_into()?,
-                    mmu::PROT_FW_MMIO_RW,
-                )?,
-                GFP_KERNEL,
-            )?;
+            for instance in 0..window.instances {
+                let (phys, va, size) = window.mapping(instance).ok_or(EINVAL)?;
+                self.aliases.push(
+                    env.vm.map_io(
+                        env.dev.as_ref().as_ref(),
+                        va,
+                        phys.try_into()?,
+                        size.try_into()?,
+                        mmu::PROT_FW_MMIO_RW,
+                    )?,
+                    GFP_KERNEL,
+                )?;
+            }
         }
         Ok(())
     }
