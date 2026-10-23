@@ -10,7 +10,10 @@ use crate::g17::{
     channel::Rings,
     context::Context,
     fw::{
-        channels::ControlRecord, compute::COMPUTE_DESCRIPTOR_SIZE, queue::*, variant::PointerLayout,
+        channels::ControlRecord,
+        compute::{OperandState, COMPUTE_DESCRIPTOR_SIZE},
+        queue::*,
+        variant::PointerLayout,
     },
     object::{Allocator, CpuMap, KernelObject},
 };
@@ -117,17 +120,24 @@ struct Graph {
     reclaimed: u32,
     /// Host words of the pointer block in this firmware build.
     pointers: PointerLayout,
+    /// Layout of the operand-state buffer for the GPU's cores.
+    operand_state: &'static OperandState,
 }
 
 impl Graph {
-    fn new(alloc: &Allocator<'_>, context: &Context, pointers: PointerLayout) -> Result<Self> {
+    fn new(
+        alloc: &Allocator<'_>,
+        context: &Context,
+        pointers: PointerLayout,
+        operand_state: &'static OperandState,
+    ) -> Result<Self> {
         let page = mmu::UAT_PGSZ as u64;
         let prot = mmu::PROT_GPU_FW_SHARED_RW;
         let cpu = CpuMap::WriteCombined;
         let ring = DescriptorRing::new(alloc)?;
         let preempt = alloc.kernel(0x4000, page, prot, cpu)?;
         let usage = alloc.kernel(mmu::UAT_PGSZ, page, prot, cpu)?;
-        let operand = alloc.lower(0x14000, page, prot, cpu)?;
+        let operand = alloc.lower(operand_state.size, page, prot, cpu)?;
         let mut support = alloc.kernel(0xc000, page, prot, cpu)?;
         let support_va = support.gpu_va();
         support.write(0, support_va + page)?;
@@ -165,6 +175,7 @@ impl Graph {
             record_ends: [None; RECORD_SLOTS],
             reclaimed: 0,
             pointers,
+            operand_state,
         })
     }
 
@@ -538,9 +549,10 @@ impl Queue {
         owner: u64,
         context: Arc<Context>,
         pointers: PointerLayout,
+        operand_state: &'static OperandState,
     ) -> Result<Self> {
         let Backing { mut pool, mut kick } = backing;
-        let mut graph = Graph::new(alloc, &context, pointers)?;
+        let mut graph = Graph::new(alloc, &context, pointers, operand_state)?;
         let kick_alias = kick.map_client(context.vm())?;
         let pool_alias = pool.map_client(context.vm())?;
         let binding = graph.bind(context.clone(), kick_alias, pool_alias)?;
@@ -1823,6 +1835,7 @@ impl Queue {
             kick: kick_timestamp,
             preempt_va: addresses.preempt,
             operand_state_va: addresses.operand,
+            operand: self.graph.operand_state,
             usage_va: addresses.usage,
             usage_fw_va: self.graph.usage.gpu_va(),
             free_list_slot: u32::from(self.pool.id()),
