@@ -28,6 +28,7 @@
 		disp0 = &display;
 		/* the boot loader finds the GPU node through this alias */
 		gpu = &gpu;
+		pmp = &pmp;
 	};
 
 	chosen {
