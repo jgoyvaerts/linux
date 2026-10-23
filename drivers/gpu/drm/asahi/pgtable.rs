@@ -124,6 +124,21 @@ impl ReservedTables {
 
 const CACHE_LINE: usize = 64;
 
+/// Writes back the CPU cache lines of `len` bytes at `ptr` (`dc cvac`). The caller completes the
+/// batch with a barrier before the GPU may use it.
+pub(crate) fn clean_cache(ptr: *const u8, len: usize) {
+    let start = ptr as usize & !(CACHE_LINE - 1);
+    let end = ptr as usize + len;
+    let mut line = start;
+    while line < end {
+        // SAFETY: Cleaning a mapped line changes no memory contents.
+        unsafe {
+            core::arch::asm!("dc cvac, {x}", x = in(reg) line, options(nostack, preserves_flags))
+        };
+        line += CACHE_LINE;
+    }
+}
+
 /// Invalidates the CPU cache lines of `len` bytes at `ptr` (`dc ivac`), discarding cached copies.
 fn invalidate_cache(ptr: *const u8, len: usize) {
     let start = ptr as usize & !(CACHE_LINE - 1);
@@ -314,6 +329,22 @@ impl Prot {
         (!need_read || readable) && (!need_write || writable)
     }
 
+    /// The native form of a GPU-only permission: AP 0 with the access in PXN (read) and UXN
+    /// (write), as [`Self::allows_gpu`] reads AP 0. The logical selectors RO, WO, RW, NA map to
+    /// the native RO, WO, RW, NA. Firmware permissions are returned unchanged.
+    const fn native_gpu(self) -> Self {
+        if self.ap != AP_GPU {
+            return self;
+        }
+        let selector = (self.high_bits >> 1) & 3;
+        Self {
+            ap: AP_FW_GPU,
+            high_bits: (self.high_bits & !(HIGH_BITS_PXN | HIGH_BITS_UXN))
+                | (((selector + 1) & 3) << 1),
+            ..self
+        }
+    }
+
     pub(crate) const fn is_cached_noncoherent(&self) -> bool {
         self.ap != AP_GPU && self.memattr == MEMATTR_CACHED
     }
@@ -334,6 +365,11 @@ pub(crate) struct UatPageTable {
     ttb_owned: bool,
     /// Reserved regions holding tables this page table may reach.
     reserved: Option<Arc<ReservedTables>>,
+    /// Write back every table change for a GPU table walker that does not snoop the CPU caches
+    /// (`UatQuirks::clean_tables`).
+    clean: bool,
+    /// Store GPU-only permissions in the native AP 0 form ([`Prot::native_gpu`]).
+    native_gpu: bool,
     /// Tables below a root the driver did not allocate may belong to the bootloader or the
     /// firmware, so only the tables recorded here are ever freed. `None` if the driver owns the
     /// tables below the root, as with the handoff firmware interface.
@@ -344,19 +380,35 @@ pub(crate) struct UatPageTable {
 }
 
 impl UatPageTable {
-    pub(crate) fn new(ias: u32, oas: u32) -> Result<Self> {
+    pub(crate) fn new(ias: u32, oas: u32, clean: bool) -> Result<Self> {
         mod_pr_debug!("UATPageTable::new: ias={} oas={}\n", ias, oas);
         let ttb_page = Page::alloc_page(GFP_KERNEL | __GFP_ZERO)?;
+        if clean {
+            ttb_page.with_pointer_into_page(0, UAT_PGSZ, |p| {
+                clean_cache(p, UAT_PGSZ);
+                Ok(())
+            })?;
+            crate::mem::sync();
+        }
         let ttb = Page::into_phys(ttb_page);
         Ok(UatPageTable {
             ttb,
             ttb_owned: true,
             reserved: None,
+            clean,
+            native_gpu: false,
             driver_tables: None,
             va_range: 0..(1u64 << ias),
             ias_mask: (1u64 << ias) - 1,
             oas_mask: (1u64 << oas) - 1,
         })
+    }
+
+    /// Stores GPU-only permissions of this (client or kernel-lower) table in the native AP 0 form
+    /// (`UatQuirks::native_gpu_permissions`). Firmware roots never hold GPU-only mappings.
+    pub(crate) fn with_native_gpu(mut self, native_gpu: bool) -> Self {
+        self.native_gpu = native_gpu;
+        self
     }
 
     /// Borrow a root; track individual child ownership only when other agents
@@ -368,6 +420,7 @@ impl UatPageTable {
         oas: u32,
         shared_tables: bool,
         reserved: Option<Arc<ReservedTables>>,
+        clean: bool,
     ) -> Result<Self> {
         mod_pr_debug!(
             "UATPageTable::new_with_ttb: ttb={:#x} range={:#x?} ias={} oas={}\n",
@@ -397,6 +450,8 @@ impl UatPageTable {
             ttb,
             ttb_owned: false,
             reserved,
+            clean,
+            native_gpu: false,
             driver_tables: shared_tables.then(KVec::new),
             va_range,
             ias_mask: (1u64 << ias) - 1,
@@ -442,6 +497,7 @@ impl UatPageTable {
         let end = ((iova_range.end - 1) & self.ias_mask) + 1;
 
         let reserved = self.reserved.clone();
+        let clean = self.clean;
         let mut pt_addr: [Option<PhysicalAddr>; UAT_LEVELS] = Default::default();
         // For every child table, retain the parent page and entry that names it.
         // Children are detached before their parents are freed, so these borrowed
@@ -501,6 +557,13 @@ impl UatPageTable {
                             if upte_val == 0 && alloc {
                                 let pt_page = Page::alloc_page(GFP_KERNEL | __GFP_ZERO)?;
                                 mod_pr_debug!("UATPageTable::with_pages: alloc PT at {:#x}\n", pt_page.phys());
+                                if clean {
+                                    // The walker must not see stale lines of the new table.
+                                    pt_page.with_pointer_into_page(0, UAT_PGSZ, |q| {
+                                        clean_cache(q, UAT_PGSZ);
+                                        Ok(())
+                                    })?;
+                                }
                                 if let Some(tables) = driver_tables.as_mut() {
                                     tables.push(pt_page.phys(), GFP_KERNEL)?;
                                 }
@@ -512,6 +575,9 @@ impl UatPageTable {
                                 // already-visible parent against earlier clears.
                                 crate::mem::sync();
                                 upte.store(upte_val, Ordering::Relaxed);
+                                if clean {
+                                    clean_cache(p, PTE_SIZE);
+                                }
                             }
                             if upte_val & PTE_TYPE_BITS == PTE_TYPE_LEAF_TABLE {
                                 Ok(Some(upte_val & oas_mask & (!UAT_PGMSK as u64)))
@@ -569,6 +635,9 @@ impl UatPageTable {
                     // checked by with_table().
                     let ptes = core::slice::from_raw_parts(ptep, count);
                     cb(iova, ptes)?;
+                    if clean {
+                        clean_cache(p, count * PTE_SIZE);
+                    }
                     Ok(())
                 })
             }?;
@@ -611,6 +680,7 @@ impl UatPageTable {
         }
         if let Some((parent_phys, parent_index)) = parent {
             let oas_mask = self.oas_mask;
+            let clean = self.clean;
             let in_reserved = self.reserved.as_ref().is_some_and(|r| r.contains(parent_phys));
             if !in_reserved && unsafe { Page::borrow_phys(&parent_phys) }.is_none() {
                 return Err(EIO);
@@ -629,6 +699,9 @@ impl UatPageTable {
                         return Err(EIO);
                     }
                     pte.store(0, Ordering::Release);
+                    if clean {
+                        clean_cache(p, PTE_SIZE);
+                    }
                     Ok(())
                 })
             }?;
@@ -730,6 +803,15 @@ impl UatPageTable {
         }
     }
 
+    /// The permission bits as this table stores them.
+    fn stored(&self, prot: Prot) -> Prot {
+        if self.native_gpu {
+            prot.native_gpu()
+        } else {
+            prot
+        }
+    }
+
     pub(crate) fn map_pages(
         &mut self,
         iova_range: Range<u64>,
@@ -749,6 +831,7 @@ impl UatPageTable {
         }
 
         let pte_bits = self.pte_bits();
+        let prot = self.stored(prot);
 
         self.with_pages(iova_range, true, false, |iova, ptes| {
             for (idx, pte) in ptes.iter().enumerate() {
@@ -775,6 +858,7 @@ impl UatPageTable {
             iova_range,
             prot
         );
+        let prot = self.stored(prot);
         self.with_pages(iova_range, true, false, |iova, ptes| {
             for (idx, pte) in ptes.iter().enumerate() {
                 let ptev = pte.load(Ordering::Relaxed);
