@@ -392,6 +392,13 @@ static void apple_crtc_atomic_begin(struct drm_crtc *crtc,
 
 	if (crtc->state->event) {
 		spin_lock_irqsave(&crtc->dev->event_lock, flags);
+		/*
+		 * The previous commit's flip_done must have completed before this
+		 * one begins. Should its event still be pending, send it rather
+		 * than lose it: a lost event stalls its waiters forever.
+		 */
+		if (WARN_ON_ONCE(apple_crtc->event))
+			drm_crtc_send_vblank_event(crtc, apple_crtc->event);
 		apple_crtc->event = crtc->state->event;
 		spin_unlock_irqrestore(&crtc->dev->event_lock, flags);
 		crtc->state->event = NULL;
