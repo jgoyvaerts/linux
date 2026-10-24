@@ -105,6 +105,9 @@ impl Layout {
             );
         }
         tvb_blocks = tvb_blocks.max(cfg::TVB_INITIAL_PAGES.len());
+        // Lets a render start with a larger heap instead of growing it 10 blocks at a time.
+        tvb_blocks = tvb_blocks
+            .max(crate::module_parameters::g17_tvb_min_blocks.value().min(cfg::TVB_MAX_BLOCKS));
         let mut gtp = [None; 8];
         let mut tpc_end = tpc_size;
         if programs == RegisterPrograms::V25G83 {

@@ -131,6 +131,10 @@ module! {
             default: 1,
             description: "Count held GPU memory in its creator's RSS for the OOM killer (1 = on)",
         },
+        g17_tvb_min_blocks: usize {
+            default: 0,
+            description: "G17: minimum TVB blocks of a render target (0: from its tile count)",
+        },
         g16_deadline_ms: u32 {
             default: 5000,
             description: "G16: administrative completion-stamp deadline, ms (0 disables; long running work can exceed it)",
