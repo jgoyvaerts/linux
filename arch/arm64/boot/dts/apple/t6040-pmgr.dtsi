@@ -388,6 +388,11 @@
 		power-domains = <&ps_atc0_common>, <&ps_atc0_usb_aon>;
 	};
 
+	/*
+	 * Always on: the USB3 PHY coprocessor and its mailbox. A power-off (genpd
+	 * does one on system suspend) resets the CPU and the outbox enable iBoot set,
+	 * behind the RTKit session; Linux cannot redo iBoot's setup.
+	 */
 	ps_atc0_phymxwrap: power-controller@150 {
 		compatible = "apple,t6041-pmgr-pwrstate", "apple,t8103-pmgr-pwrstate";
 		reg = <0x150 4>;
@@ -395,6 +400,7 @@
 		#reset-cells = <0>;
 		label = "atc0_phymxwrap";
 		power-domains = <&ps_atc0_common>, <&ps_atc0_usb_aon>;
+		apple,always-on;
 	};
 
 	ps_atc0_common_dp: power-controller@a0 {
@@ -431,6 +437,7 @@
 		#reset-cells = <0>;
 		label = "atc1_phymxwrap";
 		power-domains = <&ps_atc1_common>, <&ps_atc1_usb_aon>;
+		apple,always-on;
 	};
 
 	ps_atc1_common_dp: power-controller@a8 {
@@ -467,6 +474,7 @@
 		#reset-cells = <0>;
 		label = "atc2_phymxwrap";
 		power-domains = <&ps_atc2_common>, <&ps_atc2_usb_aon>;
+		apple,always-on;
 	};
 
 	ps_atc2_common_dp: power-controller@b0 {
