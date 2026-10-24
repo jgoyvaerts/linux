@@ -77,19 +77,27 @@ impl<'a> Lane<'a> {
         ];
         let announce_va = graph.queues.gpu_va() + announce_offset as u64;
         let descriptor = graph.descriptor_va(stage, ordinal);
-        // Item order: [lead command], descriptor, [configuration], announcement.
+        // Item order: [lead command], descriptor, [configuration], announcement. A fragment queue's
+        // installing configuration goes first instead: the lead barrier can hold this lane while the
+        // pass's tiling kick runs, and a recovery of that kick follows its link into this queue
+        // without checking that the queue is installed.
+        let config_va = graph.config.gpu_va() + config_offset as u64;
+        let install_first = present && stage == 1 && config.install != 0;
         let mut values = [0; 4];
         let mut n = 0;
         let mut push = |value: u64| {
             values[n] = value;
             n += 1;
         };
+        if install_first {
+            push(config_va);
+        }
         if lead {
             push(graph.config.gpu_va() + (config_offset + memory::LEAD) as u64);
         }
         push(descriptor);
-        if present {
-            push(graph.config.gpu_va() + config_offset as u64);
+        if present && !install_first {
+            push(config_va);
         }
         push(announce_va);
         Ok(Self {
