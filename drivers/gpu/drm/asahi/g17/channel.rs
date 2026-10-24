@@ -138,6 +138,9 @@ impl Rings {
             record.opcode().asserts_gpu_power(),
             next,
         )?;
+        if crate::debug::debug_enabled(crate::debug::DebugFlags::DeviceControlCh) {
+            pr_info!("G17 control slot {}: {:?}\n", producer, record);
+        }
         Ok(next)
     }
 }
