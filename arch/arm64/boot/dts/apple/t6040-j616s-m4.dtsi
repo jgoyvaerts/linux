@@ -52,12 +52,15 @@
 		#address-cells = <2>;
 		#size-cells = <2>;
 
-		aop-oslog {
+		/* reg and iommu-addresses filled by the loader (iommu-addresses needs the AOP's phandle) */
+		aop_oslog: aop-oslog {
 			no-map;
+			iommu-addresses = <&aop 0 0 0 0>;
 		};
 
-		aop-etext {
+		aop_etext: aop-etext {
 			no-map;
+			iommu-addresses = <&aop 0 0 0 0>;
 		};
 
 		direct-desktop-host1 {
@@ -313,6 +316,7 @@
 &aop {
 	#address-cells = <2>;
 	#size-cells = <2>;
+	memory-region = <&aop_etext>, <&aop_oslog>;
 };
 
 &dcp {
@@ -329,6 +333,24 @@
  */
 &gpu {
 	apple,firmware-version = <0x1a 6 2>;
+	status = "okay";
+};
+
+/* The daily tree runs the GPU: its companions, as t6040-j616s.dts describes. */
+&gfx_mbox {
+	status = "okay";
+};
+
+&pmp_gfx {
+	apple,always-on;
+};
+
+&ps_afr {
+	apple,always-on;
+};
+
+&ps_gfx {
+	apple,always-on;
 };
 
 / {
@@ -353,7 +375,7 @@
 	phandle = <0x49>;
 };
 
-&wifi_clkreq {
+&wifi_clkreq_pins {
 	phandle = <0x78>;
 };
 
