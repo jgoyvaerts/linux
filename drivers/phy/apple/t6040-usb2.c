@@ -618,6 +618,13 @@ static void t6040_usb3_firmware_power_down(struct t6040_usb2_phy *tphy)
 	u32 status;
 	int ret;
 
+	if (!(readl(cpu + T6040_CPU_RUN) & T6040_CPU_RUN_START)) {
+		/* Stopped behind the session's back: nothing to talk to, only forget the session. */
+		if (apple_rtkit_is_running(tphy->rtk))
+			dev_warn(tphy->dev, "USB3: the PHY coprocessor was reset under its RTKit session\n");
+		goto reinit;
+	}
+
 	if (apple_rtkit_is_running(tphy->rtk)) {
 		reinit_completion(&tphy->app_reply);
 		ret = apple_rtkit_start_ep(tphy->rtk, T6040_CPU_EP_APP);
@@ -634,14 +641,13 @@ static void t6040_usb3_firmware_power_down(struct t6040_usb2_phy *tphy)
 			dev_warn(tphy->dev, "USB3: PHY coprocessor idle failed: %d\n", ret);
 	}
 
-	if (!(readl(cpu + T6040_CPU_RUN) & T6040_CPU_RUN_START))
-		return;
 	if (readl_poll_timeout(cpu + T6040_CPU_STATUS, status, status & T6040_CPU_STATUS_IDLE,
 			       1000, 10000))
 		dev_warn(tphy->dev, "USB3: the PHY coprocessor did not idle (status %#x)\n",
 			 status);
 	writel(~T6040_CPU_RUN_START, cpu + T6040_CPU_RUN);
 
+reinit:
 	ret = apple_rtkit_reinit(tphy->rtk);
 	if (ret)
 		dev_warn(tphy->dev, "USB3: RTKit reset failed: %d\n", ret);
