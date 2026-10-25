@@ -132,8 +132,8 @@ module! {
             description: "Count held GPU memory in its creator's RSS for the OOM killer (1 = on)",
         },
         g17_tvb_min_blocks: usize {
-            default: 0,
-            description: "G17: minimum TVB blocks of a render target (0: from its tile count)",
+            default: 256,
+            description: "G17: minimum TVB blocks of a render target (0: from its tile count). 256 pre-sizes the tiler heap large enough that ordinary heavy scenes do not overflow into the synchronous firmware-grow round trips that trip the 25G83 forward-progress watchdog (reason 0)",
         },
         g16_deadline_ms: u32 {
             default: 5000,
