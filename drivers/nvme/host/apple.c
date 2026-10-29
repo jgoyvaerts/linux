@@ -2614,28 +2614,34 @@ static struct apple_nvme *apple_nvme_alloc(struct platform_device *pdev)
 		goto out_detach_genpd;
 	}
 	if (anv->hw->partition_write_probe) {
-		/* The loader's GPT-checked ranges win over the board DT's fallback */
+		/* The loader's GPT-checked ranges first, then the board DT's, each checked as its source allows */
 		struct device_node *chosen = of_find_node_by_path("/chosen");
-		bool from_loader = of_property_present(chosen, "m4,write-lba-range");
-		struct device_node *np = from_loader ? chosen : dev->of_node;
-		const char *prop = from_loader ? "m4,write-lba-range" : "lab,write-lba-range";
-		unsigned int i;
+		struct device_node *np[2] = { chosen, dev->of_node };
+		static const char *const prop[2] = { "m4,write-lba-range", "lab,write-lba-range" };
+		unsigned int i, s, from_loader = 0;
 
-		ret = of_property_count_u64_elems(np, prop);
-		if (ret > 0 && ret % 2 == 0 && ret <= ARRAY_SIZE(anv->write_lba_range)) {
-			anv->write_lba_ranges = ret / 2;
-			ret = of_property_read_u64_array(np, prop, anv->write_lba_range,
-							 2 * anv->write_lba_ranges);
-		} else {
-			ret = -EINVAL;
+		ret = 0;
+		for (s = 0; !ret && s < 2; s++) {
+			unsigned int n = anv->write_lba_ranges;
+			int cnt = of_property_count_u64_elems(np[s], prop[s]);
+
+			if (cnt == -EINVAL) /* absent */
+				continue;
+			if (cnt <= 0 || cnt % 2 || 2 * n + cnt > ARRAY_SIZE(anv->write_lba_range)) {
+				ret = -EINVAL;
+				break;
+			}
+			ret = of_property_read_u64_array(np[s], prop[s], &anv->write_lba_range[2 * n], cnt);
+			anv->write_lba_ranges += cnt / 2;
+			for (i = n; !ret && i < anv->write_lba_ranges; i++)
+				if (!apple_m4_partition_range_valid(anv->write_lba_range[2 * i],
+								    anv->write_lba_range[2 * i + 1], s == 0))
+					ret = -EINVAL;
+			if (s == 0)
+				from_loader = anv->write_lba_ranges;
 		}
 		of_node_put(chosen);
-		for (i = 0; !ret && i < anv->write_lba_ranges; i++)
-			if (!apple_m4_partition_range_valid(anv->write_lba_range[2 * i],
-							    anv->write_lba_range[2 * i + 1],
-							    from_loader))
-				ret = -EINVAL;
-		if (ret) {
+		if (ret || !anv->write_lba_ranges) {
 			dev_err(dev, "Missing/invalid partition write bounds\n");
 			ret = -EINVAL;
 			goto out_detach_genpd;
@@ -2643,7 +2649,7 @@ static struct apple_nvme *apple_nvme_alloc(struct platform_device *pdev)
 		for (i = 0; i < anv->write_lba_ranges; i++)
 			dev_info(dev, "Writes restricted to namespace 1, 4096-byte LBAs [%llu,%llu) (%s)\n",
 				 anv->write_lba_range[2 * i], anv->write_lba_range[2 * i + 1],
-				 from_loader ? "loader" : "board DT");
+				 i < from_loader ? "loader" : "board DT");
 	}
 
 	ret = apple_nvme_attach_genpd(anv);
