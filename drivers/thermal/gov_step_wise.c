@@ -25,9 +25,9 @@
  *       minimum
  * If the temperature is lower than a trip point,
  *    a. if the trend is THERMAL_TREND_RAISING, do nothing
- *    b. if the trend is THERMAL_TREND_DROPPING, use the minimum applicable
- *       cooling state for this trip point, or if the cooling state already
- *       equals lower limit, deactivate the thermal instance
+ *    b. if the trend is THERMAL_TREND_DROPPING, use a lower cooling state
+ *       for this trip point, or if the cooling state already equals lower
+ *       limit, deactivate the thermal instance
  */
 static unsigned long get_target_state(struct thermal_instance *instance,
 				enum thermal_trend trend, bool throttle)
@@ -66,10 +66,16 @@ static unsigned long get_target_state(struct thermal_instance *instance,
 				     instance->upper);
 	} else if (trend == THERMAL_TREND_DROPPING) {
 		/*
-		 * If 'throttle' is false, no mitigation is necessary and
-		 * passive polling is already deactivated, so clear this
-		 * instance state by returning THERMAL_NO_TARGET.
+		 * If 'throttle' is false, no mitigation is necessary, so wind
+		 * this instance down and then clear its state.  One state per
+		 * poll: a noisy sensor can dip below the hysteresis for a
+		 * single sample, and releasing everything at once then sends
+		 * the temperature straight back past the trip.
 		 */
+		if (instance->target != THERMAL_NO_TARGET &&
+		    instance->target > instance->lower)
+			return instance->target - 1;
+
 		return THERMAL_NO_TARGET;
 	}
 
