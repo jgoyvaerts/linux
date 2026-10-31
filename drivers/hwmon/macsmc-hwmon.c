@@ -142,6 +142,8 @@ struct macsmc_hwmon {
 	struct macsmc_hwmon_fans fan;
 	struct macsmc_hwmon_sensor pressure;
 	bool register_thermal_zones;
+	/* Last thermal pressure level read by the zone, times 1000. */
+	int pressure_mc;
 	/* SoC die temperature keys listed, and the ones present. */
 	u32 die_listed;
 	u32 die_count;
@@ -1435,8 +1437,108 @@ static int macsmc_hwmon_die_register(struct macsmc_hwmon *hwmon)
 		 MACSMC_SOC_DIE_ZONE, keys, hwmon->die_count, hwmon->die_listed);
 	return devm_add_action_or_reset(hwmon->dev, macsmc_hwmon_die_unregister, tz);
 }
+/*
+ * Thermal pressure.  The SMC publishes a level, 0 to 2 here, that reaches 2
+ * (heavy) once its fans are at their limit and the case is still at its
+ * target, and macOS answers by slowing the CPU.  That is a slow response to
+ * a slow signal, so the pressure zone moves the cooling devices one state per
+ * poll: up while the level is heavy, down while it is not.  The level is a
+ * plateau, so step_wise would see no trend of its own.
+ */
+#define MACSMC_PRESSURE_ZONE		"macsmc_pressure"
+#define MACSMC_PRESSURE_HEAVY_MC	2000
+#define MACSMC_PRESSURE_STEP_MS		5000
+/*
+ * MacBook Pro (16-inch, M4 Pro). With the GPU and all CPU cores busy for 10
+ * minutes, macOS 26.6.2 reached heavy pressure once the fans were at their
+ * limit and the case at its target. It then slowed both P clusters to about
+ * 2650 MHz and left the E cluster and the GPU alone, so state 13 of a P
+ * cluster (2616 MHz) is the end of the cut.
+ */
+#define MACSMC_J616S_PRESSURE_STATE	13
+
+static int macsmc_hwmon_pressure_get_temp(struct thermal_zone_device *tz, int *temp)
+{
+	struct macsmc_hwmon *hwmon = thermal_zone_device_priv(tz);
+	s32 level;
+	int ret;
+
+	ret = apple_smc_read_s32(hwmon->smc, hwmon->pressure.macsmc_key, &level);
+	if (ret)
+		return ret;
+
+	hwmon->pressure_mc = level * 1000;
+	*temp = hwmon->pressure_mc;
+	return 0;
+}
+
+static int macsmc_hwmon_pressure_get_trend(struct thermal_zone_device *tz,
+					   const struct thermal_trip *trip,
+					   enum thermal_trend *trend)
+{
+	struct macsmc_hwmon *hwmon = thermal_zone_device_priv(tz);
+
+	*trend = hwmon->pressure_mc >= trip->temperature ?
+		 THERMAL_TREND_RAISING : THERMAL_TREND_DROPPING;
+	return 0;
+}
+
+static bool macsmc_hwmon_pressure_should_bind(struct thermal_zone_device *tz,
+					      const struct thermal_trip *trip,
+					      struct thermal_cooling_device *cdev,
+					      struct cooling_spec *c)
+{
+	c->upper = MACSMC_J616S_PRESSURE_STATE;
+	return !strcmp(cdev->type, "cpufreq-cpu0") ||
+	       !strcmp(cdev->type, "cpufreq-cpu9");
+}
+
+static const struct thermal_zone_device_ops macsmc_hwmon_pressure_ops = {
+	.get_temp = macsmc_hwmon_pressure_get_temp,
+	.get_trend = macsmc_hwmon_pressure_get_trend,
+	.should_bind = macsmc_hwmon_pressure_should_bind,
+};
+
+static const struct thermal_trip macsmc_hwmon_pressure_trip = {
+	.temperature = MACSMC_PRESSURE_HEAVY_MC,
+	.type = THERMAL_TRIP_PASSIVE,
+	.flags = THERMAL_TRIP_FLAG_RW_TEMP,
+};
+
+static int macsmc_hwmon_pressure_register(struct macsmc_hwmon *hwmon)
+{
+	/* The level is not a temperature. */
+	struct thermal_zone_params tzp = { .no_hwmon = true };
+	struct thermal_zone_device *tz;
+	int ret;
+
+	if (!hwmon->pressure.macsmc_key || !of_machine_is_compatible("apple,j616s"))
+		return 0;
+
+	tz = thermal_zone_device_register_with_trips(MACSMC_PRESSURE_ZONE,
+						     &macsmc_hwmon_pressure_trip, 1,
+						     hwmon, &macsmc_hwmon_pressure_ops,
+						     &tzp, MACSMC_PRESSURE_STEP_MS,
+						     MACSMC_PRESSURE_STEP_MS);
+	if (IS_ERR(tz)) {
+		dev_warn(hwmon->dev, "cannot register the thermal pressure zone (%pe)\n", tz);
+		return 0;
+	}
+
+	ret = devm_add_action_or_reset(hwmon->dev, macsmc_hwmon_die_unregister, tz);
+	if (ret)
+		return ret;
+
+	return thermal_zone_device_enable(tz);
+}
+
 #else
 static int macsmc_hwmon_die_register(struct macsmc_hwmon *hwmon)
+{
+	return 0;
+}
+
+static int macsmc_hwmon_pressure_register(struct macsmc_hwmon *hwmon)
 {
 	return 0;
 }
@@ -1684,6 +1786,10 @@ static int macsmc_hwmon_probe(struct platform_device *pdev)
 		macsmc_hwmon_debugfs_init(hwmon);
 
 	ret = macsmc_hwmon_die_register(hwmon);
+	if (ret)
+		return ret;
+
+	ret = macsmc_hwmon_pressure_register(hwmon);
 	if (ret)
 		return ret;
 
