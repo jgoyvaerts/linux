@@ -15,7 +15,10 @@
 #include <linux/of.h>
 #include <linux/power_supply.h>
 #include <linux/regmap.h>
+#include <linux/property.h>
+#include <linux/timekeeping.h>
 #include <linux/unaligned.h>
+#include <linux/usb.h>
 #include <linux/usb/pd.h>
 #include <linux/soc/apple/sleep.h>
 #include <linux/suspend.h>
@@ -2564,11 +2567,109 @@ static int cd321x_tbt_notify(struct notifier_block *nb,
 	return NOTIFY_OK;
 }
 
+#if IS_REACHABLE(CONFIG_USB)
+#define CD321X_SS_KICK_WINDOW_S	30
+#define CD321X_SS_KICK_OFF_S	3
+
+/*
+ * A bus-powered USB3 device powered since before Linux has stopped training
+ * SuperSpeed by the time the xHCI starts, and only leaves USB2 when VBUS drops:
+ * port and warm resets do not bring it back. The firmware's simulated
+ * disconnect does; it needs Apple's debug mode, which ends with the disconnect.
+ */
+static void cd321x_ss_kick_work(struct work_struct *work)
+{
+	struct cd321x *cd321x = container_of(work, struct cd321x, ss_kick_work);
+	struct tps6598x *tps = &cd321x->tps;
+	static const u8 key[4] = { '6', '1', '6', 'J' }, no_key[4];
+	const u8 on = 1, off = 0, seconds = CD321X_SS_KICK_OFF_S;
+	u32 status, data_status;
+	int ret;
+
+	scoped_guard(mutex, &tps->lock) {
+		ret = tps6598x_read32(tps, TPS_REG_STATUS, &status) ?:
+		      tps6598x_read32(tps, TPS_REG_DATA_STATUS, &data_status);
+		if (ret || TPS_STATUS_TO_TYPEC_PORTROLE(status) != TYPEC_SOURCE ||
+		    !(data_status & TPS_DATA_STATUS_USB3_CONNECTION) ||
+		    (data_status & (TPS_DATA_STATUS_DP_CONNECTION |
+				    TPS_DATA_STATUS_TBT_CONNECTION |
+				    CD321X_DATA_STATUS_USB4_CONNECTION)))
+			return;
+
+		ret = tps6598x_exec_cmd(tps, "LOCK", sizeof(key), key, 0, NULL) ?:
+		      tps6598x_exec_cmd(tps, "DBMa", 1, &on, 0, NULL) ?:
+		      tps6598x_exec_cmd(tps, "DISC", 1, &seconds, 0, NULL);
+	}
+	if (ret)
+		dev_warn(tps->dev, "could not power cycle the USB2 device: %d\n", ret);
+	else
+		dev_info(tps->dev, "power cycling a USB3 device left on USB2\n");
+
+	msleep((CD321X_SS_KICK_OFF_S + 2) * MSEC_PER_SEC);
+	guard(mutex)(&tps->lock);
+	tps6598x_exec_cmd(tps, "DBMa", 1, &off, 0, NULL);
+	tps6598x_exec_cmd(tps, "LOCK", sizeof(no_key), no_key, 0, NULL);
+}
+
+static int cd321x_ss_kick_notify(struct notifier_block *nb, unsigned long action,
+				 void *data)
+{
+	struct cd321x *cd321x = container_of(nb, struct cd321x, ss_kick_notifier);
+	struct usb_device *udev = data;
+	struct fwnode_handle *ep, *remote;
+	bool ours = false;
+
+	if (action != USB_DEVICE_ADD || udev->speed != USB_SPEED_HIGH ||
+	    !udev->parent || udev->parent->parent ||
+	    !udev->bos || !udev->bos->ss_cap ||
+	    ktime_get_boottime_seconds() > CD321X_SS_KICK_WINDOW_S)
+		return NOTIFY_DONE;
+
+	fwnode_graph_for_each_endpoint(cd321x->connector_fwnode, ep) {
+		remote = fwnode_graph_get_remote_port_parent(ep);
+		ours |= remote == dev_fwnode(udev->bus->sysdev);
+		fwnode_handle_put(remote);
+	}
+	if (ours && !xchg(&cd321x->ss_kick_done, true))
+		schedule_work(&cd321x->ss_kick_work);
+	return NOTIFY_DONE;
+}
+
+static void cd321x_ss_kick_arm(struct cd321x *cd321x)
+{
+	struct tps6598x *tps = &cd321x->tps;
+	u32 status;
+
+	if (!of_machine_is_compatible("apple,j616s") || tps->dbma_at_probe ||
+	    cd321x->ss_kick_registered ||
+	    tps6598x_read32(tps, TPS_REG_STATUS, &status) ||
+	    !(status & TPS_STATUS_PLUG_PRESENT))
+		return;
+
+	cd321x->ss_kick_notifier.notifier_call = cd321x_ss_kick_notify;
+	usb_register_notify(&cd321x->ss_kick_notifier);
+	cd321x->ss_kick_registered = true;
+}
+
+static void cd321x_ss_kick_stop(struct cd321x *cd321x)
+{
+	if (cd321x->ss_kick_registered)
+		usb_unregister_notify(&cd321x->ss_kick_notifier);
+	cd321x->ss_kick_registered = false;
+	cancel_work_sync(&cd321x->ss_kick_work);
+}
+#else
+static void cd321x_ss_kick_work(struct work_struct *work) { }
+static void cd321x_ss_kick_arm(struct cd321x *cd321x) { }
+static void cd321x_ss_kick_stop(struct cd321x *cd321x) { }
+#endif
+
 static void cd321x_ready(struct tps6598x *tps)
 {
 	struct cd321x *cd321x = container_of(tps, struct cd321x, tps);
 
 	guard(mutex)(&tps->lock);
+	cd321x_ss_kick_arm(cd321x);
 	/* Include failures reported while the port was still being initialized. */
 	if (cd321x_pm_ready(&cd321x->pm)) {
 		dev_dbg(tps->dev, "Type-C probe ready: held=%u\n",
@@ -2599,6 +2700,7 @@ VISIBLE_IF_KUNIT void cd321x_stop_work(struct cd321x *cd321x)
 	cancel_delayed_work_sync(&cd321x->resume_work);
 	cancel_delayed_work_sync(&cd321x->update_work);
 	cancel_delayed_work_sync(&cd321x->rearm_work);
+	cd321x_ss_kick_stop(cd321x);
 }
 EXPORT_SYMBOL_IF_KUNIT(cd321x_stop_work);
 
@@ -2731,6 +2833,7 @@ VISIBLE_IF_KUNIT void cd321x_init_work(struct cd321x *cd321x)
 	INIT_DELAYED_WORK(&cd321x->resume_work, cd321x_resume_work);
 	INIT_DELAYED_WORK(&cd321x->rearm_work, cd321x_rearm_work);
 	INIT_WORK(&cd321x->tbt_attach_work, cd321x_tbt_attach_work);
+	INIT_WORK(&cd321x->ss_kick_work, cd321x_ss_kick_work);
 	atomic_set(&cd321x->link_event, 0);
 	atomic_set(&cd321x->ready_event, 0);
 	atomic_set(&cd321x->restore_event, 0);
