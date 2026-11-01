@@ -85,18 +85,12 @@ pub(crate) type AsahiDevRef = ARef<AsahiDrmDevice>;
 pub(crate) type AsahiRegData<'drm> = AsahiDrmRegistrationData<'drm>;
 
 /// DRM Driver metadata
-///
-/// The major version names the UAPI generation in include/uapi/drm/asahi_drm.h
-/// and only changes if that ABI ever breaks. The minor version goes up with
-/// each new ioctl, flag or feature bit, so userspace can tell what a kernel
-/// accepts without probing. The patch level marks fixes userspace may need to
-/// detect.
 const INFO: drm::driver::DriverInfo = drm::driver::DriverInfo {
-    major: 1,
+    major: 0,
     minor: 0,
     patchlevel: 0,
-    name: c"aurora",
-    desc: c"Aurora GPU for Apple AGX",
+    name: c"asahi",
+    desc: c"Apple AGX Graphics",
 };
 
 /// DRM Driver implementation for `AsahiDriver`.

@@ -32,7 +32,7 @@ fn signal_exported(fence: &dyn RawDmaFence) {
 #[vtable]
 impl FenceOps for CompletionFence {
     fn get_driver_name<'a>(self: &'a FenceObject<Self>) -> &'a CStr {
-        c_str!("aurora")
+        c_str!("asahi")
     }
 
     fn get_timeline_name<'a>(self: &'a FenceObject<Self>) -> &'a CStr {
@@ -104,7 +104,7 @@ impl Drop for ExportFence {
 #[vtable]
 impl FenceOps for ExportFence {
     fn get_driver_name<'a>(self: &'a FenceObject<Self>) -> &'a CStr {
-        c_str!("aurora")
+        c_str!("asahi")
     }
     fn get_timeline_name<'a>(self: &'a FenceObject<Self>) -> &'a CStr {
         c_str!("g17-aggregate")

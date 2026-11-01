@@ -551,9 +551,9 @@ impl<B: Backend> Scheduler<B> {
         let (credits, name) = match engine {
             Engine::Render => (
                 RENDER_CREDITS.checked_mul(backend.render_pairs()).ok_or(EOVERFLOW)?,
-                c_str!("aurora_g17_render"),
+                c_str!("asahi_g17_render"),
             ),
-            Engine::Compute => (COMPUTE_CREDITS, c_str!("aurora_g17_compute")),
+            Engine::Compute => (COMPUTE_CREDITS, c_str!("asahi_g17_compute")),
         };
         let device = dev.as_ref().as_ref();
         let submit = if backend.creator_cluster_scheduling() {
