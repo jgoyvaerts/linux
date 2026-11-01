@@ -110,7 +110,7 @@ impl kernel::InPlaceModule for DriverModule {
             _cleanup: cleanup::QueueOwner::new()?,
             _legacy_rx: legacy_rx::QueueOwner::new()?,
             #[cfg(CONFIG_DRM_ASAHI_G15)]
-            _g15 <- kernel::driver::Registration::new(c"aurora-g15", module),
+            _g15 <- kernel::driver::Registration::new(c"asahi-g15", module),
             _driver <- kernel::driver::Registration::new(
                 <Self as kernel::ModuleMetadata>::NAME,
                 module,
@@ -127,10 +127,9 @@ impl kernel::InPlaceModule for DriverModule {
 
 module! {
     type: DriverModule,
-    name: "aurora",
+    name: "asahi",
     description: "AGX GPU driver for Apple silicon SoCs",
     license: "Dual MIT/GPL",
-    alias: ["asahi"],
     params: {
         m5_mesh_storage_chunks: u32 {
             default: 0x200,

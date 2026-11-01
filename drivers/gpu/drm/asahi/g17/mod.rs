@@ -1742,9 +1742,9 @@ impl Gpu {
         let submits = !m5 || cfg.profile == FirmwareProfile::M5PublishedRoots;
         let events = Arc::new(
             if m5 {
-                workqueue::OwnedQueue::new_unbound_reclaim(c"aurora_g17_events", true)?
+                workqueue::OwnedQueue::new_unbound_reclaim(c"asahi_g17_events", true)?
             } else {
-                workqueue::OwnedQueue::new_percpu_reclaim(c"aurora_g17_events", true)?
+                workqueue::OwnedQueue::new_percpu_reclaim(c"asahi_g17_events", true)?
             },
             GFP_KERNEL,
         )?;
@@ -1801,7 +1801,7 @@ impl Gpu {
             GFP_KERNEL,
         )?;
 
-        let directory = kernel::debugfs::Dir::new(c"aurora-g17");
+        let directory = kernel::debugfs::Dir::new(c"asahi-g17");
         let capacity = KBox::pin_init(
             directory.read_only_file(c"capacity", capacity::View(shared.clone())),
             GFP_KERNEL,
