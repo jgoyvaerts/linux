@@ -2887,11 +2887,17 @@ static int dcp_desktop_dptx_connect(struct apple_dcp *dcp, u32 port)
 	}
 	mutex_unlock(&dcp->hpd_mutex);
 
-	/* Without a sink the link is configured once one arrives. */
-	left = wait_for_completion_timeout(&dptx->linkcfg_completion,
-					   DPTX_CONNECT_TIMEOUT);
-	if (!left)
-		dev_dbg(dcp->dev, "DPTX port %u: no link configuration yet\n", port);
+	/*
+	 * Without a sink the link is configured once one arrives, so the wait
+	 * could only run out, and at boot the panel is held behind it.
+	 */
+	if (!dcp->hdmi_hpd || dcp_hdmi_port_attached(dcp)) {
+		left = wait_for_completion_timeout(&dptx->linkcfg_completion,
+						   DPTX_CONNECT_TIMEOUT);
+		if (!left)
+			dev_dbg(dcp->dev, "DPTX port %u: no link configuration yet\n",
+				port);
+	}
 
 	usleep_range(5, 10);
 
