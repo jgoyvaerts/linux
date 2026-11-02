@@ -793,6 +793,15 @@ int dpavservep_init(struct apple_dcp *dcp)
 		return 0;
 
 	/*
+	 * Desktop 26.x external processors take EDID metadata from the firmware
+	 * and have not been seen to announce this service: the wait below would
+	 * only run out, with the panel held behind it. A late announcement
+	 * still reaches dcpavserv_init().
+	 */
+	if (dcp->fw_compat == DCP_FIRMWARE_V_26_6_DESKTOP)
+		return 0;
+
+	/*
 	 * Legacy firmware need not announce an EDID service. Give it the same
 	 * discovery window so an early announcement can precede get_modes,
 	 * but absence is not an endpoint failure.
