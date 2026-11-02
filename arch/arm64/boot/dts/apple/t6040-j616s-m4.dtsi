@@ -11,6 +11,7 @@
  * 3. Properties the booted tree has that the public tree leaves out: the
  *    AIC, AOP and DCP cell counts, the firmware versions, the GPU and its
  *    companions, the disp0_piodma alias.
+ * 4. The CPU backstop at 113 C.
  */
 
 /* 1. The NVMe write guard */
@@ -148,4 +149,78 @@
 	aliases {
 		disp0_piodma = &disp0_piodma;
 	};
+};
+
+/*
+ * 4. The CPU backstop at 113 C, not the public tree's 116 C. These zones run
+ * step_wise here, where C5 peaks 2 C over the trip, so 116 would land on the
+ * 118 C critical shutdown; m4-cpufreq also refuses any other trip. The public
+ * tree's switch-on trips have no cooling map, so step_wise ignores them.
+ */
+&cpu_die_passive {
+	temperature = <113000>;
+};
+
+&cpu_e0_passive {
+	temperature = <113000>;
+};
+
+&cpu_e1_passive {
+	temperature = <113000>;
+};
+
+&cpu_e2_passive {
+	temperature = <113000>;
+};
+
+&cpu_e3_passive {
+	temperature = <113000>;
+};
+
+&cpu_p00_passive {
+	temperature = <113000>;
+};
+
+&cpu_p01_passive {
+	temperature = <113000>;
+};
+
+&cpu_p02_passive {
+	temperature = <113000>;
+};
+
+&cpu_p03_passive {
+	temperature = <113000>;
+};
+
+&cpu_p04_passive {
+	temperature = <113000>;
+};
+
+&cpu_p05_passive {
+	temperature = <113000>;
+};
+
+&cpu_p10_passive {
+	temperature = <113000>;
+};
+
+&cpu_p11_passive {
+	temperature = <113000>;
+};
+
+&cpu_p12_passive {
+	temperature = <113000>;
+};
+
+&cpu_p13_passive {
+	temperature = <113000>;
+};
+
+&cpu_p14_passive {
+	temperature = <113000>;
+};
+
+&cpu_p15_passive {
+	temperature = <113000>;
 };
