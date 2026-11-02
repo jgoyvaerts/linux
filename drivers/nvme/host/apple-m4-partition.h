@@ -12,7 +12,11 @@
  * the first is derived from this Mac's original 110 GB M4-Dev physical store,
  * reserving its first 50 GB for the existing APFS container; the second is
  * exactly GPT slot 3 (HP, created by macOS 2026-10-18); the third is exactly
- * GPT slot 4 (the 128 MiB partition macOS added behind HP, now the ESP).
+ * GPT slot 4 (the 128 MiB partition macOS added behind HP, now the ESP); the
+ * fourth is exactly the APFS extent of the xART gigalocker in slot 1, the 6 MiB
+ * inside iBootSystemContainer that the SEP driver writes for Touch ID. The rest
+ * of that container stays read-only. If macOS moves the extent, its writes fail
+ * here until this range follows it.
  */
 #define APPLE_M4_WRITE_RANGES_MAX 8
 #define APPLE_M4_GPT_END 8ULL
@@ -25,7 +29,8 @@ static inline bool apple_m4_partition_range_valid(u64 first, u64 end, bool from_
 		return first >= APPLE_M4_GPT_END;
 	return (first >= 228317114ULL && end <= 242965551ULL) ||
 	       (first >= 201461644ULL && end <= 216077314ULL) ||
-	       (first >= 216077314ULL && end <= 216110082ULL);
+	       (first >= 216077314ULL && end <= 216110082ULL) ||
+	       (first >= 1242ULL && end <= 2778ULL);
 }
 
 static inline bool apple_m4_partition_allowed(bool admin, unsigned int opcode,

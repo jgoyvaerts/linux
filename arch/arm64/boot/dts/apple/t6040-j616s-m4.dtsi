@@ -6,7 +6,7 @@
  *
  * 1. The NVMe write guard. The first compatible is the partition-guarded
  *    driver binding; lab,write-lba-range limits writes to the Linux
- *    partitions (slot 6, slot 3 and the ESP).
+ *    partitions (slot 6, slot 3 and the ESP) and the xART extent.
  * 2. The AOP and ISP DART address filters (apple,dapf-ranges).
  * 3. Properties the booted tree has that the public tree leaves out: the
  *    AIC, AOP and DCP cell counts, the firmware versions, the GPU and its
@@ -19,10 +19,11 @@
 &nvme {
 	/* Linux binds the guarded first entry; U-Boot (which has no guard) the second. */
 	compatible = "lab,j616-nvme-partition-25g83", "apple,t6041-nvme-ans2";
-	/* slot 6 (this root), slot 3 (HP), slot 4 (ESP) */
+	/* slot 6 (this root), slot 3 (HP), slot 4 (ESP), the xART .gl extent in slot 1 */
 	lab,write-lba-range = <0 0xd9bd800 0 0xe7b5c00>,
 			      <0 0xc020f8c 0 0xce11402>,
-			      <0 0xce11402 0 0xce19402>;
+			      <0 0xce11402 0 0xce19402>,
+			      <0 0x4da 0 0xada>;
 };
 
 /* 2. The DART address filters */
