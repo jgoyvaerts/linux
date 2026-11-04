@@ -128,6 +128,10 @@ const fn window_slot(index: usize) -> bool {
 /// one releases only a buffer reference; the buffer defers its own mapping release.
 pub(crate) struct Destinations {
     stamps: [Option<Destination>; 4],
+    /// The uAPI end-stamp copies: more destinations of the command's last end stamp
+    /// (the fragment end of a render). The host writes them with the same value.
+    copies: [Option<Destination>; 8],
+    last_end: usize,
     /// A render: the firmware gets its fragment end destination through the window. A compute
     /// command's only stamp pair stays kernel-private (recovery trusts it).
     render: bool,
@@ -139,17 +143,24 @@ impl Destinations {
     pub(crate) fn resolve(
         objects: Pin<&xarray::XArray<KBox<file::Object>>>,
         timestamps: &[uapi::drm_asahi_timestamps],
+        end_copies: &[uapi::drm_asahi_timestamp; 8],
     ) -> Result<Self> {
         if timestamps.is_empty() || timestamps.len() > 2 {
             return Err(EINVAL);
         }
-        let mut destinations = core::array::from_fn(|_| None);
+        let mut stamps = core::array::from_fn(|_| None);
         for (index, timestamp) in timestamps.iter().enumerate() {
-            destinations[2 * index] = Destination::resolve(objects, timestamp.start)?;
-            destinations[2 * index + 1] = Destination::resolve(objects, timestamp.end)?;
+            stamps[2 * index] = Destination::resolve(objects, timestamp.start)?;
+            stamps[2 * index + 1] = Destination::resolve(objects, timestamp.end)?;
+        }
+        let mut copies = core::array::from_fn(|_| None);
+        for (copy, &timestamp) in copies.iter_mut().zip(end_copies) {
+            *copy = Destination::resolve(objects, timestamp)?;
         }
         Ok(Self {
-            stamps: destinations,
+            stamps,
+            copies,
+            last_end: 2 * timestamps.len() - 1,
             render: timestamps.len() == 2,
             handed: AtomicBool::new(false),
         })
@@ -172,11 +183,7 @@ impl Destinations {
     }
 
     pub(crate) fn has_outputs(&self) -> bool {
-        self.stamps.iter().any(Option::is_some)
-    }
-
-    fn iter(&self) -> core::slice::Iter<'_, Option<Destination>> {
-        self.stamps.iter()
+        Iterator::chain(self.stamps.iter(), &self.copies).any(Option::is_some)
     }
 
     fn write(&self, ticks: [u64; 4]) {
@@ -189,6 +196,9 @@ impl Destinations {
                 Some(destination) => destination.write(ticks),
                 None => {}
             }
+        }
+        for copy in self.copies.iter().flatten() {
+            copy.write(ticks[self.last_end]);
         }
     }
 }
@@ -421,7 +431,7 @@ impl Completion {
         usage: Arc<crate::usage::Lane<Arc<crate::usage::Client>>>,
     ) -> Result<Arc<Self>> {
         let fence = fence::independent(contexts)?;
-        let ordered = !compute && (host_predecessors || destinations.iter().any(Option::is_some));
+        let ordered = !compute && (host_predecessors || destinations.has_outputs());
         let terminal = if host_predecessors {
             Some(fence::independent(contexts)?)
         } else {
@@ -542,11 +552,7 @@ impl Completion {
         self.output.output().member.work_state()
     }
     pub(crate) fn has_timestamps(&self) -> bool {
-        self.output
-            .output()
-            .destinations
-            .iter()
-            .any(Option::is_some)
+        self.output.output().destinations.has_outputs()
     }
 
     /// The firmware window addresses of a render's vertex and fragment start/end stamps.

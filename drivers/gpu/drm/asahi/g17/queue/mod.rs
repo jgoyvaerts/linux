@@ -505,9 +505,11 @@ impl<B: Backend> Queue<B> {
             }
             preceding[engine.index()] += 1;
             let destinations = match &payload {
-                Validated::Render { timestamps, .. } => Destinations::resolve(objects, timestamps),
-                Validated::Compute { timestamps, .. } => {
-                    Destinations::resolve(objects, core::slice::from_ref(timestamps))
+                Validated::Render { timestamps, end_copies, .. } => {
+                    Destinations::resolve(objects, timestamps, end_copies)
+                }
+                Validated::Compute { timestamps, end_copies, .. } => {
+                    Destinations::resolve(objects, core::slice::from_ref(timestamps), end_copies)
                 }
             }
             .map_err(|error| refused("its timestamp destinations", error))?;
