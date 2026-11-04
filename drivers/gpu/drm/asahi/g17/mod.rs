@@ -2501,6 +2501,8 @@ impl gpu::Gpu for Gpu {
         // The M5 command set has no AS-build flag: its validation refuses one.
         if !variant.m5_commands {
             params.features |= u64::from(uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_BOUNDED_AS_BUILD);
+            // The M5 command set's validation refuses the flags.
+            params.features |= uapi::DRM_ASAHI_FEATURE_NO_TIMESTAMP_ACCESS;
         }
         if variant.few_primitives {
             params.features |= u64::from(uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_FEW_PRIMITIVES);

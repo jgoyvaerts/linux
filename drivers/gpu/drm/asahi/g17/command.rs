@@ -44,9 +44,13 @@ const SHADER_WRITES: u32 = crate::file::DRM_ASAHI_RENDER_SHADER_WRITES;
 const MESH_OUTPUT: u32 = crate::file::DRM_ASAHI_RENDER_MESH_OUTPUT;
 /// Render flags only the M5 runtime implements.
 const M5_RENDER_FLAGS: u32 = SHADER_WRITES | STAGE_PREFIXES | WHOLE_ATTACHMENTS;
+const RENDER_NO_TIMESTAMP_ACCESS: u32 =
+    uapi::drm_asahi_render_flags_DRM_ASAHI_RENDER_NO_TIMESTAMP_ACCESS;
+const COMPUTE_NO_TIMESTAMP_ACCESS: u32 =
+    uapi::drm_asahi_compute_flags_DRM_ASAHI_COMPUTE_NO_TIMESTAMP_ACCESS as u32;
 const RENDER_FLAGS: u32 =
     PROCESS_EMPTY | RSRC_SPEC_HI | DBIAS_INT | FEW_PRIMITIVES | FRAGMENT_BARRIERS | SHADER_WRITES
-        | STAGE_PREFIXES | WHOLE_ATTACHMENTS | MESH_OUTPUT;
+        | STAGE_PREFIXES | WHOLE_ATTACHMENTS | MESH_OUTPUT | RENDER_NO_TIMESTAMP_ACCESS;
 
 /// Attachment settings persist until replaced, including by an empty list.
 #[derive(Clone, Copy)]
@@ -468,6 +472,7 @@ pub(crate) enum Validated {
         plan: Option<super::render_resources::Plan>,
         attachments: [Attachments; 2],
         timestamps: [uapi::drm_asahi_timestamps; 2],
+        no_timestamp_access: bool,
     },
     Compute {
         long_job: bool,
@@ -495,6 +500,7 @@ pub(crate) enum Validated {
         timestamps: uapi::drm_asahi_timestamps,
         /// The buffers the dispatch writes, from the compute attachment list.
         attachments: Attachments,
+        no_timestamp_access: bool,
     },
 }
 
@@ -502,6 +508,14 @@ impl Validated {
     pub(crate) fn long_job(&self) -> bool {
         match self {
             Self::Render { long_job, .. } | Self::Compute { long_job, .. } => *long_job,
+        }
+    }
+    /// The command's GPU work touches no timestamp buffer: barriers need not wait
+    /// for the host to write earlier commands' timestamps.
+    pub(crate) fn no_timestamp_access(&self) -> bool {
+        match self {
+            Self::Render { no_timestamp_access, .. }
+            | Self::Compute { no_timestamp_access, .. } => *no_timestamp_access,
         }
     }
     pub(crate) fn allow_long_job(&mut self) {
@@ -734,10 +748,15 @@ impl Payload {
                     plan: None,
                     attachments: *attachments,
                     timestamps: [cmd.ts_vtx, cmd.ts_frag],
+                    no_timestamp_access: cmd.flags & RENDER_NO_TIMESTAMP_ACCESS != 0,
                 })
             }
             Self::Compute(cmd, attachments, intersection, resources) => {
-                let as_build = if m5 { false } else { super::timeout::as_build(cmd.flags).ok_or(EINVAL)? };
+                let as_build = if m5 {
+                    false
+                } else {
+                    super::timeout::as_build(cmd.flags & !COMPUTE_NO_TIMESTAMP_ACCESS).ok_or(EINVAL)?
+                };
                 if (m5
                     && (cmd.flags
                         & !(crate::file::DRM_ASAHI_COMPUTE_USES_MATRIX
@@ -815,6 +834,7 @@ impl Payload {
                     sampler_count: cmd.sampler_count,
                     timestamps: cmd.ts,
                     attachments: *attachments,
+                    no_timestamp_access: cmd.flags & COMPUTE_NO_TIMESTAMP_ACCESS != 0,
                 })
             }
         }
