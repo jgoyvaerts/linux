@@ -519,6 +519,9 @@ pub(crate) struct Scheduler<B: Backend> {
 #[derive(Clone)]
 pub(crate) struct Fences {
     pub(crate) ready: Fence,
+    /// The scheduler's fence for publication. Equals `ready` unless this command
+    /// writes host timestamps; consumers that touch no timestamp buffer use it.
+    pub(crate) scheduled: Fence,
     pub(crate) completed: Fence,
     pub(crate) publication: Option<Arc<super::completion::Publication>>,
     pub(crate) owner: Arc<Completion>,
@@ -620,10 +623,11 @@ impl<B: Backend> Scheduler<B> {
         if let Some(publication) = publication {
             publication.activate();
         }
+        let scheduled = job.fences().scheduled();
         let ready = if host_timestamps {
             completed.clone()
         } else {
-            job.fences().scheduled()
+            scheduled.clone()
         };
         // All fallible scheduler setup precedes early hardware publication. The
         // scheduler still owns watchdog, credits and cancellation after push.
@@ -644,6 +648,12 @@ impl<B: Backend> Scheduler<B> {
             self.backend.count_backlog(&packet);
         }
         job.push();
-        Ok(Fences { ready, completed, publication: host_publication, owner: packet.completion.clone() })
+        Ok(Fences {
+            ready,
+            scheduled,
+            completed,
+            publication: host_publication,
+            owner: packet.completion.clone(),
+        })
     }
 }

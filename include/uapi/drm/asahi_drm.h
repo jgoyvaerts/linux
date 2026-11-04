@@ -531,6 +531,16 @@ enum drm_asahi_feature {
  */
 #define DRM_ASAHI_FEATURE_RENDER_MESH_OUTPUT ((1ULL) << 38)
 
+/*
+ * DRM_ASAHI_FEATURE_NO_TIMESTAMP_ACCESS: Render and compute commands
+ * accept DRM_ASAHI_*_NO_TIMESTAMP_ACCESS. Without that flag a command
+ * whose barriers cover a timestamp-writing command waits for the host to
+ * write those timestamps, which happens only after that command completes;
+ * with it, the barriers wait only for the earlier GPU work. A feature bit
+ * like those of enum drm_asahi_feature, defined here like bit 32.
+ */
+#define DRM_ASAHI_FEATURE_NO_TIMESTAMP_ACCESS ((1ULL) << 39)
+
 #define DRM_ASAHI_PARAM_GROUP_VM_STATUS 1
 #define DRM_ASAHI_PARAM_GROUP_QUEUE_LIMITS 2
 
@@ -1682,6 +1692,14 @@ enum drm_asahi_render_flags {
 	 * Requires DRM_ASAHI_FEATURE_RENDER_MESH_OUTPUT.
 	 */
 	DRM_ASAHI_RENDER_MESH_OUTPUT = (1U << 26),
+
+	/**
+	 * @DRM_ASAHI_RENDER_NO_TIMESTAMP_ACCESS: The GPU work of this command
+	 * neither reads nor writes any timestamp buffer. Its barriers then order
+	 * it after earlier commands' GPU work only, not after the host writing
+	 * their timestamps (see DRM_ASAHI_FEATURE_NO_TIMESTAMP_ACCESS).
+	 */
+	DRM_ASAHI_RENDER_NO_TIMESTAMP_ACCESS = (1U << 27),
 };
 
 /**
@@ -2236,6 +2254,7 @@ enum drm_asahi_compute_flags {
 	 */
 	DRM_ASAHI_COMPUTE_AS_BUILD = (1L << 2),
 
+
 	/*
 	 * Bits 16 and 17 are used by the M5 runtime's userspace.
 	 */
@@ -2278,6 +2297,12 @@ enum drm_asahi_compute_flags {
 	 * DRM_ASAHI_FEATURE_COMPUTE_VISIBLE_COMPLETION.
 	 */
 	DRM_ASAHI_COMPUTE_VISIBLE_COMPLETION = (1L << 20),
+
+	/**
+	 * @DRM_ASAHI_COMPUTE_NO_TIMESTAMP_ACCESS: As
+	 * DRM_ASAHI_RENDER_NO_TIMESTAMP_ACCESS, for a compute command.
+	 */
+	DRM_ASAHI_COMPUTE_NO_TIMESTAMP_ACCESS = (1L << 21),
 };
 
 /**

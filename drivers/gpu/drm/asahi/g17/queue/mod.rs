@@ -218,6 +218,9 @@ impl<B: Backend> Queue<B> {
             Validated::Compute { .. } => Engine::Compute,
         };
         let index = engine.index();
+        // Opted out of timestamp buffers (DRM_ASAHI_*_NO_TIMESTAMP_ACCESS): barriers order
+        // only GPU work, so host timestamp writes of earlier commands need no wait.
+        let no_timestamp_access = command.no_timestamp_access();
         if let Validated::Render { ray_query, .. } = &command {
             let blocks = self
                 .backend
@@ -317,7 +320,8 @@ impl<B: Backend> Queue<B> {
             Validated::Render { .. } => true,
         };
         let timestamp_prefix = order.wait_through[index];
-        let timestamps = if engine == Engine::Compute && query_access && timestamp_prefix.is_some() {
+        let timestamps = if engine == Engine::Compute && query_access && !no_timestamp_access && timestamp_prefix.is_some()
+        {
             let frontier = self.frontiers[index].as_slice();
             let end = frontier
                 .partition_point(|(sequence, _)| Order::contains(timestamp_prefix, *sequence));
@@ -377,7 +381,8 @@ impl<B: Backend> Queue<B> {
                 dependencies.push(fences.completed.clone(), GFP_KERNEL)?;
                 checked_inputs.push(fences.completed.clone(), GFP_KERNEL)?;
             } else {
-                dependencies.push(fences.ready.clone(), GFP_KERNEL)?;
+                let wait = if no_timestamp_access { &fences.scheduled } else { &fences.ready };
+                dependencies.push(wait.clone(), GFP_KERNEL)?;
                 firmware.push(fences.completed.clone(), GFP_KERNEL)?;
             }
         }
