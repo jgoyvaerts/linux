@@ -20,11 +20,6 @@ const USC_WINDOW_SIZE: u64 = 1 << 32;
 const MAX_SAMPLERS: u32 = 1024;
 const RENDER_BASE_SIZE: usize = core::mem::offset_of!(uapi::drm_asahi_cmd_render, prior_cdm) + size_of::<u64>();
 const COMPUTE_BASE_SIZE: usize = core::mem::offset_of!(uapi::drm_asahi_cmd_compute, prior_cdm) + size_of::<u64>();
-/// The timestamp-copy arrays of the common command layout, which G17P does not implement.
-const RENDER_TIMESTAMP_COPIES: Range<usize> = core::mem::offset_of!(uapi::drm_asahi_cmd_render, ts_frag_end_copies)
-    ..core::mem::offset_of!(uapi::drm_asahi_cmd_render, prior_vdm);
-const COMPUTE_TIMESTAMP_COPIES: Range<usize> = core::mem::offset_of!(uapi::drm_asahi_cmd_compute, ts_end_copies)
-    ..core::mem::offset_of!(uapi::drm_asahi_cmd_compute, scs_layout);
 const SAMPLER_SIZE: u64 = 8;
 const PAGE_SIZE: u64 = 0x4000;
 const ZLS_METADATA_STRIDE: u64 = 0x80;
@@ -254,7 +249,6 @@ impl<'a> Parser<'a> {
                         == uapi::drm_asahi_cmd_type_DRM_ASAHI_CMD_RENDER
                     {
                         self.counts[0] += 1;
-                        no_timestamp_copies(bytes, RENDER_TIMESTAMP_COPIES)?;
                         // The ray-query stages follow prior_cdm, and the stage-prefix fields follow them.
                         let ray_query = bytes
                             .get(RENDER_BASE_SIZE..bytes.len().min(RENDER_STAGE_PREFIXES))
@@ -269,7 +263,6 @@ impl<'a> Parser<'a> {
                         )
                     } else {
                         self.counts[1] += 1;
-                        no_timestamp_copies(bytes, COMPUTE_TIMESTAMP_COPIES)?;
                         Payload::Compute(
                             payload(bytes)?,
                             self.attachments[2],
@@ -327,16 +320,6 @@ impl<'a> Parser<'a> {
         }
         Ok(())
     }
-}
-
-/// Reject a command that asks for timestamp copies.
-fn no_timestamp_copies(bytes: &[u8], copies: Range<usize>) -> Result {
-    let end = copies.end.min(bytes.len());
-    let start = copies.start.min(end);
-    if bytes[start..end].iter().any(|&b| b != 0) {
-        return Err(EINVAL);
-    }
-    Ok(())
 }
 
 fn payload<T: AnyBitPattern>(bytes: &[u8]) -> Result<T> {
@@ -472,6 +455,8 @@ pub(crate) enum Validated {
         plan: Option<super::render_resources::Plan>,
         attachments: [Attachments; 2],
         timestamps: [uapi::drm_asahi_timestamps; 2],
+        /// Further destinations of the fragment end stamp.
+        end_copies: [uapi::drm_asahi_timestamp; 8],
         no_timestamp_access: bool,
     },
     Compute {
@@ -500,6 +485,8 @@ pub(crate) enum Validated {
         timestamps: uapi::drm_asahi_timestamps,
         /// The buffers the dispatch writes, from the compute attachment list.
         attachments: Attachments,
+        /// Further destinations of the end stamp.
+        end_copies: [uapi::drm_asahi_timestamp; 8],
         no_timestamp_access: bool,
     },
 }
@@ -748,6 +735,7 @@ impl Payload {
                     plan: None,
                     attachments: *attachments,
                     timestamps: [cmd.ts_vtx, cmd.ts_frag],
+                    end_copies: cmd.ts_frag_end_copies,
                     no_timestamp_access: cmd.flags & RENDER_NO_TIMESTAMP_ACCESS != 0,
                 })
             }
@@ -834,6 +822,7 @@ impl Payload {
                     sampler_count: cmd.sampler_count,
                     timestamps: cmd.ts,
                     attachments: *attachments,
+                    end_copies: cmd.ts_end_copies,
                     no_timestamp_access: cmd.flags & COMPUTE_NO_TIMESTAMP_ACCESS != 0,
                 })
             }

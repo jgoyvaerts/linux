@@ -2503,6 +2503,10 @@ impl gpu::Gpu for Gpu {
             params.features |= u64::from(uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_BOUNDED_AS_BUILD);
             // The M5 command set's validation refuses the flags.
             params.features |= uapi::DRM_ASAHI_FEATURE_NO_TIMESTAMP_ACCESS;
+            // The host writes every stamp at retirement, end-stamp copies included.
+            params.features |=
+                u64::from(uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_RENDER_TIMESTAMP_COPIES)
+                    | u64::from(uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_COMPUTE_TIMESTAMP_COPIES);
         }
         if variant.few_primitives {
             params.features |= u64::from(uapi::drm_asahi_feature_DRM_ASAHI_FEATURE_FEW_PRIMITIVES);
