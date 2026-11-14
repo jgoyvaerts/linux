@@ -8,4 +8,4 @@ asahi-$(CONFIG_DRM_ASAHI_G15) += g15/glue.o
 
 asahi-$(CONFIG_DRM_ASAHI_G16) += g16/glue.o
 
-asahi-y += retain.o cpu_capacity.o g17/mesh_tvb_floor.o
+asahi-y += retain.o cpu_capacity.o g17/mesh_tvb_floor.o g17/busy_tvb_grow.o
