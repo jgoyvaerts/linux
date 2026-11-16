@@ -5820,6 +5820,9 @@ params_done:
 	if (ret)
 		goto err_clk_disable;
 
+	/* Before any stream behind it runs: not every loader programs the filter. */
+	apple_dart_dapf_replay(dart, false);
+
 	/* A hot-plug PCIe-C DART has no retained/locked translation context. */
 	if (tunneled)
 		dart->locked = false;
