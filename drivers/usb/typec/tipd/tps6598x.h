@@ -492,12 +492,6 @@ struct cd321x {
 	bool cur_partner_is_pd;
 
 	struct fwnode_handle *connector_fwnode;
-
-	/* J616s: one power cycle for a USB3 device left on USB2 at boot */
-	struct notifier_block ss_kick_notifier;
-	struct work_struct ss_kick_work;
-	bool ss_kick_registered;
-	bool ss_kick_done;
 };
 
 struct sn201202x {
