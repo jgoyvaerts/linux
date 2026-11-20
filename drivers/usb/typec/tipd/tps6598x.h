@@ -576,7 +576,6 @@ void cd321x_mux_gave_up(struct cd321x *cd321x, unsigned int retries, unsigned in
 void cd321x_init_work(struct cd321x *cd321x);
 int cd321x_init_mux(struct cd321x *cd321x);
 void cd321x_stop_work(struct cd321x *cd321x);
-bool cd321x_tbt_switch_keep_waiting(struct device *dev);
 struct typec_thunderbolt_switch *
 cd321x_tbt_switch_get(struct device *dev, struct fwnode_handle *fwnode,
 		      bool *late);
