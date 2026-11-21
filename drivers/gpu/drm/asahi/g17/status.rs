@@ -4,7 +4,7 @@
 
 use crate::debug::*;
 use crate::gem;
-use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use kernel::{new_mutex, prelude::*, str::BStr, sync::Mutex, task::Pid};
 
 const DEBUG_CLASS: DebugFlags = DebugFlags::Errors;
@@ -27,6 +27,8 @@ pub(crate) struct VmStatus {
     warned: AtomicBool,
     /// A GPU recovery found this VM's work guilty.
     recovery_guilty: AtomicBool,
+    /// Commands whose public fence signalled with an error, each counted after its signal.
+    failed_outputs: AtomicU64,
     /// The process that created the VM, named in the failure report.
     tgid: Pid,
     comm: [u8; 16],
@@ -62,6 +64,7 @@ impl VmStatus {
             teardown_expired: AtomicBool::new(false),
             warned: AtomicBool::new(false),
             recovery_guilty: AtomicBool::new(false),
+            failed_outputs: AtomicU64::new(0),
             tgid,
             comm,
             mirror <- new_mutex!(None, "Asahi VM status mirror"),
@@ -80,6 +83,18 @@ impl VmStatus {
             .position(|&b| b == 0)
             .unwrap_or(self.comm.len());
         (BStr::from_bytes(&self.comm[..len]), self.tgid)
+    }
+
+    /// A command's public fence has just signalled with an error.
+    pub(crate) fn note_failed_output(&self) {
+        // Release: whoever sees the count also sees the fence's error.
+        self.failed_outputs.fetch_add(1, Ordering::Release);
+    }
+
+    /// How many public fences of this VM have signalled with an error. A queue's frontier
+    /// looks behind its oldest unfinished command only when this has moved.
+    pub(crate) fn failed_outputs(&self) -> u64 {
+        self.failed_outputs.load(Ordering::Acquire)
     }
 
     pub(crate) fn note_recovery_guilty(&self) {
