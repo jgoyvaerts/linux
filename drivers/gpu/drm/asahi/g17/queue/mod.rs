@@ -100,10 +100,13 @@ pub(crate) struct Queue<B: Backend> {
     variant: &'static crate::g17::fw::Variant,
     proof: Proof,
     sequence: [u64; 2],
-    frontiers: [KVec<(u64, Fences)>; 2],
+    /// One entry per unfinished command, so as long as userspace keeps work queued
+    /// (thousands under vkd3d-proton). Neither it nor `finished` needs
+    /// contiguous pages, and their growth must not fail a submit on fragmentation.
+    frontiers: [KVVec<(u64, Fences)>; 2],
     /// Finished frontier entries pruned during this ioctl. Their last references
     /// can tear a whole completion down; that waits until the ioctl has published.
-    finished: KVec<Fences>,
+    finished: KVVec<Fences>,
     failures: [FailureRecord<Fences>; 2],
     // Closing the userspace queue releases admission even if firmware still
     // retains one of its execution contexts or installed physical graphs.
@@ -152,8 +155,8 @@ impl<B: Backend> Queue<B> {
             variant,
             proof: Proof::new(),
             sequence: [0; 2],
-            frontiers: core::array::from_fn(|_| KVec::new()),
-            finished: KVec::new(),
+            frontiers: core::array::from_fn(|_| KVVec::new()),
+            finished: KVVec::new(),
             failures: [FailureRecord::new(), FailureRecord::new()],
             _slot: slot,
         })
