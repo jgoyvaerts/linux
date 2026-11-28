@@ -551,7 +551,7 @@ c_harness = r'''
 typedef uint64_t u64;
 #define ASAHI_G17_SYNC_SCOPE_H 1
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
-#define GFP_KERNEL 0
+#define GFP_KERNEL_ACCOUNT 0
 
 struct dma_fence {
 	uint64_t context;
@@ -635,13 +635,13 @@ static inline struct dma_fence *dma_fence_unwrap_next(struct dma_fence_unwrap *c
 	for ((fence) = dma_fence_unwrap_first((head), (cursor)); (fence); \
 	     (fence) = dma_fence_unwrap_next((cursor)))
 
-static inline void *kmalloc_array(size_t n, size_t size, int flags)
+static inline void *kvmalloc_array(size_t n, size_t size, int flags)
 {
 	(void)flags;
 	return calloc(n, size);
 }
 
-static inline void kfree(void *p)
+static inline void kvfree(void *p)
 {
 	free(p);
 }
