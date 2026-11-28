@@ -17,6 +17,10 @@ mod fw;
 mod fwid;
 #[cfg(CONFIG_DRM_ASAHI_G15)]
 mod g15;
+// Without the G15 backend, only the UAT adoption the T8122 runtime shares with it.
+#[cfg(all(CONFIG_DRM_ASAHI_UAT_ADOPTION, not(CONFIG_DRM_ASAHI_G15)))]
+#[path = "g15/adopt.rs"]
+mod g15;
 mod g17;
 mod gem;
 
@@ -27,6 +31,12 @@ mod g18;
 #[cfg(CONFIG_DRM_ASAHI_M5)]
 mod m5;
 mod gpu;
+#[cfg(CONFIG_DRM_ASAHI_G14_V27_2)]
+mod g14_v27_2;
+#[cfg(CONFIG_DRM_ASAHI_G14_V27_2)]
+mod g14_v27_2_abi;
+#[cfg(CONFIG_DRM_ASAHI_G14_V27_2)]
+mod g14_v27_2_render;
 mod hw;
 mod initdata;
 mod m3;
@@ -49,8 +59,6 @@ mod sysfs_exports;
 mod timestamp;
 mod usage;
 mod util;
-#[cfg(CONFIG_DRM_ASAHI_MAPLE_TREE)]
-mod vm;
 mod workqueue;
 
 use kernel::prelude::*;
@@ -105,6 +113,8 @@ impl kernel::InPlaceModule for DriverModule {
         unsafe { queue_share::init() };
         // SAFETY: Module init runs once, before either adapter is registered below.
         unsafe { g17::exec_share::init() };
+        // SAFETY: Module init runs once, before either adapter is registered below.
+        unsafe { g17::init() };
         try_pin_init!(Self {
             // Initialize the queue first, before registration can invoke probe.
             _cleanup: cleanup::QueueOwner::new()?,
@@ -137,12 +147,8 @@ module! {
             description: "M5 mesh rendering buffer bound to API task (object-stage) render kicks only, in 64 KiB chunks; 0 disables the binding and the task feature",
         },
         m5_thermal_governor: u32 {
-            default: 0,
-            description: "M5 thermal flags: bit 0 enables the host GPU power budget controller, bit 2 lets the controller lower the CPU frequency ceiling while the GPU is budget-bound, bit 3 runs the fans at their maximum while it governs; default 0 preserves the existing policy",
-        },
-        m5_thermal_target_mc: u32 {
-            default: 90000,
-            description: "M5 GPU power budget governor target for the SoC hotspot temperature computed by the SMC, in milli-degrees C (70000..104000)",
+            default: 9,
+            description: "M5 thermal flags: bit 0 enables the host GPU power budget controller, bit 2 lets the controller lower the CPU frequency ceiling while the GPU is budget-bound, bit 3 runs the fans at their maximum while it governs; default 9 (controller and fans, no CPU ceiling); the controller settles the hotspot at the SoC die zone's passive trip and stays off without one",
         },
         m5_depth_msaa_compression: u32 {
             default: 1,
@@ -262,7 +268,7 @@ module! {
             description: "G16: compute completion-stamp deadline, ms (0 permits unbounded compute; firmware recovery stays active)",
         },
         g16_repoll_us: u32 {
-            default: 15,
+            default: 8,
             description: "G16: repoll interval while publication waits for record consumption, us",
         },
         g16_resnap_us: u32 {

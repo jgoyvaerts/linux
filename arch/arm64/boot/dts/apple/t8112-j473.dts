@@ -24,6 +24,7 @@
 		ethernet0 = &ethernet0;
 		rtc0 = &smc_rtc;
 		rtc1 = &pmu_rtc;
+		sep = &sep;
 		wifi0 = &wifi0;
 	};
 };
@@ -110,8 +111,24 @@
 	/delete-property/ mux-index;
 };
 
-&dpaudio0 {
-	status = "okay";
+/*
+ * iBoot on Mac mini does not start AOP firmware (no internal mic, ALS, or lid),
+ * so apple_aop fails RTKit wake with -ETIME (-62) if enabled.
+ */
+&aop_mbox {
+	status = "disabled";
+};
+
+&aop_dart {
+	status = "disabled";
+};
+
+&aop_admac {
+	status = "disabled";
+};
+
+&aop {
+	status = "disabled";
 };
 
 &typec0 {
@@ -277,6 +294,8 @@
 };
 
 #include "hwmon-mini.dtsi"
+#include "t8112-hwmon-rails.dtsi"
+#include "t8112-hwmon.dtsi"
 
 
 #include "t8112-j473-peripherals.dtsi"

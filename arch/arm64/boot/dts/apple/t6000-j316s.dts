@@ -100,33 +100,6 @@
 	};
 };
 
-&clvr_spmi0 {
-	pmic@f {
-		compatible = "apple,monaco-pmic", "apple,spmi-nvmem";
-		reg = <0xf SPMI_USID>;
-		read-only;
-		status = "disabled";
-	};
-};
-
-&clvr_spmi1 {
-	pmic@f {
-		compatible = "apple,monaco-pmic", "apple,spmi-nvmem";
-		reg = <0xf SPMI_USID>;
-		read-only;
-		status = "disabled";
-	};
-};
-
-&clvr_spmi2 {
-	pmic@f {
-		compatible = "apple,monaco-pmic", "apple,spmi-nvmem";
-		reg = <0xf SPMI_USID>;
-		read-only;
-		status = "disabled";
-	};
-};
-
 &sound {
 	compatible = "apple,j316-macaudio", "apple,macaudio";
 	model = "MacBook Pro J316";
@@ -151,4 +124,9 @@
 			  "event4", "host-wake", "data-ready";
 	enable-gpios = <&smc_gpio 15 GPIO_ACTIVE_HIGH>;
 	status = "okay";
+};
+
+/* ATC3 is HDMI-only on laptops; keep tunnel 3 PIODMA disabled. */
+&apciec3_piodma {
+	status = "disabled";
 };
