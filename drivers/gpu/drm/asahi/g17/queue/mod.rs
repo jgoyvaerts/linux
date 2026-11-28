@@ -762,9 +762,9 @@ impl FrontierEntry for Fences {
     }
 }
 
-fn push_unique_fence(out: &mut KVec<Fence>, fence: &Fence) -> Result {
+fn push_unique_fence(out: &mut KVVec<Fence>, fence: &Fence) -> Result {
     if !out.iter().any(|existing| existing.raw() == fence.raw()) {
-        out.push(fence.clone(), GFP_KERNEL)?;
+        out.push(fence.clone(), GFP_KERNEL_ACCOUNT)?;
     }
     Ok(())
 }
@@ -772,7 +772,7 @@ fn push_unique_fence(out: &mut KVec<Fence>, fence: &Fence) -> Result {
 /// Collect the actual pending host-timestamp writer fences represented by `entry`:
 /// its own `completed` fence when it writes host timestamps, otherwise its still-pending
 /// inherited timestamp-writer fences.
-fn collect_timestamp_waits<E: FrontierEntry>(entry: &E, out: &mut KVec<Fence>) -> Result {
+fn collect_timestamp_waits<E: FrontierEntry>(entry: &E, out: &mut KVVec<Fence>) -> Result {
     let Some(pub_ref) = entry.pending_publication() else {
         return Ok(());
     };
@@ -788,11 +788,14 @@ fn collect_timestamp_waits<E: FrontierEntry>(entry: &E, out: &mut KVec<Fence>) -
     Ok(())
 }
 
+/// Each of these grows with the covered prefixes, which userspace sizes: the other engine's
+/// unfinished commands alone can number thousands. So they need no contiguous pages and are
+/// charged to the caller.
 struct EnqueueOrdering<'a> {
-    predecessors: KVec<&'a Arc<Publication>>,
-    host_waits: KVec<Fence>,
-    firmware_waits: KVec<(Fence, Fence)>,
-    inherited_timestamp_waits: KVec<Fence>,
+    predecessors: KVVec<&'a Arc<Publication>>,
+    host_waits: KVVec<Fence>,
+    firmware_waits: KVVec<(Fence, Fence)>,
+    inherited_timestamp_waits: KVVec<Fence>,
 }
 
 impl<'a> EnqueueOrdering<'a> {
@@ -820,16 +823,16 @@ impl<'a> EnqueueOrdering<'a> {
         // deferred error published between pruning and link selection,
         // `add_successor()` still delivers that failure immediately instead of
         // letting the successor signal success.
-        let mut predecessors = KVec::new();
-        let mut host = KVec::new();
-        let mut firmware = KVec::new();
-        let mut inherited_timestamp_waits = KVec::new();
+        let mut predecessors = KVVec::new();
+        let mut host = KVVec::new();
+        let mut firmware = KVVec::new();
+        let mut inherited_timestamp_waits = KVVec::new();
         if same_chain {
             for (_, entry) in same_covered.clone() {
                 let status = entry.status();
                 if status <= 0 {
                     if let Some(publication) = entry.pending_publication() {
-                        predecessors.push(publication, GFP_KERNEL)?;
+                        predecessors.push(publication, GFP_KERNEL_ACCOUNT)?;
                         collect_timestamp_waits(entry, &mut inherited_timestamp_waits)?;
                     } else if status < 0 {
                         // Failed after `prune_frontier()` without an active
@@ -843,7 +846,7 @@ impl<'a> EnqueueOrdering<'a> {
             for (_, entry) in other_covered.clone() {
                 if entry.status() <= 0 {
                     if let Some(publication) = entry.pending_publication() {
-                        predecessors.push(publication, GFP_KERNEL)?;
+                        predecessors.push(publication, GFP_KERNEL_ACCOUNT)?;
                         collect_timestamp_waits(entry, &mut inherited_timestamp_waits)?;
                     }
                 }
@@ -895,13 +898,13 @@ impl<'a> EnqueueOrdering<'a> {
                     collect_timestamp_waits(entry, &mut host)?;
                     firmware.push(
                         (entry.scheduled().clone(), entry.completed().clone()),
-                        GFP_KERNEL,
+                        GFP_KERNEL_ACCOUNT,
                     )?;
                 }
             } else {
                 firmware.push(
                     (entry.scheduled().clone(), entry.completed().clone()),
-                    GFP_KERNEL,
+                    GFP_KERNEL_ACCOUNT,
                 )?;
             }
         }

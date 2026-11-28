@@ -554,7 +554,7 @@ pub(crate) struct Fences {
     /// timestamp-free publication chaining. `None` for commands that write their
     /// own timestamps (covered by `completed`) or have no pending timestamp
     /// ancestors.
-    pub(crate) timestamp_waits: Option<Arc<KVec<Fence>>>,
+    pub(crate) timestamp_waits: Option<Arc<KVVec<Fence>>>,
     pub(crate) owner: Arc<Completion>,
 }
 

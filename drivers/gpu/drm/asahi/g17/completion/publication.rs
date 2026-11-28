@@ -227,7 +227,7 @@ impl Publication {
 /// links retain the successor only, so closing a queue cannot form an Arc cycle.
 pub(crate) struct Prepared {
     target: Arc<Publication>,
-    links: KVec<(Arc<Publication>, KBox<Link>)>,
+    links: KVVec<(Arc<Publication>, KBox<Link>)>,
 }
 
 impl Prepared {
@@ -235,15 +235,16 @@ impl Prepared {
         target: Arc<Publication>,
         predecessors: impl Iterator<Item = &'a Arc<Publication>> + Clone,
     ) -> Result<Self> {
-        let mut links = KVec::with_capacity(predecessors.clone().count(), GFP_KERNEL)?;
+        // One per covered unfinished predecessor, which userspace sizes: charged to the caller.
+        let mut links = KVVec::with_capacity(predecessors.clone().count(), GFP_KERNEL_ACCOUNT)?;
         for predecessor in predecessors {
             let link = KBox::new(Link {
                 target: target.clone(),
                 result: Ok(()),
                 next: None,
                 resume: None,
-            }, GFP_KERNEL)?;
-            links.push((predecessor.clone(), link), GFP_KERNEL)?;
+            }, GFP_KERNEL_ACCOUNT)?;
+            links.push((predecessor.clone(), link), GFP_KERNEL_ACCOUNT)?;
         }
         Ok(Self { target, links })
     }
